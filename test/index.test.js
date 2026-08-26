@@ -8,20 +8,47 @@ const sorter = require("../src/index.user.js");
 function timelineDocumentFromFixture(filename) {
   const html = fs.readFileSync(path.join(__dirname, "fixtures", filename), "utf8");
   const hasTimeline = /id=["']timeline["']/.test(html);
+  const hasTimelineTabs = /id=["']timelineTabs["']/.test(html);
+  const hasTimelineContent = /id=["']tmlContent["'][^>]*>\s*<div id=["']timeline["']/.test(
+    html,
+  );
   const hasItem = /class=["'][^"']*\btml_item\b[^"']*["']/.test(html);
-  const timestamp = html.match(/title=["']([^"']+)["'][^>]*class=["'][^"']*\btitleTip\b/);
+  const timestamp = html.match(
+    /title=["']([^"']+)["'][^>]*class=["'][^"']*\btitleTip\b[^>]*>([^<]*)</,
+  );
   const timestampNode = timestamp
-    ? { getAttribute: (name) => (name === "title" ? timestamp[1] : null) }
+    ? {
+        getAttribute: (name) => (name === "title" ? timestamp[1] : null),
+        textContent: timestamp[2],
+      }
     : null;
   const itemNode = hasItem
-    ? { querySelector: () => timestampNode }
+    ? {
+        querySelector(selector) {
+          assert.equal(selector, ".post_actions .titleTip[title]");
+          return timestampNode;
+        },
+      }
     : null;
   const timelineNode = hasTimeline
-    ? { querySelector: () => itemNode }
+    ? {
+        querySelector(selector) {
+          assert.equal(selector, ".tml_item");
+          return itemNode;
+        },
+        textContent: hasItem ? "动态内容" : "",
+      }
     : null;
 
   return {
-    querySelector: (selector) => (selector === "#timeline" ? timelineNode : null),
+    querySelector(selector) {
+      if (selector === "#timeline") return timelineNode;
+      if (selector === "#timelineTabs") return hasTimelineTabs ? {} : null;
+      if (selector === "#tmlContent > #timeline") {
+        return hasTimelineContent ? timelineNode : null;
+      }
+      assert.fail(`unexpected selector: ${selector}`);
+    },
   };
 }
 
@@ -107,8 +134,9 @@ test("从时间胶囊首条动态读取精确的上次活跃时间", () => {
 
 test("上次活跃时间保留页面提供的秒级精度", () => {
   const document = timelineDocumentFromFixture("timeline-active-seconds.html");
+  const responseTime = new Date(2026, 7, 26, 17, 43, 36).getTime();
 
-  assert.deepEqual(sorter.parseTimelineDocument(document), {
+  assert.deepEqual(sorter.parseTimelineDocument(document, responseTime), {
     kind: "active",
     activityAt: new Date(2026, 7, 26, 17, 42, 34).getTime(),
   });
@@ -118,6 +146,18 @@ test("有效的空时间胶囊被识别为无公开动态", () => {
   const document = timelineDocumentFromFixture("timeline-empty.html");
 
   assert.deepEqual(sorter.parseTimelineDocument(document), { kind: "empty" });
+});
+
+test("只有孤立时间线容器的残缺页面被识别为失败", () => {
+  const document = timelineDocumentFromFixture("timeline-partial.html");
+
+  assert.deepEqual(sorter.parseTimelineDocument(document), { kind: "invalid" });
+});
+
+test("首条动态缺失精确时间时被识别为失败", () => {
+  const document = timelineDocumentFromFixture("timeline-missing-time.html");
+
+  assert.deepEqual(sorter.parseTimelineDocument(document), { kind: "invalid" });
 });
 
 test("仅在本次待请求人数超过四百时要求确认", () => {
@@ -166,4 +206,26 @@ test("持久存储不可用时活跃缓存仍在当前页面内工作", () => {
 
   assert.equal(cache.get("sai"), record);
   assert.deepEqual([...cache.entries()], [["sai", record]]);
+});
+
+test("时间胶囊返回四零四时计入失败且不覆盖缓存", async () => {
+  let cacheWrites = 0;
+  const progress = [];
+
+  const result = await sorter.refreshActivities([{ userId: "missing" }], {
+    cache: {
+      persist() {},
+      set() {
+        cacheWrites += 1;
+      },
+    },
+    domParser: {},
+    fetchImpl: async () => ({ ok: false, status: 404 }),
+    now: () => 1_000,
+    onProgress: (completed, total) => progress.push([completed, total]),
+  });
+
+  assert.deepEqual(result, { failures: 1 });
+  assert.equal(cacheWrites, 0);
+  assert.deepEqual(progress, [[1, 1]]);
 });

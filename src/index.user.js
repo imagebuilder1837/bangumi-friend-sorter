@@ -22,6 +22,16 @@
 
   const CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
   const CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v1";
+  const SORT = Object.freeze({
+    ACTIVITY: "activity",
+    ADDED: "added",
+    NAME: "name",
+  });
+  const SORT_CHOICES = [
+    [SORT.ADDED, "加好友时间"],
+    [SORT.NAME, "名称"],
+    [SORT.ACTIVITY, "上次活跃"],
+  ];
 
   function isActivityRecord(value) {
     if (!value || !Number.isFinite(value.fetchedAt)) return false;
@@ -74,11 +84,11 @@
   ) {
     const sorted = [...friends];
 
-    if (criterion === "added") {
+    if (criterion === SORT.ADDED) {
       sorted.sort((left, right) => left.originalIndex - right.originalIndex);
     }
 
-    if (criterion === "name") {
+    if (criterion === SORT.NAME) {
       sorted.sort((left, right) => {
         return (
           collator.compare(left.displayName, right.displayName) ||
@@ -87,7 +97,7 @@
       });
     }
 
-    if (criterion === "activity") {
+    if (criterion === SORT.ACTIVITY) {
       sorted.sort((left, right) => {
         const leftActivity = activityByUser.get(left.userId);
         const rightActivity = activityByUser.get(right.userId);
@@ -143,17 +153,37 @@
     return parsed.getTime();
   }
 
-  function parseTimelineDocument(document) {
-    const timeline = document.querySelector("#timeline");
-    if (!timeline) return { kind: "invalid" };
+  function parseRelativeSeconds(value) {
+    const match = /^(?:(\d+)分)?(?:(\d+)秒)前$/.exec(value || "");
+    if (!match) return null;
+    return Number(match[1] || 0) * 60 + Number(match[2]);
+  }
+
+  function parseTimelineDocument(document, referenceAt) {
+    const tabs = document.querySelector("#timelineTabs");
+    const timeline = document.querySelector("#tmlContent > #timeline");
+    if (!tabs || !timeline) return { kind: "invalid" };
 
     const firstItem = timeline?.querySelector(".tml_item");
-    if (!firstItem) return { kind: "empty" };
+    if (!firstItem) {
+      return timeline.textContent.trim() === "" ? { kind: "empty" } : { kind: "invalid" };
+    }
 
-    const timestamp = firstItem
-      ?.querySelector(".post_actions .titleTip[title]")
-      ?.getAttribute("title");
-    const activityAt = parseSiteTimestamp(timestamp);
+    const timestampNode = firstItem?.querySelector(".post_actions .titleTip[title]");
+    const timestamp = timestampNode?.getAttribute("title");
+    let activityAt = parseSiteTimestamp(timestamp);
+
+    if (
+      activityAt !== null &&
+      !/:\d{2}:\d{2}$/.test(timestamp) &&
+      Number.isFinite(referenceAt)
+    ) {
+      const relativeSeconds = parseRelativeSeconds(timestampNode.textContent.trim());
+      if (relativeSeconds !== null) {
+        const inferred = new Date(referenceAt - relativeSeconds * 1_000);
+        activityAt += inferred.getUTCSeconds() * 1_000;
+      }
+    }
 
     return activityAt === null ? { kind: "invalid" } : { kind: "active", activityAt };
   }
@@ -258,12 +288,7 @@
     filters.append("按");
 
     const buttons = new Map();
-    const choices = [
-      ["added", "加好友时间"],
-      ["name", "名称"],
-      ["activity", "上次活跃"],
-    ];
-    for (const [criterion, label] of choices) {
+    for (const [criterion, label] of SORT_CHOICES) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "l";
@@ -303,10 +328,16 @@
       });
       if (!response.ok) return { kind: "http-error", status: response.status };
 
-      const document = domParser.parseFromString(await response.text(), "text/html");
-      const parsed = parseTimelineDocument(document);
+      const html = await response.text();
+      const fetchedAt = now();
+      const responseAt = Date.parse(response.headers?.get("date") || "");
+      const document = domParser.parseFromString(html, "text/html");
+      const parsed = parseTimelineDocument(
+        document,
+        Number.isFinite(responseAt) ? responseAt : fetchedAt,
+      );
       if (parsed.kind === "invalid") return { kind: "parse-error" };
-      return { kind: "success", record: { ...parsed, fetchedAt: now() } };
+      return { kind: "success", record: { ...parsed, fetchedAt } };
     } catch {
       return { kind: "network-error" };
     } finally {
@@ -375,7 +406,7 @@
 
     const activityCache = createActivityCache(browserStorage());
     const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
-    let currentCriterion = "added";
+    let currentCriterion = SORT.ADDED;
     let activityTask = null;
     let statusTimer = null;
 
@@ -416,8 +447,8 @@
 
       try {
         const { failures } = await activityTask;
-        if (currentCriterion === "activity") {
-          applyFriendSort(list, friends, "activity", activityCache, collator);
+        if (currentCriterion === SORT.ACTIVITY) {
+          applyFriendSort(list, friends, SORT.ACTIVITY, activityCache, collator);
         }
         setStatus(failures ? `获取完成，${failures} 人失败` : "获取完成", 5_000);
       } finally {
@@ -430,7 +461,7 @@
       currentCriterion = criterion;
       controls.setCurrent(criterion);
       applyFriendSort(list, friends, criterion, activityCache, collator);
-      if (criterion === "activity") void startActivityRefresh();
+      if (criterion === SORT.ACTIVITY) void startActivityRefresh();
     }
 
     const controls = createSortBar(document, selectCriterion);
