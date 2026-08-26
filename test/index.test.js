@@ -91,10 +91,10 @@ test("上次活跃按时间从近到远且其余好友保持网页相对顺序",
     { userId: "newer-b", displayName: "较新乙", originalIndex: 4 },
   ];
   const activities = new Map([
-    ["older", { kind: "active", activityAt: 1_000, fetchedAt: 4_000 }],
+    ["older", { kind: "active", activityAtSeconds: 1, fetchedAt: 4_000 }],
     ["empty", { kind: "empty", fetchedAt: 4_000 }],
-    ["newer-a", { kind: "active", activityAt: 2_000, fetchedAt: 4_000 }],
-    ["newer-b", { kind: "active", activityAt: 2_000, fetchedAt: 4_000 }],
+    ["newer-a", { kind: "active", activityAtSeconds: 2, fetchedAt: 4_000 }],
+    ["newer-b", { kind: "active", activityAtSeconds: 2, fetchedAt: 4_000 }],
   ]);
 
   assert.deepEqual(
@@ -114,10 +114,10 @@ test("仅为缺失或超过二十四小时的活跃缓存安排请求", () => {
     { userId: "missing" },
   ];
   const activities = new Map([
-    ["fresh-active", { kind: "active", activityAt: 10, fetchedAt: now - hour }],
+    ["fresh-active", { kind: "active", activityAtSeconds: 10, fetchedAt: now - hour }],
     ["fresh-empty", { kind: "empty", fetchedAt: now - hour }],
-    ["boundary", { kind: "active", activityAt: 20, fetchedAt: now - 24 * hour }],
-    ["stale", { kind: "active", activityAt: 30, fetchedAt: now - 24 * hour - 1 }],
+    ["boundary", { kind: "active", activityAtSeconds: 20, fetchedAt: now - 24 * hour }],
+    ["stale", { kind: "active", activityAtSeconds: 30, fetchedAt: now - 24 * hour - 1 }],
   ]);
 
   assert.deepEqual(
@@ -126,22 +126,54 @@ test("仅为缺失或超过二十四小时的活跃缓存安排请求", () => {
   );
 });
 
-test("从时间胶囊首条动态读取精确的上次活跃时间", () => {
+test("从时间胶囊首条动态读取活跃时刻", () => {
+  const document = timelineDocumentFromFixture("timeline-active.html");
+
+  assert.deepEqual(
+    sorter.parseTimelineDocument(document, Date.UTC(2026, 7, 26, 6, 37, 34) / 1_000),
+    {
+      kind: "active",
+      activityAtSeconds: Date.UTC(2026, 6, 4, 6, 37) / 1_000,
+    },
+  );
+});
+
+test("省略秒的大单位文案不推测更小单位", () => {
   const document = timelineDocumentFromFixture("timeline-active.html");
 
   assert.deepEqual(sorter.parseTimelineDocument(document), {
     kind: "active",
-    activityAt: new Date(2026, 6, 4, 14, 37).getTime(),
+    activityAtSeconds: Date.UTC(2026, 6, 4, 6, 37) / 1_000,
   });
 });
 
 test("上次活跃时间保留页面提供的秒级精度", () => {
   const document = timelineDocumentFromFixture("timeline-active-seconds.html");
-  const responseTime = new Date(2026, 7, 26, 17, 43, 36).getTime();
+  const responseTime = Date.UTC(2026, 7, 26, 9, 43, 36) / 1_000;
 
   assert.deepEqual(sorter.parseTimelineDocument(document, responseTime), {
     kind: "active",
-    activityAt: new Date(2026, 7, 26, 17, 42, 34).getTime(),
+    activityAtSeconds: Date.UTC(2026, 7, 26, 9, 42, 34) / 1_000,
+  });
+});
+
+test("刚刚按参考时间恢复秒数并保持绝对分钟", () => {
+  const document = timelineDocumentFromFixture("timeline-active-just-now.html");
+  const responseTime = Date.UTC(2026, 7, 26, 9, 42, 34) / 1_000;
+
+  assert.deepEqual(sorter.parseTimelineDocument(document, responseTime), {
+    kind: "active",
+    activityAtSeconds: Date.UTC(2026, 7, 26, 9, 42, 34) / 1_000,
+  });
+});
+
+test("相对秒数与绝对分钟冲突时回退到分钟起点", () => {
+  const document = timelineDocumentFromFixture("timeline-active-seconds.html");
+  const responseTime = Date.UTC(2026, 7, 26, 9, 44, 36) / 1_000;
+
+  assert.deepEqual(sorter.parseTimelineDocument(document, responseTime), {
+    kind: "active",
+    activityAtSeconds: Date.UTC(2026, 7, 26, 9, 42) / 1_000,
   });
 });
 
@@ -203,12 +235,70 @@ test("持久存储不可用时活跃缓存仍在当前页面内工作", () => {
     },
   };
   const cache = sorter.createActivityCache(unavailableStorage);
-  const record = { kind: "active", activityAt: 1_000, fetchedAt: 2_000 };
+  const record = { kind: "active", activityAtSeconds: 1, fetchedAt: 2_000 };
 
   cache.set("sai", record);
 
   assert.equal(cache.get("sai"), record);
   assert.deepEqual([...cache.entries()], [["sai", record]]);
+});
+
+test("升级缓存版本时删除旧版缓存而不迁移分钟级结果", () => {
+  const removedKeys = [];
+  const storage = {
+    getItem(key) {
+      if (key === "bangumi-friend-sorter:activity-cache:v1") {
+        return JSON.stringify({
+          version: 1,
+          records: {
+            sai: { kind: "active", activityAt: 1_000, fetchedAt: 2_000 },
+          },
+        });
+      }
+      return null;
+    },
+    removeItem(key) {
+      removedKeys.push(key);
+    },
+    setItem() {},
+  };
+
+  const cache = sorter.createActivityCache(storage);
+
+  assert.deepEqual([...cache.entries()], []);
+  assert.deepEqual(removedKeys, ["bangumi-friend-sorter:activity-cache:v1"]);
+});
+
+test("请求响应头的时间按整秒传给活跃时间解析并写入秒级缓存", async () => {
+  const document = timelineDocumentFromFixture("timeline-active-seconds.html");
+  const records = [];
+  const responseTime = Date.UTC(2026, 7, 26, 9, 43, 36);
+
+  await sorter.refreshActivities([{ userId: "sai" }], {
+    cache: {
+      persist() {},
+      set(userId, record) {
+        records.push([userId, record]);
+      },
+    },
+    domParser: { parseFromString: () => document },
+    fetchImpl: async () => ({
+      ok: true,
+      headers: { get: (name) => (name === "date" ? new Date(responseTime).toUTCString() : null) },
+      text: async () => "fixture",
+    }),
+    now: () => responseTime,
+    onProgress() {},
+  });
+
+  assert.deepEqual(records, [[
+    "sai",
+    {
+      kind: "active",
+      activityAtSeconds: Date.UTC(2026, 7, 26, 9, 42, 34) / 1_000,
+      fetchedAt: responseTime,
+    },
+  ]]);
 });
 
 test("时间胶囊返回四零四时计入失败且不覆盖缓存", async () => {

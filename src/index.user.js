@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bangumi 好友排序
 // @namespace    https://github.com/imagebuilder1837/bangumi-friend-sorter
-// @version      0.1.0
+// @version      0.1.1
 // @description  为好友/反向好友页增加多种排序方式。
 // @author       imagebuilder1837
 // @match        https://bgm.tv/user/*/friends
@@ -21,7 +21,9 @@
   "use strict";
 
   const CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
-  const CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v1";
+  const SITE_OFFSET_SECONDS = 8 * 60 * 60;
+  const CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v2";
+  const LEGACY_CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v1";
   const SORT = Object.freeze({
     ACTIVITY: "activity",
     ADDED: "added",
@@ -36,7 +38,7 @@
   function isActivityRecord(value) {
     if (!value || !Number.isFinite(value.fetchedAt)) return false;
     if (value.kind === "empty") return true;
-    return value.kind === "active" && Number.isFinite(value.activityAt);
+    return value.kind === "active" && Number.isInteger(value.activityAtSeconds);
   }
 
   function createActivityCache(storage) {
@@ -44,7 +46,7 @@
 
     try {
       const saved = JSON.parse(storage?.getItem(CACHE_STORAGE_KEY) || "null");
-      if (saved?.version === 1 && saved.records && typeof saved.records === "object") {
+      if (saved?.version === 2 && saved.records && typeof saved.records === "object") {
         for (const [userId, record] of Object.entries(saved.records)) {
           if (isActivityRecord(record)) records.set(userId, record);
         }
@@ -53,11 +55,17 @@
       // The in-memory map remains usable when storage is unavailable or corrupt.
     }
 
+    try {
+      storage?.removeItem?.(LEGACY_CACHE_STORAGE_KEY);
+    } catch {
+      // Removing an obsolete cache is best effort.
+    }
+
     function persist() {
       try {
         storage?.setItem(
           CACHE_STORAGE_KEY,
-          JSON.stringify({ version: 1, records: Object.fromEntries(records) }),
+          JSON.stringify({ version: 2, records: Object.fromEntries(records) }),
         );
       } catch {
         // Keep the newly written record in memory for the current page.
@@ -105,7 +113,7 @@
         const rightHasTime = rightActivity?.kind === "active";
 
         if (leftHasTime && rightHasTime) {
-          return rightActivity.activityAt - leftActivity.activityAt ||
+          return rightActivity.activityAtSeconds - leftActivity.activityAtSeconds ||
             left.originalIndex - right.originalIndex;
         }
         if (leftHasTime) return -1;
@@ -124,7 +132,7 @@
     });
   }
 
-  function parseSiteTimestamp(value) {
+  function parseSiteTimestampParts(value) {
     const match = /^(\d{4})-(\d{1,2})-(\d{1,2}) (\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(
       value || "",
     );
@@ -139,27 +147,75 @@
       minuteText,
     ].map(Number);
     const second = secondText === undefined ? 0 : Number(secondText);
-    const parsed = new Date(year, month - 1, day, hour, minute, second);
+    const parsedSeconds =
+      Date.UTC(year, month - 1, day, hour, minute, second) / 1_000 - SITE_OFFSET_SECONDS;
+    const parsed = new Date((parsedSeconds + SITE_OFFSET_SECONDS) * 1_000);
     if (
-      parsed.getFullYear() !== year ||
-      parsed.getMonth() !== month - 1 ||
-      parsed.getDate() !== day ||
-      parsed.getHours() !== hour ||
-      parsed.getMinutes() !== minute ||
-      parsed.getSeconds() !== second
+      parsed.getUTCFullYear() !== year ||
+      parsed.getUTCMonth() !== month - 1 ||
+      parsed.getUTCDate() !== day ||
+      parsed.getUTCHours() !== hour ||
+      parsed.getUTCMinutes() !== minute ||
+      parsed.getUTCSeconds() !== second
     ) {
       return null;
     }
-    return parsed.getTime();
+    return {
+      day,
+      epochSeconds: parsedSeconds,
+      hasExplicitSeconds: secondText !== undefined,
+      hour,
+      minute,
+      month,
+      second,
+      year,
+    };
   }
 
-  function parseRelativeSeconds(value) {
-    const match = /^(?:(\d+)分)?(?:(\d+)秒)前$/.exec(value || "");
-    if (!match) return null;
-    return Number(match[1] || 0) * 60 + Number(match[2]);
+  function parseRelativeTime(value) {
+    const text = (value || "").trim();
+    if (text === "刚刚") return { totalSeconds: 0 };
+    if (!text.endsWith("前")) return null;
+
+    const body = text.slice(0, -1);
+    const unitRanks = { 年: 5, 月: 4, 天: 3, 小时: 2, 分: 1, 秒: 0 };
+    const tokens = [];
+    const tokenPattern = /(\d+)(年|月|天|小时|分|秒)/g;
+    let cursor = 0;
+    let match;
+    while ((match = tokenPattern.exec(body))) {
+      if (match.index !== cursor) return null;
+      tokens.push({
+        amount: Number(match[1]),
+        rank: unitRanks[match[2]],
+        unit: match[2],
+      });
+      cursor = tokenPattern.lastIndex;
+    }
+    if (cursor !== body.length || tokens.length < 1 || tokens.length > 2) return null;
+    if (tokens.length === 2 && tokens[1].rank !== tokens[0].rank - 1) return null;
+
+    const totalSeconds = tokens.every(({ unit }) => unit === "分" || unit === "秒")
+      ? tokens.reduce(
+          (total, token) => total + token.amount * (token.unit === "分" ? 60 : 1),
+          0,
+        )
+      : null;
+    return { totalSeconds };
   }
 
-  function parseTimelineDocument(document, referenceAt) {
+  function matchesSiteMinute(epochSeconds, timestampParts) {
+    const siteDate = new Date((epochSeconds + SITE_OFFSET_SECONDS) * 1_000);
+    return (
+      siteDate.getUTCFullYear() === timestampParts.year &&
+      siteDate.getUTCMonth() === timestampParts.month - 1 &&
+      siteDate.getUTCDate() === timestampParts.day &&
+      siteDate.getUTCHours() === timestampParts.hour &&
+      siteDate.getUTCMinutes() === timestampParts.minute
+    );
+  }
+
+  function parseTimelineDocument(document, referenceAtSeconds) {
     const tabs = document.querySelector("#timelineTabs");
     const timeline = document.querySelector("#tmlContent > #timeline");
     if (!tabs || !timeline) return { kind: "invalid" };
@@ -171,21 +227,22 @@
 
     const timestampNode = firstItem?.querySelector(".post_actions .titleTip[title]");
     const timestamp = timestampNode?.getAttribute("title");
-    let activityAt = parseSiteTimestamp(timestamp);
+    const timestampParts = parseSiteTimestampParts(timestamp);
+    let activityAtSeconds = timestampParts?.epochSeconds ?? null;
 
     if (
-      activityAt !== null &&
-      !/:\d{2}:\d{2}$/.test(timestamp) &&
-      Number.isFinite(referenceAt)
+      activityAtSeconds !== null &&
+      !timestampParts.hasExplicitSeconds &&
+      Number.isFinite(referenceAtSeconds)
     ) {
-      const relativeSeconds = parseRelativeSeconds(timestampNode.textContent.trim());
-      if (relativeSeconds !== null) {
-        const inferred = new Date(referenceAt - relativeSeconds * 1_000);
-        activityAt += inferred.getUTCSeconds() * 1_000;
+      const relative = parseRelativeTime(timestampNode.textContent);
+      if (relative?.totalSeconds !== null && relative?.totalSeconds !== undefined) {
+        const inferred = Math.trunc(referenceAtSeconds) - relative.totalSeconds;
+        if (matchesSiteMinute(inferred, timestampParts)) activityAtSeconds = inferred;
       }
     }
 
-    return activityAt === null ? { kind: "invalid" } : { kind: "active", activityAt };
+    return activityAtSeconds === null ? { kind: "invalid" } : { kind: "active", activityAtSeconds };
   }
 
   function needsLargeRequestConfirmation(count) {
@@ -334,7 +391,9 @@
       const document = domParser.parseFromString(html, "text/html");
       const parsed = parseTimelineDocument(
         document,
-        Number.isFinite(responseAt) ? responseAt : fetchedAt,
+        Math.trunc(
+          (Number.isFinite(responseAt) ? responseAt : fetchedAt) / 1_000,
+        ),
       );
       if (parsed.kind === "invalid") return { kind: "parse-error" };
       return { kind: "success", record: { ...parsed, fetchedAt } };
