@@ -132,6 +132,10 @@
     });
   }
 
+  function siteDateFromEpochSeconds(epochSeconds) {
+    return new Date((epochSeconds + SITE_OFFSET_SECONDS) * 1_000);
+  }
+
   function parseSiteTimestampParts(value) {
     const match = /^(\d{4})-(\d{1,2})-(\d{1,2}) (\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(
       value || "",
@@ -149,7 +153,7 @@
     const second = secondText === undefined ? 0 : Number(secondText);
     const parsedSeconds =
       Date.UTC(year, month - 1, day, hour, minute, second) / 1_000 - SITE_OFFSET_SECONDS;
-    const parsed = new Date((parsedSeconds + SITE_OFFSET_SECONDS) * 1_000);
+    const parsed = siteDateFromEpochSeconds(parsedSeconds);
     if (
       parsed.getUTCFullYear() !== year ||
       parsed.getUTCMonth() !== month - 1 ||
@@ -195,7 +199,10 @@
     if (cursor !== body.length || tokens.length < 1 || tokens.length > 2) return null;
     if (tokens.length === 2 && tokens[1].rank !== tokens[0].rank - 1) return null;
 
-    const totalSeconds = tokens.every(({ unit }) => unit === "分" || unit === "秒")
+    const hasExplicitSeconds = tokens.some(({ unit }) => unit === "秒");
+    const totalSeconds = hasExplicitSeconds && tokens.every(
+      ({ unit }) => unit === "分" || unit === "秒",
+    )
       ? tokens.reduce(
           (total, token) => total + token.amount * (token.unit === "分" ? 60 : 1),
           0,
@@ -205,7 +212,7 @@
   }
 
   function matchesSiteMinute(epochSeconds, timestampParts) {
-    const siteDate = new Date((epochSeconds + SITE_OFFSET_SECONDS) * 1_000);
+    const siteDate = siteDateFromEpochSeconds(epochSeconds);
     return (
       siteDate.getUTCFullYear() === timestampParts.year &&
       siteDate.getUTCMonth() === timestampParts.month - 1 &&

@@ -157,6 +157,16 @@ test("上次活跃时间保留页面提供的秒级精度", () => {
   });
 });
 
+test("只有分钟的相对文案不推测秒数", () => {
+  const document = timelineDocumentFromFixture("timeline-active-minutes-only.html");
+  const responseTime = Date.UTC(2026, 7, 26, 9, 43, 34) / 1_000;
+
+  assert.deepEqual(sorter.parseTimelineDocument(document, responseTime), {
+    kind: "active",
+    activityAtSeconds: Date.UTC(2026, 7, 26, 9, 42) / 1_000,
+  });
+});
+
 test("刚刚按参考时间恢复秒数并保持绝对分钟", () => {
   const document = timelineDocumentFromFixture("timeline-active-just-now.html");
   const responseTime = Date.UTC(2026, 7, 26, 9, 42, 34) / 1_000;
