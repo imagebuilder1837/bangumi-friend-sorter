@@ -346,7 +346,7 @@
       }
 
       const displayName = anchor.textContent.trim();
-      if (!userId || !displayName) return null;
+      if (!userId) return null;
       return { displayName, element, originalIndex, userId };
     });
 
@@ -646,6 +646,7 @@
   const core = {
     createActivityCache,
     findFriendsNeedingActivity,
+    initialize,
     needsLargeRequestConfirmation,
     nextBatchState,
     nextActivitySelectionAction,

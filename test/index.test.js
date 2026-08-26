@@ -5,6 +5,93 @@ const path = require("node:path");
 
 const sorter = require("../src/index.user.js");
 
+function friendPageWith(entries) {
+  class Element {
+    constructor(tagName) {
+      this.attributes = new Map();
+      this.beforeNodes = [];
+      this.children = [];
+      this.dataset = {};
+      this.tagName = tagName;
+      this.textContent = "";
+    }
+
+    addEventListener() {}
+
+    append(...children) {
+      this.children.push(...children);
+    }
+
+    before(...nodes) {
+      this.beforeNodes.push(...nodes);
+    }
+
+    getAttribute(name) {
+      return this.attributes.get(name) ?? null;
+    }
+
+    removeAttribute(name) {
+      this.attributes.delete(name);
+    }
+
+    setAttribute(name, value) {
+      this.attributes.set(name, value);
+    }
+  }
+
+  const list = new Element("ul");
+  list.children = entries.map(({ href, name }) => {
+    const anchor = new Element("a");
+    anchor.setAttribute("href", href);
+    anchor.textContent = name;
+    const item = new Element("li");
+    item.querySelector = (selector) => {
+      assert.equal(selector, 'a.avatar[href*="/user/"]');
+      return anchor;
+    };
+    return item;
+  });
+
+  const head = new Element("head");
+  const document = {
+    createElement: (tagName) => new Element(tagName),
+    head,
+    querySelector(selector) {
+      assert.equal(selector, "#memberUserList");
+      return list;
+    },
+  };
+  return { document, list };
+}
+
+test("纯空白展示名称不会阻止排序栏初始化", () => {
+  const page = friendPageWith([
+    { href: "/user/normal", name: "正常好友" },
+    { href: "/user/ato", name: "\u3000" },
+  ]);
+  const previousDocument = global.document;
+  const previousWindow = global.window;
+  global.document = page.document;
+  global.window = {
+    localStorage: {
+      getItem: () => null,
+      removeItem() {},
+      setItem() {},
+    },
+    location: { href: "https://bgm.tv/user/sai/friends" },
+  };
+
+  try {
+    sorter.initialize();
+  } finally {
+    global.document = previousDocument;
+    global.window = previousWindow;
+  }
+
+  assert.equal(page.list.beforeNodes.length, 1);
+  assert.equal(page.list.beforeNodes[0].dataset.friendSorter, "");
+});
+
 function timelineDocumentFromFixture(filename) {
   const html = fs.readFileSync(path.join(__dirname, "fixtures", filename), "utf8");
   const hasTimeline = /id=["']timeline["']/.test(html);
