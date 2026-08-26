@@ -12,9 +12,12 @@ function timelineDocumentFromFixture(filename) {
   const hasTimelineContent = /id=["']tmlContent["'][^>]*>\s*<div id=["']timeline["']/.test(
     html,
   );
-  const hasItem = /class=["'][^"']*\btml_item\b[^"']*["']/.test(html);
-  const timestamp = html.match(
-    /title=["']([^"']+)["'][^>]*class=["'][^"']*\btitleTip\b[^>]*>([^<]*)</,
+  const item = html.match(
+    /<li[^>]*class=["'][^"']*\btml_item\b[^"']*["'][^>]*>([\s\S]*?)<\/li>/,
+  );
+  const hasItem = item !== null;
+  const timestamp = item?.[1].match(
+    /<div[^>]*class=["'][^"']*\bpost_actions\b[^"']*["'][^>]*>[\s\S]*?<span[^>]*title=["']([^"']+)["'][^>]*class=["'][^"']*\btitleTip\b[^"']*["'][^>]*>([^<]*)</,
   );
   const timestampNode = timestamp
     ? {
