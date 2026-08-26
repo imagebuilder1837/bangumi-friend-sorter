@@ -577,20 +577,14 @@
         return null;
       }
 
-      setStatus(
-        ACTIVITY_STATUS.FETCHING,
-        `正在获取 0/${pending.length}`,
-      );
+      setStatus(ACTIVITY_STATUS.FETCHING, `正在获取 0/${pending.length}`);
       activityTask = refreshActivities(pending, {
         cache: activityCache,
         domParser: new DOMParser(),
         fetchImpl: window.fetch.bind(window),
         now: Date.now,
         onProgress(completed, total) {
-          setStatus(
-            ACTIVITY_STATUS.FETCHING,
-            `正在获取 ${completed}/${total}`,
-          );
+          setStatus(ACTIVITY_STATUS.FETCHING, `正在获取 ${completed}/${total}`);
         },
       });
 
@@ -632,7 +626,7 @@
       if (action.kind === "arm") {
         setStatus(
           ACTIVITY_STATUS.ARMED,
-          '5 秒内再次点击“上次活跃”以全量刷新',
+          "5 秒内再次点击“上次活跃”以全量刷新",
           5_000,
         );
       } else if (action.refresh === "incremental") {
