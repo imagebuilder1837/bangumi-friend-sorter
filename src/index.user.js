@@ -29,6 +29,12 @@
     ADDED: "added",
     NAME: "name",
   });
+  const ACTIVITY_STATUS = Object.freeze({
+    ARMED: "armed",
+    COMPLETED: "completed",
+    FETCHING: "fetching",
+    IDLE: "idle",
+  });
   const SORT_CHOICES = [
     [SORT.ADDED, "加好友时间"],
     [SORT.NAME, "名称"],
@@ -46,7 +52,11 @@
 
     try {
       const saved = JSON.parse(storage?.getItem(CACHE_STORAGE_KEY) || "null");
-      if (saved?.version === 2 && saved.records && typeof saved.records === "object") {
+      if (
+        saved?.version === 2 &&
+        saved.records &&
+        typeof saved.records === "object"
+      ) {
         for (const [userId, record] of Object.entries(saved.records)) {
           if (isActivityRecord(record)) records.set(userId, record);
         }
@@ -88,7 +98,10 @@
     friends,
     criterion,
     activityByUser = new Map(),
-    collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" }),
+    collator = new Intl.Collator(undefined, {
+      numeric: true,
+      sensitivity: "base",
+    }),
   ) {
     const sorted = [...friends];
 
@@ -113,8 +126,10 @@
         const rightHasTime = rightActivity?.kind === "active";
 
         if (leftHasTime && rightHasTime) {
-          return rightActivity.activityAtSeconds - leftActivity.activityAtSeconds ||
-            left.originalIndex - right.originalIndex;
+          return (
+            rightActivity.activityAtSeconds - leftActivity.activityAtSeconds ||
+            left.originalIndex - right.originalIndex
+          );
         }
         if (leftHasTime) return -1;
         if (rightHasTime) return 1;
@@ -132,17 +147,41 @@
     });
   }
 
+  function nextActivitySelectionAction(
+    currentCriterion,
+    requestedCriterion,
+    statusKind,
+  ) {
+    if (requestedCriterion !== SORT.ACTIVITY) {
+      return statusKind === ACTIVITY_STATUS.ARMED
+        ? { kind: "sort", clearPrompt: true }
+        : { kind: "sort" };
+    }
+    if (currentCriterion !== SORT.ACTIVITY) {
+      return statusKind === ACTIVITY_STATUS.IDLE
+        ? { kind: "sort", refresh: "incremental" }
+        : { kind: "sort" };
+    }
+    if (statusKind === ACTIVITY_STATUS.IDLE) return { kind: "arm" };
+    if (statusKind === ACTIVITY_STATUS.ARMED) {
+      return { kind: "refresh", mode: "full" };
+    }
+    return { kind: "ignore" };
+  }
+
   function siteDateFromEpochSeconds(epochSeconds) {
     return new Date((epochSeconds + SITE_OFFSET_SECONDS) * 1_000);
   }
 
   function parseSiteTimestampParts(value) {
-    const match = /^(\d{4})-(\d{1,2})-(\d{1,2}) (\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(
-      value || "",
-    );
+    const match =
+      /^(\d{4})-(\d{1,2})-(\d{1,2}) (\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(
+        value || "",
+      );
     if (!match) return null;
 
-    const [, yearText, monthText, dayText, hourText, minuteText, secondText] = match;
+    const [, yearText, monthText, dayText, hourText, minuteText, secondText] =
+      match;
     const [year, month, day, hour, minute] = [
       yearText,
       monthText,
@@ -152,7 +191,8 @@
     ].map(Number);
     const second = secondText === undefined ? 0 : Number(secondText);
     const parsedSeconds =
-      Date.UTC(year, month - 1, day, hour, minute, second) / 1_000 - SITE_OFFSET_SECONDS;
+      Date.UTC(year, month - 1, day, hour, minute, second) / 1_000 -
+      SITE_OFFSET_SECONDS;
     const parsed = siteDateFromEpochSeconds(parsedSeconds);
     if (
       parsed.getUTCFullYear() !== year ||
@@ -196,18 +236,21 @@
       });
       cursor = tokenPattern.lastIndex;
     }
-    if (cursor !== body.length || tokens.length < 1 || tokens.length > 2) return null;
-    if (tokens.length === 2 && tokens[1].rank !== tokens[0].rank - 1) return null;
+    if (cursor !== body.length || tokens.length < 1 || tokens.length > 2)
+      return null;
+    if (tokens.length === 2 && tokens[1].rank !== tokens[0].rank - 1)
+      return null;
 
     const hasExplicitSeconds = tokens.some(({ unit }) => unit === "秒");
-    const totalSeconds = hasExplicitSeconds && tokens.every(
-      ({ unit }) => unit === "分" || unit === "秒",
-    )
-      ? tokens.reduce(
-          (total, token) => total + token.amount * (token.unit === "分" ? 60 : 1),
-          0,
-        )
-      : null;
+    const totalSeconds =
+      hasExplicitSeconds &&
+      tokens.every(({ unit }) => unit === "分" || unit === "秒")
+        ? tokens.reduce(
+            (total, token) =>
+              total + token.amount * (token.unit === "分" ? 60 : 1),
+            0,
+          )
+        : null;
     return { totalSeconds };
   }
 
@@ -229,10 +272,14 @@
 
     const firstItem = timeline?.querySelector(".tml_item");
     if (!firstItem) {
-      return timeline.textContent.trim() === "" ? { kind: "empty" } : { kind: "invalid" };
+      return timeline.textContent.trim() === ""
+        ? { kind: "empty" }
+        : { kind: "invalid" };
     }
 
-    const timestampNode = firstItem?.querySelector(".post_actions .titleTip[title]");
+    const timestampNode = firstItem?.querySelector(
+      ".post_actions .titleTip[title]",
+    );
     const timestamp = timestampNode?.getAttribute("title");
     const timestampParts = parseSiteTimestampParts(timestamp);
     let activityAtSeconds = timestampParts?.epochSeconds ?? null;
@@ -243,13 +290,19 @@
       Number.isFinite(referenceAtSeconds)
     ) {
       const relative = parseRelativeTime(timestampNode.textContent);
-      if (relative?.totalSeconds !== null && relative?.totalSeconds !== undefined) {
+      if (
+        relative?.totalSeconds !== null &&
+        relative?.totalSeconds !== undefined
+      ) {
         const inferred = Math.trunc(referenceAtSeconds) - relative.totalSeconds;
-        if (matchesSiteMinute(inferred, timestampParts)) activityAtSeconds = inferred;
+        if (matchesSiteMinute(inferred, timestampParts))
+          activityAtSeconds = inferred;
       }
     }
 
-    return activityAtSeconds === null ? { kind: "invalid" } : { kind: "active", activityAtSeconds };
+    return activityAtSeconds === null
+      ? { kind: "invalid" }
+      : { kind: "active", activityAtSeconds };
   }
 
   function needsLargeRequestConfirmation(count) {
@@ -282,7 +335,10 @@
 
       let userId;
       try {
-        const pathname = new URL(anchor.getAttribute("href"), window.location.href).pathname;
+        const pathname = new URL(
+          anchor.getAttribute("href"),
+          window.location.href,
+        ).pathname;
         const match = /^\/user\/([^/]+)\/?$/.exec(pathname);
         userId = match ? decodeURIComponent(match[1]) : null;
       } catch {
@@ -298,7 +354,12 @@
   }
 
   function applyFriendSort(list, friends, criterion, activityByUser, collator) {
-    for (const friend of sortFriends(friends, criterion, activityByUser, collator)) {
+    for (const friend of sortFriends(
+      friends,
+      criterion,
+      activityByUser,
+      collator,
+    )) {
       list.append(friend.element);
     }
   }
@@ -386,10 +447,13 @@
     const timeout = setTimeout(() => controller.abort(), 15_000);
 
     try {
-      const response = await fetchImpl(`/user/${encodeURIComponent(friend.userId)}/timeline`, {
-        credentials: "same-origin",
-        signal: controller.signal,
-      });
+      const response = await fetchImpl(
+        `/user/${encodeURIComponent(friend.userId)}/timeline`,
+        {
+          credentials: "same-origin",
+          signal: controller.signal,
+        },
+      );
       if (!response.ok) return { kind: "http-error", status: response.status };
 
       const html = await response.text();
@@ -471,25 +535,38 @@
     if (friends.length !== list.children.length) return;
 
     const activityCache = createActivityCache(browserStorage());
-    const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+    const collator = new Intl.Collator(undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
     let currentCriterion = SORT.ADDED;
     let activityTask = null;
     let statusTimer = null;
+    let statusKind = ACTIVITY_STATUS.IDLE;
 
-    function setStatus(message, clearAfterMs = 0) {
+    function clearStatus() {
       clearTimeout(statusTimer);
+      statusTimer = null;
+      statusKind = ACTIVITY_STATUS.IDLE;
+      controls.status.textContent = "";
+    }
+
+    function setStatus(kind, message, clearAfterMs = 0) {
+      clearStatus();
+      statusKind = kind;
       controls.status.textContent = message;
       if (clearAfterMs > 0) {
-        statusTimer = setTimeout(() => {
-          controls.status.textContent = "";
-        }, clearAfterMs);
+        statusTimer = setTimeout(clearStatus, clearAfterMs);
       }
     }
 
-    async function startActivityRefresh() {
+    async function startActivityRefresh(mode = "incremental") {
       if (activityTask) return activityTask;
 
-      const pending = findFriendsNeedingActivity(friends, activityCache, Date.now());
+      const pending =
+        mode === "full"
+          ? friends
+          : findFriendsNeedingActivity(friends, activityCache, Date.now());
       if (pending.length === 0) return null;
       if (
         needsLargeRequestConfirmation(pending.length) &&
@@ -500,23 +577,39 @@
         return null;
       }
 
-      setStatus(`正在获取 0/${pending.length}`);
+      setStatus(
+        ACTIVITY_STATUS.FETCHING,
+        `正在获取 0/${pending.length}`,
+      );
       activityTask = refreshActivities(pending, {
         cache: activityCache,
         domParser: new DOMParser(),
         fetchImpl: window.fetch.bind(window),
         now: Date.now,
         onProgress(completed, total) {
-          setStatus(`正在获取 ${completed}/${total}`);
+          setStatus(
+            ACTIVITY_STATUS.FETCHING,
+            `正在获取 ${completed}/${total}`,
+          );
         },
       });
 
       try {
         const { failures } = await activityTask;
         if (currentCriterion === SORT.ACTIVITY) {
-          applyFriendSort(list, friends, SORT.ACTIVITY, activityCache, collator);
+          applyFriendSort(
+            list,
+            friends,
+            SORT.ACTIVITY,
+            activityCache,
+            collator,
+          );
         }
-        setStatus(failures ? `获取完成，${failures} 人失败` : "获取完成", 5_000);
+        setStatus(
+          ACTIVITY_STATUS.COMPLETED,
+          failures ? `获取完成，${failures} 人失败` : "获取完成",
+          5_000,
+        );
       } finally {
         activityTask = null;
       }
@@ -524,10 +617,30 @@
     }
 
     function selectCriterion(criterion) {
+      const action = nextActivitySelectionAction(
+        currentCriterion,
+        criterion,
+        statusKind,
+      );
+      if (action.kind === "ignore") return;
+
       currentCriterion = criterion;
       controls.setCurrent(criterion);
       applyFriendSort(list, friends, criterion, activityCache, collator);
-      if (criterion === SORT.ACTIVITY) void startActivityRefresh();
+
+      if (action.clearPrompt) clearStatus();
+      if (action.kind === "arm") {
+        setStatus(
+          ACTIVITY_STATUS.ARMED,
+          '5 秒内再次点击“上次活跃”以全量刷新',
+          5_000,
+        );
+      } else if (action.refresh === "incremental") {
+        void startActivityRefresh("incremental");
+      } else if (action.kind === "refresh" && action.mode === "full") {
+        clearStatus();
+        void startActivityRefresh("full");
+      }
     }
 
     const controls = createSortBar(document, selectCriterion);
@@ -541,6 +654,7 @@
     findFriendsNeedingActivity,
     needsLargeRequestConfirmation,
     nextBatchState,
+    nextActivitySelectionAction,
     parseTimelineDocument,
     refreshActivities,
     sortFriends,

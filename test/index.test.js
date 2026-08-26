@@ -126,6 +126,41 @@ test("仅为缺失或超过二十四小时的活跃缓存安排请求", () => {
   );
 });
 
+test("上次活跃点击按排序切换、待命和刷新状态分流", () => {
+  assert.deepEqual(
+    sorter.nextActivitySelectionAction("name", "activity", "idle"),
+    { kind: "sort", refresh: "incremental" },
+  );
+  assert.deepEqual(
+    sorter.nextActivitySelectionAction("activity", "activity", "idle"),
+    { kind: "arm" },
+  );
+  assert.deepEqual(
+    sorter.nextActivitySelectionAction("activity", "activity", "armed"),
+    { kind: "refresh", mode: "full" },
+  );
+  assert.deepEqual(
+    sorter.nextActivitySelectionAction("activity", "activity", "fetching"),
+    { kind: "ignore" },
+  );
+  assert.deepEqual(
+    sorter.nextActivitySelectionAction("activity", "activity", "completed"),
+    { kind: "ignore" },
+  );
+  assert.deepEqual(
+    sorter.nextActivitySelectionAction("name", "activity", "fetching"),
+    { kind: "sort" },
+  );
+  assert.deepEqual(
+    sorter.nextActivitySelectionAction("name", "activity", "completed"),
+    { kind: "sort" },
+  );
+  assert.deepEqual(
+    sorter.nextActivitySelectionAction("activity", "name", "armed"),
+    { kind: "sort", clearPrompt: true },
+  );
+});
+
 test("从时间胶囊首条动态读取活跃时刻", () => {
   const document = timelineDocumentFromFixture("timeline-active.html");
 
