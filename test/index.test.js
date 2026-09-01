@@ -144,13 +144,6 @@ function dropdownItems(page, label) {
   return mainSortControl(page, label).children[1].children;
 }
 
-async function waitUntil(predicate, attempts = 20) {
-  for (let attempt = 0; attempt < attempts && !predicate(); attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  assert.equal(predicate(), true);
-}
-
 test("纯空白展示名称不会阻止排序栏初始化", () => {
   const page = friendPageWith([
     { href: "/user/normal", name: "正常好友" },
@@ -180,14 +173,12 @@ test("纯空白展示名称不会阻止排序栏初始化", () => {
 });
 
 function timelineDocumentFromFixture(filename) {
-  const html = fs.readFileSync(
-    path.join(__dirname, "fixtures", filename),
-    "utf8",
-  );
+  const html = fs.readFileSync(path.join(__dirname, "fixtures", filename), "utf8");
   const hasTimeline = /id=["']timeline["']/.test(html);
   const hasTimelineTabs = /id=["']timelineTabs["']/.test(html);
-  const hasTimelineContent =
-    /id=["']tmlContent["'][^>]*>\s*<div id=["']timeline["']/.test(html);
+  const hasTimelineContent = /id=["']tmlContent["'][^>]*>\s*<div id=["']timeline["']/.test(
+    html,
+  );
   const item = html.match(
     /<li[^>]*class=["'][^"']*\btml_item\b[^"']*["'][^>]*>([\s\S]*?)<\/li>/,
   );
@@ -239,21 +230,21 @@ test("网页默认顺序默认从旧到新，也支持从新到旧", () => {
   ];
 
   assert.deepEqual(
-    sorter
-      .sortFriends(friends, { criterion: "added" })
-      .map(({ userIdentifier }) => userIdentifier),
+    sorter.sortFriends(friends, { criterion: "added" }).map(
+      ({ userIdentifier }) => userIdentifier,
+    ),
     ["first", "second", "third"],
   );
   assert.deepEqual(
-    sorter
-      .sortFriends(friends, { criterion: "added", direction: "asc" })
-      .map(({ userIdentifier }) => userIdentifier),
+    sorter.sortFriends(friends, { criterion: "added", direction: "asc" }).map(
+      ({ userIdentifier }) => userIdentifier,
+    ),
     ["first", "second", "third"],
   );
   assert.deepEqual(
-    sorter
-      .sortFriends(friends, { criterion: "added", direction: "desc" })
-      .map(({ userIdentifier }) => userIdentifier),
+    sorter.sortFriends(friends, { criterion: "added", direction: "desc" }).map(
+      ({ userIdentifier }) => userIdentifier,
+    ),
     ["third", "second", "first"],
   );
 });
@@ -264,21 +255,18 @@ test("名称排序支持升序和降序，同名随方向比较用户标识", ()
     { userIdentifier: "b", displayName: "User2", originalIndex: 1 },
     { userIdentifier: "a", displayName: "user2", originalIndex: 2 },
   ];
-  const collator = new Intl.Collator("en", {
-    numeric: true,
-    sensitivity: "base",
-  });
+  const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 
   assert.deepEqual(
-    sorter
-      .sortFriends(friends, { criterion: "name", collator })
-      .map(({ userIdentifier }) => userIdentifier),
+    sorter.sortFriends(friends, { criterion: "name", collator }).map(
+      ({ userIdentifier }) => userIdentifier,
+    ),
     ["a", "b", "z"],
   );
   assert.deepEqual(
-    sorter
-      .sortFriends(friends, { criterion: "name", collator, direction: "desc" })
-      .map(({ userIdentifier }) => userIdentifier),
+    sorter.sortFriends(friends, { criterion: "name", collator, direction: "desc" }).map(
+      ({ userIdentifier }) => userIdentifier,
+    ),
     ["z", "b", "a"],
   );
 });
@@ -299,19 +287,19 @@ test("上次活跃支持从新到旧和从旧到新，未知活跃时间始终�
   ]);
 
   assert.deepEqual(
-    sorter
-      .sortFriends(friends, { criterion: "activity", sortData: activities })
-      .map(({ userIdentifier }) => userIdentifier),
+    sorter.sortFriends(friends, { criterion: "activity", sortData: activities }).map(
+      ({ userIdentifier }) => userIdentifier,
+    ),
     ["newer-a", "newer-b", "older", "unknown", "empty"],
   );
   assert.deepEqual(
-    sorter
-      .sortFriends(friends, {
-        criterion: "activity",
-        sortData: activities,
-        direction: "asc",
-      })
-      .map(({ userIdentifier }) => userIdentifier),
+    sorter.sortFriends(friends, {
+      criterion: "activity",
+      sortData: activities,
+      direction: "asc",
+    }).map(
+      ({ userIdentifier }) => userIdentifier,
+    ),
     ["older", "newer-a", "newer-b", "unknown", "empty"],
   );
 });
@@ -346,25 +334,14 @@ test("仅为缺失或超过二十四小时的活跃缓存安排请求", () => {
     { userIdentifier: "missing" },
   ];
   const activities = new Map([
-    [
-      "fresh-active",
-      { kind: "active", activityAtSeconds: 10, fetchedAt: now - hour },
-    ],
+    ["fresh-active", { kind: "active", activityAtSeconds: 10, fetchedAt: now - hour }],
     ["fresh-empty", { kind: "empty", fetchedAt: now - hour }],
-    [
-      "boundary",
-      { kind: "active", activityAtSeconds: 20, fetchedAt: now - 24 * hour },
-    ],
-    [
-      "stale",
-      { kind: "active", activityAtSeconds: 30, fetchedAt: now - 24 * hour - 1 },
-    ],
+    ["boundary", { kind: "active", activityAtSeconds: 20, fetchedAt: now - 24 * hour }],
+    ["stale", { kind: "active", activityAtSeconds: 30, fetchedAt: now - 24 * hour - 1 }],
   ]);
 
   assert.deepEqual(
-    sorter
-      .findFriendsNeedingActivity(friends, activities, now)
-      .map(({ userIdentifier }) => userIdentifier),
+    sorter.findFriendsNeedingActivity(friends, activities, now).map(({ userIdentifier }) => userIdentifier),
     ["stale", "missing"],
   );
 });
@@ -393,16 +370,17 @@ test("排序栏分左右两组按钮并更新方向文案", () => {
     directionOptions.className,
     "bangumi-friend-sorter-direction-options",
   );
-  assert.deepEqual(
-    sortButtons.map(({ textContent }) => textContent),
-    ["加好友时间", "名称", "上次活跃"],
-  );
+  assert.deepEqual(sortButtons.map(({ textContent }) => textContent), [
+    "加好友时间",
+    "名称",
+    "上次活跃",
+  ]);
 
   controls.setCurrent("name", "desc");
-  assert.deepEqual(
-    directionButtons.map(({ textContent }) => textContent),
-    ["升序", "降序"],
-  );
+  assert.deepEqual(directionButtons.map(({ textContent }) => textContent), [
+    "升序",
+    "降序",
+  ]);
   assert.equal(sortButtons[1].getAttribute("aria-current"), "true");
   assert.equal(directionButtons[1].getAttribute("aria-current"), "true");
   directionButtons[0].click();
@@ -411,10 +389,10 @@ test("排序栏分左右两组按钮并更新方向文案", () => {
   assert.deepEqual(criteria, ["activity"]);
 
   controls.setCurrent("activity", "asc");
-  assert.deepEqual(
-    directionButtons.map(({ textContent }) => textContent),
-    ["从旧到新", "从新到旧"],
-  );
+  assert.deepEqual(directionButtons.map(({ textContent }) => textContent), [
+    "从旧到新",
+    "从新到旧",
+  ]);
   assert.equal(directionButtons[0].getAttribute("aria-current"), "true");
 });
 
@@ -445,10 +423,9 @@ test("页面初始化提供五个主排序目标、全部子项和各自主按�
   );
 
   assert.deepEqual(
-    [
-      ...directButtons.map(({ textContent }) => textContent),
-      ...dropdowns.map((dropdown) => dropdown.children[0].textContent),
-    ],
+    [...directButtons.map(({ textContent }) => textContent), ...dropdowns.map(
+      (dropdown) => dropdown.children[0].textContent,
+    )],
     ["加好友时间", "名称", "上次活跃", "喜好契合", "完成条目数"],
   );
   assert.deepEqual(
@@ -460,24 +437,21 @@ test("页面初始化提供五个主排序目标、全部子项和各自主按�
     ["全部", "动画", "书籍", "音乐", "游戏", "三次元"],
   );
   assert.equal(directButtons[0].getAttribute("aria-current"), "true");
-  assert.deepEqual(
-    directionButtons.map(({ textContent }) => textContent),
-    ["从旧到新", "从新到旧"],
-  );
+  assert.deepEqual(directionButtons.map(({ textContent }) => textContent), [
+    "从旧到新",
+    "从新到旧",
+  ]);
 
   for (const control of [directButtons[1], directButtons[2], ...dropdowns]) {
     const button = control.tagName === "button" ? control : control.children[0];
     button.click();
-    assert.deepEqual(
-      directionButtons.map(({ textContent }) => textContent),
-      [
-        ...(button.textContent === "上次活跃"
-          ? ["从旧到新", "从新到旧"]
-          : button.textContent === "名称"
-            ? ["升序", "降序"]
-            : ["从低到高", "从高到低"]),
-      ],
-    );
+    assert.deepEqual(directionButtons.map(({ textContent }) => textContent), [
+      ...(button.textContent === "上次活跃"
+        ? ["从旧到新", "从新到旧"]
+        : button.textContent === "名称"
+          ? ["升序", "降序"]
+          : ["从低到高", "从高到低"]),
+    ]);
     directionButtons[0].click();
     directButtons[0].click();
     button.click();
@@ -523,36 +497,41 @@ test("页面交互按排序维度记忆方向并仅重排当前缓存", () => {
   );
 
   sortButtons[1].click();
-  assert.deepEqual(
-    page.list.children.map((item) => item.textContent),
-    ["Ada", "Bob", "Zed"],
-  );
+  assert.deepEqual(page.list.children.map((item) => item.textContent), [
+    "Ada",
+    "Bob",
+    "Zed",
+  ]);
   directionButtons[1].click();
-  assert.deepEqual(
-    page.list.children.map((item) => item.textContent),
-    ["Zed", "Bob", "Ada"],
-  );
+  assert.deepEqual(page.list.children.map((item) => item.textContent), [
+    "Zed",
+    "Bob",
+    "Ada",
+  ]);
   sortButtons[0].click();
-  assert.deepEqual(
-    directionButtons.map(({ textContent }) => textContent),
-    ["从旧到新", "从新到旧"],
-  );
+  assert.deepEqual(directionButtons.map(({ textContent }) => textContent), [
+    "从旧到新",
+    "从新到旧",
+  ]);
   assert.equal(directionButtons[0].getAttribute("aria-current"), "true");
-  assert.deepEqual(
-    page.list.children.map((item) => item.textContent),
-    ["Zed", "Bob", "Ada"],
-  );
+  assert.deepEqual(page.list.children.map((item) => item.textContent), [
+    "Zed",
+    "Bob",
+    "Ada",
+  ]);
   directionButtons[1].click();
-  assert.deepEqual(
-    page.list.children.map((item) => item.textContent),
-    ["Ada", "Bob", "Zed"],
-  );
+  assert.deepEqual(page.list.children.map((item) => item.textContent), [
+    "Ada",
+    "Bob",
+    "Zed",
+  ]);
   sortButtons[1].click();
   assert.equal(directionButtons[1].getAttribute("aria-current"), "true");
-  assert.deepEqual(
-    page.list.children.map((item) => item.textContent),
-    ["Zed", "Bob", "Ada"],
-  );
+  assert.deepEqual(page.list.children.map((item) => item.textContent), [
+    "Zed",
+    "Bob",
+    "Ada",
+  ]);
 });
 
 test("活跃刷新完成后沿用刷新期间选择的方向", async () => {
@@ -612,10 +591,10 @@ test("活跃刷新完成后沿用刷新期间选择的方向", async () => {
     directionButtons[0].click();
     await new Promise((resolve) => setImmediate(resolve));
 
-    assert.deepEqual(
-      page.list.children.map((item) => item.textContent),
-      ["Ada", "Bob"],
-    );
+    assert.deepEqual(page.list.children.map((item) => item.textContent), [
+      "Ada",
+      "Bob",
+    ]);
   } finally {
     global.document = previousDocument;
     global.window = previousWindow;
@@ -662,10 +641,7 @@ test("从时间胶囊首条动态读取活跃时刻", () => {
   const document = timelineDocumentFromFixture("timeline-active.html");
 
   assert.deepEqual(
-    sorter.parseTimelineDocument(
-      document,
-      Date.UTC(2026, 7, 26, 6, 37, 34) / 1_000,
-    ),
+    sorter.parseTimelineDocument(document, Date.UTC(2026, 7, 26, 6, 37, 34) / 1_000),
     {
       kind: "active",
       activityAtSeconds: Date.UTC(2026, 6, 4, 6, 37) / 1_000,
@@ -693,9 +669,7 @@ test("上次活跃时间保留页面提供的秒级精度", () => {
 });
 
 test("只有分钟的相对文案不推测秒数", () => {
-  const document = timelineDocumentFromFixture(
-    "timeline-active-minutes-only.html",
-  );
+  const document = timelineDocumentFromFixture("timeline-active-minutes-only.html");
   const responseTime = Date.UTC(2026, 7, 26, 9, 43, 34) / 1_000;
 
   assert.deepEqual(sorter.parseTimelineDocument(document, responseTime), {
@@ -787,11 +761,7 @@ test("页面任务调度器在全局四槽位内优先前台任务且不取消�
   });
 
   scheduler.setForeground("activity");
-  scheduler.enqueue(
-    "activity",
-    ["a1", "a2", "a3", "a4", "a5"],
-    taskOptions("activity"),
-  );
+  scheduler.enqueue("activity", ["a1", "a2", "a3", "a4", "a5"], taskOptions("activity"));
   scheduler.setForeground("profile");
   scheduler.enqueue("profile", ["p1", "p2"], taskOptions("profile"));
 
@@ -823,12 +793,7 @@ test("页面任务调度器在全局四槽位内优先前台任务且不取消�
     "profile:p2",
   ]);
 
-  for (const key of [
-    "activity:a2",
-    "activity:a3",
-    "activity:a4",
-    "profile:p2",
-  ]) {
+  for (const key of ["activity:a2", "activity:a3", "activity:a4", "profile:p2"]) {
     pending.get(key)({ kind: "success" });
   }
   await new Promise((resolve) => setImmediate(resolve));
@@ -864,31 +829,30 @@ test("前台队列耗尽但仍有在途请求时不会恢复后台任务", async
 
   pending.get("profile:p1")({ kind: "success" });
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(started, [
-    "activity:a1",
-    "activity:a2",
-    "profile:p1",
-    "profile:p2",
-  ]);
+  assert.deepEqual(
+    started,
+    ["activity:a1", "activity:a2", "profile:p1", "profile:p2"],
+  );
 
   pending.get("activity:a2")({ kind: "success" });
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(started, [
-    "activity:a1",
-    "activity:a2",
-    "profile:p1",
-    "profile:p2",
-  ]);
+  assert.deepEqual(
+    started,
+    ["activity:a1", "activity:a2", "profile:p1", "profile:p2"],
+  );
 
   pending.get("profile:p2")({ kind: "success" });
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(started, [
-    "activity:a1",
-    "activity:a2",
-    "profile:p1",
-    "profile:p2",
-    "activity:a3",
-  ]);
+  assert.deepEqual(
+    started,
+    [
+      "activity:a1",
+      "activity:a2",
+      "profile:p1",
+      "profile:p2",
+      "activity:a3",
+    ],
+  );
 
   pending.get("activity:a3")({ kind: "success" });
   await new Promise((resolve) => setImmediate(resolve));
@@ -907,11 +871,7 @@ test("页面任务调度器收到 429 时停止所有任务并统计未尝试好
   });
 
   scheduler.setForeground("activity");
-  scheduler.enqueue(
-    "activity",
-    ["a1", "a2", "a3", "a4", "a5"],
-    options("activity"),
-  );
+  scheduler.enqueue("activity", ["a1", "a2", "a3", "a4", "a5"], options("activity"));
   scheduler.enqueue("profile", ["p1", "p2"], options("profile"));
   pending.get("activity:a1")({ kind: "http-error", status: 429 });
   await new Promise((resolve) => setImmediate(resolve));
@@ -956,11 +916,7 @@ test("页面任务连续五次服务端失败后停止自身并恢复另一页�
   });
 
   scheduler.setForeground("activity");
-  scheduler.enqueue(
-    "activity",
-    ["a1", "a2", "a3", "a4", "a5", "a6"],
-    options("activity"),
-  );
+  scheduler.enqueue("activity", ["a1", "a2", "a3", "a4", "a5", "a6"], options("activity"));
   scheduler.enqueue("profile", ["p1"], options("profile"));
   for (const item of ["a1", "a2", "a3", "a4", "a5"]) {
     pending.get(`activity:${item}`)({ kind: "http-error", status: 500 });
@@ -1088,6 +1044,13 @@ test("初始化在时间胶囊和用户主页任务之间切换并恢复暂停�
     pending.delete(url);
     resolve(responseFor(url));
   };
+  const waitFor = async (predicate) => {
+    for (let attempt = 0; attempt < 20 && !predicate(); attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(predicate(), true);
+  };
+
   sorter.initialize({
     document: page.document,
     window: {
@@ -1124,21 +1087,21 @@ test("初始化在时间胶囊和用户主页任务之间切换并恢复暂停�
   assert.equal(started.filter((url) => !url.endsWith("/timeline")).length, 0);
 
   release("/user/a/timeline");
-  await waitUntil(
+  await waitFor(
     () => started.filter((url) => !url.endsWith("/timeline")).length === 1,
   );
   sortButtons[2].click();
   release("/user/b/timeline");
-  await waitUntil(() => started.includes("/user/e/timeline"));
+  await waitFor(() => started.includes("/user/e/timeline"));
   completionDropdown.children[0].click();
   release("/user/a");
-  await waitUntil(
+  await waitFor(
     () => started.filter((url) => !url.endsWith("/timeline")).length === 2,
   );
 
   for (const userIdentifier of ["b", "c", "d"]) {
     release(`/user/${userIdentifier}`);
-    await waitUntil(
+    await waitFor(
       () =>
         started.filter((url) => !url.endsWith("/timeline")).length ===
         ["b", "c", "d"].indexOf(userIdentifier) + 3,
@@ -1149,7 +1112,7 @@ test("初始化在时间胶囊和用户主页任务之间切换并恢复暂停�
   for (const userIdentifier of ["c", "d", "e"]) {
     release(`/user/${userIdentifier}/timeline`);
   }
-  await waitUntil(() => pending.size === 0);
+  await waitFor(() => pending.size === 0);
 });
 
 test("页面初始化全局最多四并发且限流会停止两类页面任务", async () => {
@@ -1189,10 +1152,7 @@ test("页面初始化全局最多四并发且限流会停止两类页面任务",
   }
 
   assert.equal(started.length, 4);
-  assert.equal(
-    sortOptionsFor(page).children.at(-1).textContent,
-    "请求受限，已停止全部获取",
-  );
+  assert.equal(sortOptionsFor(page).children.at(-1).textContent, "请求受限，已停止全部获取");
   for (const [url, resolve] of [...pending]) {
     pending.delete(url);
     resolve({ ok: false, status: 429 });
@@ -1210,6 +1170,12 @@ test("主页连续五次服务端错误后停止并恢复暂停的时间胶囊�
   );
   const started = [];
   const pending = new Map();
+  const waitFor = async (predicate) => {
+    for (let attempt = 0; attempt < 20 && !predicate(); attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(predicate(), true);
+  };
 
   sorter.initialize({
     document: page.document,
@@ -1236,18 +1202,18 @@ test("主页连续五次服务端错误后停止并恢复暂停的时间胶囊�
     headers: { get: () => null },
     text: async () => "timeline",
   });
-  await waitUntil(() => pending.has("/user/a"));
+  await waitFor(() => pending.has("/user/a"));
 
   // Resolve failures one at a time because the three in-flight timeline
   // requests leave one global slot for the foreground profile task.
   for (const userIdentifier of identifiers) {
     const url = `/user/${userIdentifier}`;
-    await waitUntil(() => pending.has(url));
+    await waitFor(() => pending.has(url));
     const resolve = pending.get(url);
     pending.delete(url);
     resolve({ ok: false, status: 500 });
   }
-  await waitUntil(() => started.includes("/user/e/timeline"));
+  await waitFor(() => started.includes("/user/e/timeline"));
 
   assert.equal(
     sortOptionsFor(page).children.at(-1).textContent,
@@ -1304,12 +1270,10 @@ test("升级缓存版本时迁移有效的 v2 活跃记录到 v3", () => {
   const cache = sorter.createActivityCache(storage, { now: () => 3_000 });
 
   assert.deepEqual(cache.get("sai"), record);
-  assert.deepEqual(writes, [
-    [
-      "bangumi-friend-sorter:activity-cache:v3",
-      { version: 3, records: { sai: { activity: record } } },
-    ],
-  ]);
+  assert.deepEqual(writes, [[
+    "bangumi-friend-sorter:activity-cache:v3",
+    { version: 3, records: { sai: { activity: record } } },
+  ]]);
   assert.deepEqual(removedKeys, [
     "bangumi-friend-sorter:activity-cache:v2",
     "bangumi-friend-sorter:activity-cache:v1",
@@ -1343,21 +1307,14 @@ test("v2 活跃记录迁移遵守二十四小时有效期边界", () => {
 
   const cache = sorter.createActivityCache(storage, { now: () => now });
 
-  assert.deepEqual(
-    [...cache.entries()],
-    [
-      ["fresh", records.fresh],
-      ["boundary", records.boundary],
-    ],
-  );
+  assert.deepEqual([...cache.entries()], [
+    ["fresh", records.fresh],
+    ["boundary", records.boundary],
+  ]);
 });
 
 test("v3 缓存不完整时仍合并尚未迁移的 v2 活跃记录", () => {
-  const activity = {
-    kind: "active",
-    activityAtSeconds: 1_000,
-    fetchedAt: 2_000,
-  };
+  const activity = { kind: "active", activityAtSeconds: 1_000, fetchedAt: 2_000 };
   const writes = [];
   const storage = {
     getItem(key) {
@@ -1389,20 +1346,18 @@ test("v3 缓存不完整时仍合并尚未迁移的 v2 活跃记录", () => {
     activity,
     preference: { value: 87.5, fetchedAt: 3_000 },
   });
-  assert.deepEqual(writes, [
-    [
-      "bangumi-friend-sorter:activity-cache:v3",
-      {
-        version: 3,
-        records: {
-          sai: {
-            activity,
-            preference: { value: 87.5, fetchedAt: 3_000 },
-          },
+  assert.deepEqual(writes, [[
+    "bangumi-friend-sorter:activity-cache:v3",
+    {
+      version: 3,
+      records: {
+        sai: {
+          activity,
+          preference: { value: 87.5, fetchedAt: 3_000 },
         },
       },
-    ],
-  ]);
+    },
+  ]]);
 });
 
 test("v3 缓存独立校验并保存好友的扩展字段", () => {
@@ -1444,13 +1399,10 @@ test("v3 缓存独立校验并保存好友的扩展字段", () => {
   assert.deepEqual(cache.get("sai"), { activity, preference });
   assert.deepEqual(cache.get("broken"), { activity });
   assert.deepEqual(cache.getField("sai", "preference"), preference);
-  assert.deepEqual(
-    [...cache.entries()],
-    [
-      ["sai", { activity, preference }],
-      ["broken", { activity }],
-    ],
-  );
+  assert.deepEqual([...cache.entries()], [
+    ["sai", { activity, preference }],
+    ["broken", { activity }],
+  ]);
 });
 
 test("升级缓存版本时删除旧版缓存而不迁移分钟级结果", () => {
@@ -1511,47 +1463,39 @@ test("请求响应头的时间按整秒传给活跃时间解析并写入秒级�
     domParser: { parseFromString: () => document },
     fetchImpl: async () => ({
       ok: true,
-      headers: {
-        get: (name) =>
-          name === "date" ? new Date(responseTime).toUTCString() : null,
-      },
+      headers: { get: (name) => (name === "date" ? new Date(responseTime).toUTCString() : null) },
       text: async () => "fixture",
     }),
     now: () => responseTime,
     onProgress() {},
   });
 
-  assert.deepEqual(records, [
-    [
-      "sai",
-      {
-        kind: "active",
-        activityAtSeconds: Date.UTC(2026, 7, 26, 9, 42, 34) / 1_000,
-        fetchedAt: responseTime,
-      },
-    ],
-  ]);
+  assert.deepEqual(records, [[
+    "sai",
+    {
+      kind: "active",
+      activityAtSeconds: Date.UTC(2026, 7, 26, 9, 42, 34) / 1_000,
+      fetchedAt: responseTime,
+    },
+  ]]);
 });
 
 test("时间胶囊返回四零四时计入失败且不覆盖缓存", async () => {
   let cacheWrites = 0;
   const progress = [];
 
-  const result = await sorter.refreshActivities(
-    [{ userIdentifier: "missing" }],
-    {
-      cache: {
-        persist() {},
-        set() {
-          cacheWrites += 1;
-        },
+  const result = await sorter.refreshActivities([{ userIdentifier: "missing" }], {
+    cache: {
+      persist() {},
+      set() {
+        cacheWrites += 1;
       },
-      domParser: {},
-      fetchImpl: async () => ({ ok: false, status: 404 }),
-      now: () => 1_000,
-      onProgress: (completed, total) => progress.push([completed, total]),
     },
-  );
+    domParser: {},
+    fetchImpl: async () => ({ ok: false, status: 404 }),
+    now: () => 1_000,
+    onProgress: (completed, total) => progress.push([completed, total]),
+  });
 
   assert.deepEqual(result, { failures: 1 });
   assert.equal(cacheWrites, 0);
@@ -1576,20 +1520,14 @@ test("页面获取任务通过请求结果、成功回调和进度回调驱动",
   });
 
   assert.deepEqual(requested.sort(), ["sai", "tom"]);
-  assert.deepEqual(
-    saved.sort(([left], [right]) => left.localeCompare(right)),
-    [
-      ["sai", { userIdentifier: "sai", fetchedAt: 2_000 }],
-      ["tom", { userIdentifier: "tom", fetchedAt: 2_000 }],
-    ],
-  );
+  assert.deepEqual(saved.sort(([left], [right]) => left.localeCompare(right)), [
+    ["sai", { userIdentifier: "sai", fetchedAt: 2_000 }],
+    ["tom", { userIdentifier: "tom", fetchedAt: 2_000 }],
+  ]);
   assert.deepEqual(result, { failures: 0, stopped: false });
   assert.deepEqual(
     progress.sort(([left], [right]) => left - right),
-    [
-      [1, 2],
-      [2, 2],
-    ],
+    [[1, 2], [2, 2]],
   );
 });
 
@@ -1617,10 +1555,7 @@ test("页面初始化可以注入获取任务所需的运行时依赖", async ()
     document: page.document,
     window: pageWindow,
     storage,
-    domParser: {
-      parseFromString: () =>
-        timelineDocumentFromFixture("timeline-active-seconds.html"),
-    },
+    domParser: { parseFromString: () => timelineDocumentFromFixture("timeline-active-seconds.html") },
     fetchImpl: async () => {
       requests += 1;
       return {
@@ -1646,23 +1581,21 @@ test("页面初始化可以注入获取任务所需的运行时依赖", async ()
   assert.equal(requests, 1);
   assert.equal(nowCalls, 3);
   assert.deepEqual(progress, [[1, 1]]);
-  assert.deepEqual(writes, [
-    [
-      "bangumi-friend-sorter:activity-cache:v3",
-      {
-        version: 3,
-        records: {
-          sai: {
-            activity: {
-              kind: "active",
-              activityAtSeconds: Date.UTC(2026, 7, 26, 9, 42, 34) / 1_000,
-              fetchedAt: responseTime,
-            },
+  assert.deepEqual(writes, [[
+    "bangumi-friend-sorter:activity-cache:v3",
+    {
+      version: 3,
+      records: {
+        sai: {
+          activity: {
+            kind: "active",
+            activityAtSeconds: Date.UTC(2026, 7, 26, 9, 42, 34) / 1_000,
+            fetchedAt: responseTime,
           },
         },
       },
-    ],
-  ]);
+    },
+  ]]);
 });
 
 test("三个支持站点都使用隔离存储和同源请求刷新两类页面", async () => {
@@ -1696,15 +1629,20 @@ test("三个支持站点都使用隔离存储和同源请求刷新两类页面",
         return {
           ok: true,
           headers: { get: () => null },
-          text: async () =>
-            url.endsWith("/timeline") ? "timeline" : "profile",
+          text: async () => (url.endsWith("/timeline") ? "timeline" : "profile"),
         };
       },
     });
 
     mainSortControl(page, "上次活跃").click();
     mainSortControl(page, "完成条目数").children[0].click();
-    await waitUntil(() => requests.length >= 2 && writes.length > 0, 10);
+    for (
+      let attempt = 0;
+      attempt < 10 && (requests.length < 2 || writes.length === 0);
+      attempt += 1
+    ) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
 
     assert.equal(requests.length, 2, host);
     assert.equal(requests[0][0], "/user/friend/timeline", host);
@@ -1779,8 +1717,7 @@ test("页面初始化使用注入时钟判断 v2 上次活跃记录迁移有效�
     window: { location: { href: "https://bgm.tv/user/sai/friends" } },
     storage,
     domParser: {
-      parseFromString: () =>
-        timelineDocumentFromFixture("timeline-active-seconds.html"),
+      parseFromString: () => timelineDocumentFromFixture("timeline-active-seconds.html"),
     },
     fetchImpl: async () => {
       requests += 1;
@@ -1800,12 +1737,7 @@ test("页面初始化使用注入时钟判断 v2 上次活跃记录迁移有效�
 });
 
 class ProfileNode {
-  constructor({
-    id = null,
-    className = "",
-    textContent = "",
-    children = [],
-  } = {}) {
+  constructor({ id = null, className = "", textContent = "", children = [] } = {}) {
     this.attributes = new Map();
     this.children = [];
     this.id = id;
@@ -1843,7 +1775,7 @@ class ProfileNode {
 }
 
 function profileStatsDocument({
-  counts = { all: 20, 2: 8, 1: 10, 3: 6, 4: 4, 6: 2 },
+  counts = { all: 20, "2": 8, "1": 10, "3": 6, "4": 4, "6": 2 },
   includeBooks = false,
   malformedBooks = false,
 } = {}) {
@@ -1872,10 +1804,7 @@ function profileStatsDocument({
         : block("1", counts["1"]),
     );
   }
-  const container = new ProfileNode({
-    id: "userStatsContainers",
-    children: blocks,
-  });
+  const container = new ProfileNode({ id: "userStatsContainers", children: blocks });
   return {
     querySelector: (selector) =>
       selector === "#userStatsContainers"
@@ -1885,17 +1814,13 @@ function profileStatsDocument({
 }
 
 function profileStatsDocumentFromFixture(filename) {
-  const html = fs.readFileSync(
-    path.join(__dirname, "fixtures", filename),
-    "utf8",
-  );
+  const html = fs.readFileSync(path.join(__dirname, "fixtures", filename), "utf8");
   const containerMatch = html.match(
     /<div id=["']userStatsContainers["']>([\s\S]*?)<\/div>\s*<\/body>/,
   );
   assert.ok(containerMatch);
   const container = new ProfileNode({ id: "userStatsContainers" });
-  const blockPattern =
-    /<section id=["'](userStats_(?:all|1|2|3|4|6))["']>([\s\S]*?)<\/section>/g;
+  const blockPattern = /<section id=["'](userStats_(?:all|1|2|3|4|6))["']>([\s\S]*?)<\/section>/g;
   let blockMatch;
   while ((blockMatch = blockPattern.exec(containerMatch[1]))) {
     const block = new ProfileNode({ id: blockMatch[1] });
@@ -1936,16 +1861,12 @@ function profileStatsDocumentFromFixture(filename) {
 function relationProfileDocument({ syncRate, commonLikes } = {}) {
   const relation = new ProfileNode({
     className: "userSynchronize",
-    textContent: commonLikes === undefined ? "" : `${commonLikes}个共同喜好`,
+    textContent:
+      commonLikes === undefined ? "" : `${commonLikes}个共同喜好`,
     children:
       syncRate === undefined
         ? []
-        : [
-            new ProfileNode({
-              className: "percent_text",
-              textContent: syncRate,
-            }),
-          ],
+        : [new ProfileNode({ className: "percent_text", textContent: syncRate })],
   });
   return {
     querySelector(selector) {
@@ -2007,7 +1928,7 @@ test("主页完成统计按完成描述定位六个统计范围", () => {
 
   assert.deepEqual(parsed, {
     kind: "success",
-    values: { all: 20, 2: 8, 1: 10, 3: 6, 4: 4, 6: 2 },
+    values: { all: 20, "2": 8, "1": 10, "3": 6, "4": 4, "6": 2 },
   });
 });
 
@@ -2052,36 +1973,30 @@ test("唯一完成卡存在多个数量节点时视为结构矛盾", () => {
 test("缺失分类块可靠解析为零，缺失聚合块视为失败", () => {
   assert.deepEqual(sorter.parseProfileDocument(profileStatsDocument()), {
     kind: "success",
-    values: { all: 20, 1: 0, 2: 8, 3: 6, 4: 4, 6: 2 },
+    values: { all: 20, "1": 0, "2": 8, "3": 6, "4": 4, "6": 2 },
   });
 
   const invalid = new ProfileNode({
     id: "userStatsContainers",
     children: [new ProfileNode({ id: "userStats_2" })],
   });
-  assert.deepEqual(
-    sorter.parseProfileDocument({
-      querySelector: (selector) =>
-        selector === "#userStatsContainers"
-          ? invalid
-          : invalid.querySelector(selector),
-    }),
-    { kind: "invalid" },
-  );
+  assert.deepEqual(sorter.parseProfileDocument({
+    querySelector: (selector) =>
+      selector === "#userStatsContainers"
+        ? invalid
+        : invalid.querySelector(selector),
+    }), { kind: "invalid" });
 
   const empty = new ProfileNode({ id: "userStatsContainers" });
-  assert.deepEqual(
-    sorter.parseProfileDocument({
-      querySelector: (selector) =>
-        selector === "#userStatsContainers"
-          ? empty
-          : empty.querySelector(selector),
-    }),
-    {
-      kind: "success",
-      values: { all: 0, 1: 0, 2: 0, 3: 0, 4: 0, 6: 0 },
-    },
-  );
+  assert.deepEqual(sorter.parseProfileDocument({
+    querySelector: (selector) =>
+      selector === "#userStatsContainers"
+        ? empty
+        : empty.querySelector(selector),
+  }), {
+    kind: "success",
+    values: { all: 0, "1": 0, "2": 0, "3": 0, "4": 0, "6": 0 },
+  });
 
   const partial = sorter.parseProfileDocument(
     profileStatsDocument({ includeBooks: true, malformedBooks: true }),
@@ -2115,9 +2030,10 @@ test("统计范围只接受容器内的唯一统计块", () => {
     },
   };
 
-  assert.deepEqual(sorter.parseProfileDocument(documentWithOutsideAggregate), {
-    kind: "invalid",
-  });
+  assert.deepEqual(
+    sorter.parseProfileDocument(documentWithOutsideAggregate),
+    { kind: "invalid" },
+  );
 
   const duplicateContainer = new ProfileNode({
     id: "userStatsContainers",
@@ -2150,24 +2066,22 @@ test("完成条目数按当前范围从高到低或从低到高稳定排序", ()
   ]);
 
   assert.deepEqual(
-    sorter
-      .sortFriends(friends, {
-        criterion: "completion",
-        sortData: values,
-        direction: "desc",
-        completionScope: "all",
-      })
+    sorter.sortFriends(friends, {
+      criterion: "completion",
+      sortData: values,
+      direction: "desc",
+      completionScope: "all",
+    })
       .map(({ userIdentifier }) => userIdentifier),
     ["high", "same-b", "same-a", "zero", "unknown"],
   );
   assert.deepEqual(
-    sorter
-      .sortFriends(friends, {
-        criterion: "completion",
-        sortData: values,
-        direction: "asc",
-        completionScope: "all",
-      })
+    sorter.sortFriends(friends, {
+      criterion: "completion",
+      sortData: values,
+      direction: "asc",
+      completionScope: "all",
+    })
       .map(({ userIdentifier }) => userIdentifier),
     ["zero", "same-b", "same-a", "high", "unknown"],
   );
@@ -2200,38 +2114,32 @@ test("喜好契合按访问者隔离并稳定排序可靠零和未知值", () =>
   });
 
   assert.deepEqual(
-    sorter
-      .sortFriends(friends, {
-        criterion: "relation",
-        relationMetric: "commonLikes",
-        relationVisitorIdentifier: "visitor-a",
-        sortData: cache,
-        direction: "desc",
-      })
-      .map(({ userIdentifier }) => userIdentifier),
+    sorter.sortFriends(friends, {
+      criterion: "relation",
+      relationMetric: "commonLikes",
+      relationVisitorIdentifier: "visitor-a",
+      sortData: cache,
+      direction: "desc",
+    }).map(({ userIdentifier }) => userIdentifier),
     ["high", "same-b", "same-a", "zero", "unknown"],
   );
   assert.deepEqual(
-    sorter
-      .sortFriends(friends, {
-        criterion: "relation",
-        relationMetric: "commonLikes",
-        relationVisitorIdentifier: "visitor-a",
-        sortData: cache,
-        direction: "asc",
-      })
-      .map(({ userIdentifier }) => userIdentifier),
+    sorter.sortFriends(friends, {
+      criterion: "relation",
+      relationMetric: "commonLikes",
+      relationVisitorIdentifier: "visitor-a",
+      sortData: cache,
+      direction: "asc",
+    }).map(({ userIdentifier }) => userIdentifier),
     ["zero", "same-b", "same-a", "high", "unknown"],
   );
   assert.deepEqual(
-    sorter
-      .sortFriends(friends, {
-        criterion: "relation",
-        relationMetric: "commonLikes",
-        relationVisitorIdentifier: "visitor-b",
-        sortData: cache,
-      })
-      .map(({ userIdentifier }) => userIdentifier),
+    sorter.sortFriends(friends, {
+      criterion: "relation",
+      relationMetric: "commonLikes",
+      relationVisitorIdentifier: "visitor-b",
+      sortData: cache,
+    }).map(({ userIdentifier }) => userIdentifier),
     ["unknown", "same-b", "high", "zero", "same-a"],
   );
 });
@@ -2252,9 +2160,9 @@ test("完成统计缓存的七十二小时边界只请求缺失或过期范围",
   ]);
 
   assert.deepEqual(
-    sorter
-      .findFriendsNeedingCompletion(friends, values, "all", now)
-      .map(({ userIdentifier }) => userIdentifier),
+    sorter.findFriendsNeedingCompletion(friends, values, "all", now).map(
+      ({ userIdentifier }) => userIdentifier,
+    ),
     ["stale", "missing"],
   );
 });
@@ -2283,21 +2191,23 @@ test("喜好契合缓存按访问者和指标判断七十二小时有效期", ()
   });
 
   assert.deepEqual(
-    sorter
-      .findFriendsNeedingRelation(friends, cache, "visitor", "syncRate", now)
-      .map(({ userIdentifier }) => userIdentifier),
+    sorter.findFriendsNeedingRelation(
+      friends,
+      cache,
+      "visitor",
+      "syncRate",
+      now,
+    ).map(({ userIdentifier }) => userIdentifier),
     ["stale", "missing"],
   );
   assert.deepEqual(
-    sorter
-      .findFriendsNeedingRelation(
-        friends,
-        cache,
-        "other-visitor",
-        "syncRate",
-        now,
-      )
-      .map(({ userIdentifier }) => userIdentifier),
+    sorter.findFriendsNeedingRelation(
+      friends,
+      cache,
+      "other-visitor",
+      "syncRate",
+      now,
+    ).map(({ userIdentifier }) => userIdentifier),
     ["fresh", "boundary", "stale", "missing"],
   );
 });
@@ -2446,10 +2356,7 @@ test("同一主页响应分别刷新完成统计，失败范围保留旧缓存",
 
   await sorter.refreshCompletions([{ userIdentifier: "sai" }], {
     cache,
-    domParser: {
-      parseFromString: () =>
-        profileStatsDocument({ includeBooks: true, malformedBooks: true }),
-    },
+    domParser: { parseFromString: () => profileStatsDocument({ includeBooks: true, malformedBooks: true }) },
     fetchImpl: async () => ({ ok: true, text: async () => "profile" }),
     now: () => now,
     onProgress() {},
@@ -2481,10 +2388,14 @@ test("完成条目数菜单按范围回调并只表达当前子项的无障碍�
   const menu = dropdown.children[1];
 
   assert.equal(toggle.textContent, "完成条目数");
-  assert.deepEqual(
-    menu.children.map(({ textContent }) => textContent),
-    ["全部", "动画", "书籍", "音乐", "游戏", "三次元"],
-  );
+  assert.deepEqual(menu.children.map(({ textContent }) => textContent), [
+    "全部",
+    "动画",
+    "书籍",
+    "音乐",
+    "游戏",
+    "三次元",
+  ]);
   controls.setCurrent("completion", "desc", "2");
   assert.equal(toggle.getAttribute("aria-current"), "true");
   assert.equal(menu.children[1].getAttribute("aria-current"), "true");
@@ -2518,10 +2429,10 @@ test("喜好契合菜单按指标回调并直接点击默认选择同步率", ()
   const menu = relationDropdown.children[1];
 
   assert.equal(toggle.textContent, "喜好契合");
-  assert.deepEqual(
-    menu.children.map(({ textContent }) => textContent),
-    ["同步率", "共同喜好数"],
-  );
+  assert.deepEqual(menu.children.map(({ textContent }) => textContent), [
+    "同步率",
+    "共同喜好数",
+  ]);
   controls.setCurrent("relation", "desc", "commonLikes");
   assert.equal(toggle.getAttribute("aria-current"), "true");
   assert.equal(menu.children[1].getAttribute("aria-current"), "true");
@@ -2572,8 +2483,7 @@ test("未登录时选择喜好契合不请求且登录提示不会因重复选�
   );
   const relationButton = relationDropdown.children[0];
   const relationMenu = relationDropdown.children[1];
-  const status =
-    page.list.beforeNodes[0].children[0].children[0].children.at(-1);
+  const status = page.list.beforeNodes[0].children[0].children[0].children.at(-1);
 
   relationButton.click();
   assert.equal(requests, 0);
@@ -2821,12 +2731,12 @@ test("主页同步率与共同喜好数切换复用任务、去重请求并按�
         userIdentifier === "a"
           ? profileDocumentWithRelation({
               syncRate: "50%",
-              counts: { all: 1, 2: 1, 3: 1, 4: 1, 6: 1 },
+              counts: { all: 1, "2": 1, "3": 1, "4": 1, "6": 1 },
             })
           : profileDocumentWithRelation({
               syncRate: "70%",
               commonLikes: 20,
-              counts: { all: 2, 2: 2, 3: 2, 4: 2, 6: 2 },
+              counts: { all: 2, "2": 2, "3": 2, "4": 2, "6": 2 },
             }),
     },
     fetchImpl: (url) => {
@@ -2860,53 +2770,30 @@ test("主页同步率与共同喜好数切换复用任务、去重请求并按�
   }
 
   assert.deepEqual(requests, ["a", "b"]);
-  assert.ok(
-    progress.some(([completed, total]) => completed === 0 && total === 2),
-  );
-  assert.ok(
-    progress.some(([completed, total]) => completed === 2 && total === 2),
-  );
+  assert.ok(progress.some(([completed, total]) => completed === 0 && total === 2));
+  assert.ok(progress.some(([completed, total]) => completed === 2 && total === 2));
   assert.equal(status.textContent, "“喜好契合”获取完成，1 人失败");
-  assert.deepEqual(
-    page.list.children.map((item) => item.textContent),
-    ["B", "A"],
-  );
+  assert.deepEqual(page.list.children.map((item) => item.textContent), ["B", "A"]);
   assert.deepEqual(writes.at(-1)[1].records.a[syncField], {
     value: 50,
     fetchedAt: now,
   });
-  assert.deepEqual(
-    writes.at(-1)[1].records.a[
-      sorter.relationFieldFor("visitor", "commonLikes")
-    ],
-    {
-      value: 1,
-      fetchedAt: now,
-    },
-  );
-  assert.deepEqual(
-    writes.at(-1)[1].records.b[
-      sorter.relationFieldFor("visitor", "commonLikes")
-    ],
-    {
-      value: 20,
-      fetchedAt: now,
-    },
-  );
-  assert.deepEqual(
-    writes.at(-1)[1].records.a[sorter.completionFieldFor("all")],
-    {
-      value: 1,
-      fetchedAt: now,
-    },
-  );
-  assert.deepEqual(
-    writes.at(-1)[1].records.b[sorter.completionFieldFor("all")],
-    {
-      value: 2,
-      fetchedAt: now,
-    },
-  );
+  assert.deepEqual(writes.at(-1)[1].records.a[sorter.relationFieldFor("visitor", "commonLikes")], {
+    value: 1,
+    fetchedAt: now,
+  });
+  assert.deepEqual(writes.at(-1)[1].records.b[sorter.relationFieldFor("visitor", "commonLikes")], {
+    value: 20,
+    fetchedAt: now,
+  });
+  assert.deepEqual(writes.at(-1)[1].records.a[sorter.completionFieldFor("all")], {
+    value: 1,
+    fetchedAt: now,
+  });
+  assert.deepEqual(writes.at(-1)[1].records.b[sorter.completionFieldFor("all")], {
+    value: 2,
+    fetchedAt: now,
+  });
 });
 
 test("同步率切换到完成条目数时复用同一主页任务", async () => {
@@ -2950,10 +2837,10 @@ test("同步率切换到完成条目数时复用同一主页任务", async () =>
           commonLikes: userIdentifier === "a" ? 2 : 3,
           counts: {
             all: userIdentifier === "a" ? 1 : 5,
-            2: 1,
-            3: 1,
-            4: 1,
-            6: 1,
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "6": 1,
           },
         }),
     },
@@ -2982,19 +2869,12 @@ test("同步率切换到完成条目数时复用同一主页任务", async () =>
   for (let attempt = 0; attempt < 20 && requests.length < 2; attempt += 1) {
     await new Promise((resolve) => setImmediate(resolve));
   }
-  for (
-    let attempt = 0;
-    attempt < 20 && page.list.children[0].textContent !== "B";
-    attempt += 1
-  ) {
+  for (let attempt = 0; attempt < 20 && page.list.children[0].textContent !== "B"; attempt += 1) {
     await new Promise((resolve) => setImmediate(resolve));
   }
 
   assert.deepEqual(requests, ["a", "b"]);
-  assert.deepEqual(
-    page.list.children.map((item) => item.textContent),
-    ["B", "A"],
-  );
+  assert.deepEqual(page.list.children.map((item) => item.textContent), ["B", "A"]);
 });
 
 test("取消大批量扩充后恢复旧主页任务目标", async () => {
@@ -3065,18 +2945,10 @@ test("取消大批量扩充后恢复旧主页任务目标", async () => {
   ]);
   releaseFirst({ ok: true, text: async () => "profile" });
 
-  for (
-    let attempt = 0;
-    attempt < 20 && status.textContent === "";
-    attempt += 1
-  ) {
+  for (let attempt = 0; attempt < 20 && status.textContent === ""; attempt += 1) {
     await new Promise((resolve) => setImmediate(resolve));
   }
-  for (
-    let attempt = 0;
-    attempt < 20 && !status.textContent.includes("获取完成");
-    attempt += 1
-  ) {
+  for (let attempt = 0; attempt < 20 && !status.textContent.includes("获取完成"); attempt += 1) {
     await new Promise((resolve) => setImmediate(resolve));
   }
 
@@ -3144,8 +3016,8 @@ test("初始化将排序栏挂在主内容列之前并使用完成条目数方�
       parseFromString: (html) =>
         profileStatsDocument({
           counts: html.includes("/user/a")
-            ? { all: 2, 2: 2, 1: 2, 3: 2, 4: 2, 6: 2 }
-            : { all: 20, 2: 20, 1: 20, 3: 20, 4: 20, 6: 20 },
+            ? { all: 2, "2": 2, "1": 2, "3": 2, "4": 2, "6": 2 }
+            : { all: 20, "2": 20, "1": 20, "3": 20, "4": 20, "6": 20 },
         }),
     },
     fetchImpl: async (url) => ({
@@ -3168,25 +3040,16 @@ test("初始化将排序栏挂在主内容列之前并使用完成条目数方�
 
   assert.equal(bar.dataset.friendSorter, "");
   assert.equal(wrapper.children[1], columns);
-  assert.deepEqual(
-    directionButtons.map(({ textContent }) => textContent),
-    ["从低到高", "从高到低"],
-  );
-  assert.deepEqual(
-    page.list.children.map((item) => item.textContent),
-    ["B", "A"],
-  );
+  assert.deepEqual(directionButtons.map(({ textContent }) => textContent), [
+    "从低到高",
+    "从高到低",
+  ]);
+  assert.deepEqual(page.list.children.map((item) => item.textContent), ["B", "A"]);
 
   directionButtons[0].click();
-  assert.deepEqual(
-    page.list.children.map((item) => item.textContent),
-    ["A", "B"],
-  );
+  assert.deepEqual(page.list.children.map((item) => item.textContent), ["A", "B"]);
   directionButtons[1].click();
-  assert.deepEqual(
-    page.list.children.map((item) => item.textContent),
-    ["B", "A"],
-  );
+  assert.deepEqual(page.list.children.map((item) => item.textContent), ["B", "A"]);
 });
 
 test("完成统计范围在刷新期间切换后补取新增缺失好友", async () => {
@@ -3232,8 +3095,8 @@ test("完成统计范围在刷新期间切换后补取新增缺失好友", async
           includeBooks: true,
           counts:
             userIdentifier === "a"
-              ? { all: 1, 1: 10, 2: 1, 3: 1, 4: 1, 6: 1 }
-              : { all: 2, 1: 20, 2: 2, 3: 2, 4: 2, 6: 2 },
+              ? { all: 1, "1": 10, "2": 1, "3": 1, "4": 1, "6": 1 }
+              : { all: 2, "1": 20, "2": 2, "3": 2, "4": 2, "6": 2 },
         }),
     },
     fetchImpl: (url) => {
@@ -3274,10 +3137,7 @@ test("完成统计范围在刷新期间切换后补取新增缺失好友", async
     completion_4: { value: 2, fetchedAt: now },
     completion_6: { value: 2, fetchedAt: now },
   });
-  assert.deepEqual(
-    page.list.children.map((item) => item.textContent),
-    ["B", "A"],
-  );
+  assert.deepEqual(page.list.children.map((item) => item.textContent), ["B", "A"]);
 });
 
 test("完成条目数两击全量刷新使用实际范围名称并忽略有效缓存", async () => {
@@ -3311,8 +3171,8 @@ test("完成条目数两击全量刷新使用实际范围名称并忽略有效�
       parseFromString: (url) =>
         profileStatsDocument({
           counts: url.endsWith("/a")
-            ? { all: 10, 1: 10, 2: 10, 3: 10, 4: 10, 6: 10 }
-            : { all: 1, 1: 1, 2: 1, 3: 1, 4: 1, 6: 1 },
+            ? { all: 10, "1": 10, "2": 10, "3": 10, "4": 10, "6": 10 }
+            : { all: 1, "1": 1, "2": 1, "3": 1, "4": 1, "6": 1 },
         }),
     },
     fetchImpl: (url) => {
@@ -3330,26 +3190,22 @@ test("完成条目数两击全量刷新使用实际范围名称并忽略有效�
 
   completionButton.click();
   assert.deepEqual(requests, []);
-  assert.deepEqual(
-    page.list.children.map(({ textContent }) => textContent),
-    ["B", "A"],
-  );
+  assert.deepEqual(page.list.children.map(({ textContent }) => textContent), [
+    "B",
+    "A",
+  ]);
   completionButton.click();
   assert.equal(status.textContent, "5 秒内再次点击“全部”以全量刷新");
   completionButton.click();
-  for (
-    let attempt = 0;
-    attempt < 20 && !status.textContent.includes("获取完成");
-    attempt += 1
-  ) {
+  for (let attempt = 0; attempt < 20 && !status.textContent.includes("获取完成"); attempt += 1) {
     await new Promise((resolve) => setImmediate(resolve));
   }
   assert.deepEqual(requests, ["/user/a", "/user/b"]);
   assert.equal(status.textContent, "“完成条目数”获取完成");
-  assert.deepEqual(
-    page.list.children.map(({ textContent }) => textContent),
-    ["A", "B"],
-  );
+  assert.deepEqual(page.list.children.map(({ textContent }) => textContent), [
+    "A",
+    "B",
+  ]);
 });
 
 test("页面增量刷新恰好新增四百个请求时不确认", async () => {
@@ -3426,8 +3282,9 @@ test("完成条目数菜单按钮与菜单项之间保持连续悬停区域", ()
 test("完成条目数菜单支持悬停、焦点、键盘和触屏点击", () => {
   const selected = [];
   const page = friendPageWith([]);
-  const controls = sorter.createSortBar(page.document, (criterion, scope) =>
-    selected.push([criterion, scope]),
+  const controls = sorter.createSortBar(
+    page.document,
+    (criterion, scope) => selected.push([criterion, scope]),
   );
   const filters = controls.bar.children[0];
   const sortOptions = filters.children[0];
