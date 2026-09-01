@@ -374,6 +374,68 @@ test("排序栏分左右两组按钮并更新方向文案", () => {
   assert.equal(directionButtons[0].getAttribute("aria-current"), "true");
 });
 
+test("页面初始化提供五个主排序目标、全部子项和各自主按钮方向", () => {
+  const page = friendPageWith([
+    { href: "/user/z", name: "Zed" },
+    { href: "/user/a", name: "Ada" },
+  ]);
+
+  sorter.initialize({
+    document: page.document,
+    window: { location: { href: "https://bgm.tv/user/sai/friends" } },
+    storage: { getItem: () => null, setItem() {}, removeItem() {} },
+  });
+
+  const filters = page.list.beforeNodes[0].children[0];
+  const sortOptions = filters.children[0];
+  const directionButtons = filters.children[1].children.filter(
+    (child) => child?.tagName === "button",
+  );
+  const directButtons = sortOptions.children.filter(
+    (child) => child?.tagName === "button",
+  );
+  const dropdowns = sortOptions.children.filter(
+    (child) => child?.className === "bangumi-friend-sorter-dropdown",
+  );
+
+  assert.deepEqual(
+    [...directButtons.map(({ textContent }) => textContent), ...dropdowns.map(
+      (dropdown) => dropdown.children[0].textContent,
+    )],
+    ["加好友时间", "名称", "上次活跃", "喜好契合", "完成条目数"],
+  );
+  assert.deepEqual(
+    dropdowns.find((dropdown) => dropdown.children[0].textContent === "喜好契合")
+      .children[1].children.map(({ textContent }) => textContent),
+    ["同步率", "共同喜好数"],
+  );
+  assert.deepEqual(
+    dropdowns.find((dropdown) => dropdown.children[0].textContent === "完成条目数")
+      .children[1].children.map(({ textContent }) => textContent),
+    ["全部", "动画", "书籍", "音乐", "游戏", "三次元"],
+  );
+  assert.equal(directButtons[0].getAttribute("aria-current"), "true");
+  assert.deepEqual(directionButtons.map(({ textContent }) => textContent), [
+    "从旧到新",
+    "从新到旧",
+  ]);
+
+  directButtons[1].click();
+  directionButtons[1].click();
+  directButtons[0].click();
+  directButtons[1].click();
+  assert.equal(directionButtons[1].getAttribute("aria-current"), "true");
+
+  for (const dropdown of dropdowns) {
+    dropdown.children[0].click();
+    assert.deepEqual(directionButtons.map(({ textContent }) => textContent), [
+      "从低到高",
+      "从高到低",
+    ]);
+    assert.equal(directionButtons[1].getAttribute("aria-current"), "true");
+  }
+});
+
 test("页面交互按排序维度记忆方向并仅重排当前缓存", () => {
   const page = friendPageWith([
     { href: "/user/z", name: "Zed" },
@@ -1390,6 +1452,66 @@ test("页面初始化可以注入获取任务所需的运行时依赖", async ()
       },
     },
   ]]);
+});
+
+test("三个支持站点都通过同源请求刷新时间胶囊", async () => {
+  for (const host of ["bgm.tv", "bangumi.tv", "chii.in"]) {
+    const page = friendPageWith([{ href: "/user/friend", name: "好友" }]);
+    const requests = [];
+    sorter.initialize({
+      document: page.document,
+      window: { location: { href: `https://${host}/user/viewed/friends` } },
+      storage: { getItem: () => null, setItem() {}, removeItem() {} },
+      domParser: {
+        parseFromString: () =>
+          timelineDocumentFromFixture("timeline-active-seconds.html"),
+      },
+      fetchImpl: async (...request) => {
+        requests.push(request);
+        return {
+          ok: true,
+          headers: { get: () => null },
+          text: async () => "timeline",
+        };
+      },
+    });
+
+    const sortOptions = page.list.beforeNodes[0].children[0].children[0];
+    sortOptions.children.find(
+      (child) => child?.tagName === "button" && child.textContent === "上次活跃",
+    ).click();
+    for (let attempt = 0; attempt < 10 && requests.length === 0; attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    assert.equal(requests.length, 1, host);
+    assert.equal(requests[0][0], "/user/friend/timeline", host);
+    assert.equal(requests[0][1].credentials, "same-origin", host);
+  }
+});
+
+test("单文件 userscript 元数据描述完整能力并匹配三个站点的双好友页", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "src", "index.user.js"),
+    "utf8",
+  );
+  const matches = [...source.matchAll(/^\/\/ @match\s+(\S+)$/gm)].map(
+    ([, value]) => value,
+  );
+
+  assert.deepEqual(matches, [
+    "https://bgm.tv/user/*/friends",
+    "https://bgm.tv/user/*/rev_friends",
+    "https://bangumi.tv/user/*/friends",
+    "https://bangumi.tv/user/*/rev_friends",
+    "https://chii.in/user/*/friends",
+    "https://chii.in/user/*/rev_friends",
+  ]);
+  assert.match(
+    source,
+    /^\/\/ @description\s+.*上次活跃.*喜好契合.*完成条目数.*$/m,
+  );
+  assert.doesNotMatch(source, /^\s*(?:import|export)\s/m);
 });
 
 test("页面初始化使用注入时钟判断 v2 上次活跃记录迁移有效期", async () => {

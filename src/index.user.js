@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bangumi 好友排序
 // @namespace    https://github.com/imagebuilder1837/bangumi-friend-sorter
-// @version      0.1.4
-// @description  为好友/反向好友页增加多种排序方式。
+// @version      0.1.5
+// @description  为好友/反向好友页增加上次活跃、喜好契合和完成条目数等排序方式。
 // @author       imagebuilder1837
 // @match        https://bgm.tv/user/*/friends
 // @match        https://bgm.tv/user/*/rev_friends
