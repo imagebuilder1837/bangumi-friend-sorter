@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bangumi 好友排序
 // @namespace    https://github.com/imagebuilder1837/bangumi-friend-sorter
-// @version      0.1.2
+// @version      0.1.3
 // @description  为好友/反向好友页增加多种排序方式。
 // @author       imagebuilder1837
 // @match        https://bgm.tv/user/*/friends
@@ -29,6 +29,10 @@
     ADDED: "added",
     NAME: "name",
   });
+  const DIRECTION = Object.freeze({
+    ASCENDING: "asc",
+    DESCENDING: "desc",
+  });
   const ACTIVITY_STATUS = Object.freeze({
     ARMED: "armed",
     COMPLETED: "completed",
@@ -40,6 +44,30 @@
     [SORT.NAME, "名称"],
     [SORT.ACTIVITY, "上次活跃"],
   ];
+
+  function directionLabelsFor(criterion) {
+    if (criterion === SORT.NAME) {
+      return {
+        [DIRECTION.ASCENDING]: "升序",
+        [DIRECTION.DESCENDING]: "降序",
+      };
+    }
+    return {
+      [DIRECTION.ASCENDING]: "从旧到新",
+      [DIRECTION.DESCENDING]: "从新到旧",
+    };
+  }
+
+  function defaultDirectionFor(criterion) {
+    return criterion === SORT.NAME
+      ? DIRECTION.ASCENDING
+      : DIRECTION.DESCENDING;
+  }
+
+  function isAscendingDirection(direction, criterion) {
+    const effectiveDirection = direction || defaultDirectionFor(criterion);
+    return effectiveDirection === DIRECTION.ASCENDING;
+  }
 
   function isActivityRecord(value) {
     if (!value || !Number.isFinite(value.fetchedAt)) return false;
@@ -102,16 +130,21 @@
       numeric: true,
       sensitivity: "base",
     }),
+    direction,
   ) {
     const sorted = [...friends];
+    const isAscending = isAscendingDirection(direction, criterion);
 
     if (criterion === SORT.ADDED) {
-      sorted.sort((left, right) => left.originalIndex - right.originalIndex);
+      sorted.sort(
+        (left, right) =>
+          (left.originalIndex - right.originalIndex) * (isAscending ? -1 : 1),
+      );
     }
 
     if (criterion === SORT.NAME) {
       sorted.sort((left, right) => {
-        return (
+        return (isAscending ? 1 : -1) * (
           collator.compare(left.displayName, right.displayName) ||
           collator.compare(left.userId, right.userId)
         );
@@ -127,7 +160,8 @@
 
         if (leftHasTime && rightHasTime) {
           return (
-            rightActivity.activityAtSeconds - leftActivity.activityAtSeconds ||
+            (leftActivity.activityAtSeconds - rightActivity.activityAtSeconds) *
+              (isAscending ? 1 : -1) ||
             left.originalIndex - right.originalIndex
           );
         }
@@ -353,12 +387,20 @@
     return friends.every(Boolean) ? friends : [];
   }
 
-  function applyFriendSort(list, friends, criterion, activityByUser, collator) {
+  function applyFriendSort(
+    list,
+    friends,
+    criterion,
+    activityByUser,
+    collator,
+    direction,
+  ) {
     for (const friend of sortFriends(
       friends,
       criterion,
       activityByUser,
       collator,
+      direction,
     )) {
       list.append(friend.element);
     }
@@ -366,11 +408,23 @@
 
   function installStyles(document) {
     const style = document.createElement("style");
+    // The site styles #browserTools itself, but its filter rules target links.
+    // These button rules mirror them; aria-current remains semantic only.
+    // See docs/spec.md, "原站样式基线", for the verified source and selectors.
     style.textContent = `
       #bangumi-friend-sorter.filters {
         align-items: baseline;
         display: flex;
         flex-wrap: wrap;
+      }
+      #bangumi-friend-sorter .bangumi-friend-sorter-sort-options,
+      #bangumi-friend-sorter .bangumi-friend-sorter-direction-options {
+        align-items: baseline;
+        display: flex;
+        flex-wrap: wrap;
+      }
+      #bangumi-friend-sorter .bangumi-friend-sorter-direction-options {
+        margin-left: auto;
       }
       #bangumi-friend-sorter button.l {
         appearance: none;
@@ -400,8 +454,9 @@
     document.head.append(style);
   }
 
-  function createSortBar(document, onSelect) {
+  function createSortBar(document, onSelect, onDirectionSelect = () => {}) {
     const bar = document.createElement("div");
+    // Reuse the site's #browserTools frame, including its horizontal borders.
     bar.id = "browserTools";
     bar.className = "clearit";
     bar.dataset.friendSorter = "";
@@ -410,7 +465,10 @@
     const filters = document.createElement("div");
     filters.className = "filters";
     filters.id = "bangumi-friend-sorter";
-    filters.append("按");
+
+    const sortOptions = document.createElement("span");
+    sortOptions.className = "bangumi-friend-sorter-sort-options";
+    sortOptions.append("按");
 
     const buttons = new Map();
     for (const [criterion, label] of SORT_CHOICES) {
@@ -419,22 +477,44 @@
       button.className = "l";
       button.textContent = label;
       button.addEventListener("click", () => onSelect(criterion));
-      filters.append(button);
+      sortOptions.append(button);
       buttons.set(criterion, button);
     }
 
-    filters.append("排序");
+    sortOptions.append("排序");
     const status = document.createElement("span");
     status.id = "bangumi-friend-sorter-status";
     status.setAttribute("aria-live", "polite");
-    filters.append(status);
+    sortOptions.append(status);
+
+    const directionOptions = document.createElement("span");
+    directionOptions.className = "bangumi-friend-sorter-direction-options";
+    const directionButtons = new Map();
+    const initialDirectionLabels = directionLabelsFor(SORT.ADDED);
+    for (const direction of [DIRECTION.ASCENDING, DIRECTION.DESCENDING]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "l";
+      button.textContent = initialDirectionLabels[direction];
+      button.addEventListener("click", () => onDirectionSelect(direction));
+      directionOptions.append(button);
+      directionButtons.set(direction, button);
+    }
+
+    filters.append(sortOptions, directionOptions);
     bar.append(filters);
 
     return {
       bar,
-      setCurrent(criterion) {
+      setCurrent(criterion, direction = defaultDirectionFor(criterion)) {
         for (const [value, button] of buttons) {
           if (value === criterion) button.setAttribute("aria-current", "true");
+          else button.removeAttribute("aria-current");
+        }
+        const labels = directionLabelsFor(criterion);
+        for (const [value, button] of directionButtons) {
+          button.textContent = labels[value];
+          if (value === direction) button.setAttribute("aria-current", "true");
           else button.removeAttribute("aria-current");
         }
       },
@@ -540,6 +620,9 @@
       sensitivity: "base",
     });
     let currentCriterion = SORT.ADDED;
+    const directionByCriterion = new Map(
+      SORT_CHOICES.map(([criterion]) => [criterion, defaultDirectionFor(criterion)]),
+    );
     let activityTask = null;
     let statusTimer = null;
     let statusKind = ACTIVITY_STATUS.IDLE;
@@ -597,6 +680,7 @@
             SORT.ACTIVITY,
             activityCache,
             collator,
+            directionByCriterion.get(SORT.ACTIVITY),
           );
         }
         setStatus(
@@ -619,8 +703,9 @@
       if (action.kind === "ignore") return;
 
       currentCriterion = criterion;
-      controls.setCurrent(criterion);
-      applyFriendSort(list, friends, criterion, activityCache, collator);
+      const direction = directionByCriterion.get(criterion);
+      controls.setCurrent(criterion, direction);
+      applyFriendSort(list, friends, criterion, activityCache, collator, direction);
 
       if (action.clearPrompt) clearStatus();
       if (action.kind === "arm") {
@@ -637,14 +722,34 @@
       }
     }
 
-    const controls = createSortBar(document, selectCriterion);
+    function selectDirection(direction) {
+      if (directionByCriterion.get(currentCriterion) === direction) return;
+
+      directionByCriterion.set(currentCriterion, direction);
+      controls.setCurrent(currentCriterion, direction);
+      applyFriendSort(
+        list,
+        friends,
+        currentCriterion,
+        activityCache,
+        collator,
+        direction,
+      );
+    }
+
+    const controls = createSortBar(document, selectCriterion, selectDirection);
     installStyles(document);
     list.before(controls.bar);
-    controls.setCurrent(currentCriterion);
+    controls.setCurrent(
+      currentCriterion,
+      directionByCriterion.get(currentCriterion),
+    );
   }
 
   const core = {
     createActivityCache,
+    createSortBar,
+    directionLabelsFor,
     findFriendsNeedingActivity,
     initialize,
     needsLargeRequestConfirmation,

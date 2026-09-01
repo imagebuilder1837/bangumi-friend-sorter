@@ -16,10 +16,22 @@ function friendPageWith(entries) {
       this.textContent = "";
     }
 
-    addEventListener() {}
+    addEventListener(type, handler) {
+      this.listeners ??= new Map();
+      this.listeners.set(type, handler);
+    }
+
+    click() {
+      this.listeners?.get("click")?.();
+    }
 
     append(...children) {
-      this.children.push(...children);
+      for (const child of children) {
+        if (child && this.children.includes(child)) {
+          this.children.splice(this.children.indexOf(child), 1);
+        }
+        this.children.push(child);
+      }
     }
 
     before(...nodes) {
@@ -45,6 +57,7 @@ function friendPageWith(entries) {
     anchor.setAttribute("href", href);
     anchor.textContent = name;
     const item = new Element("li");
+    item.textContent = name;
     item.querySelector = (selector) => {
       assert.equal(selector, 'a.avatar[href*="/user/"]');
       return anchor;
@@ -142,7 +155,7 @@ function timelineDocumentFromFixture(filename) {
   };
 }
 
-test("加好友时间排序恢复网页默认顺序", () => {
+test("加好友时间默认从新到旧，也支持从旧到新", () => {
   const friends = [
     { userId: "third", displayName: "三", originalIndex: 2 },
     { userId: "first", displayName: "一", originalIndex: 0 },
@@ -153,9 +166,15 @@ test("加好友时间排序恢复网页默认顺序", () => {
     sorter.sortFriends(friends, "added", new Map()).map(({ userId }) => userId),
     ["first", "second", "third"],
   );
+  assert.deepEqual(
+    sorter.sortFriends(friends, "added", new Map(), undefined, "asc").map(
+      ({ userId }) => userId,
+    ),
+    ["third", "second", "first"],
+  );
 });
 
-test("名称排序使用展示名称自然升序并以用户主键决胜", () => {
+test("名称排序支持升序和降序，同名随方向比较用户主键", () => {
   const friends = [
     { userId: "z", displayName: "user10", originalIndex: 0 },
     { userId: "b", displayName: "User2", originalIndex: 1 },
@@ -167,9 +186,15 @@ test("名称排序使用展示名称自然升序并以用户主键决胜", () =>
     sorter.sortFriends(friends, "name", new Map(), collator).map(({ userId }) => userId),
     ["a", "b", "z"],
   );
+  assert.deepEqual(
+    sorter.sortFriends(friends, "name", new Map(), collator, "desc").map(
+      ({ userId }) => userId,
+    ),
+    ["z", "b", "a"],
+  );
 });
 
-test("上次活跃按时间从近到远且其余好友保持网页相对顺序", () => {
+test("上次活跃支持从新到旧和从旧到新，未知时间始终在后", () => {
   const friends = [
     { userId: "unknown", displayName: "未知", originalIndex: 0 },
     { userId: "older", displayName: "较早", originalIndex: 1 },
@@ -188,6 +213,27 @@ test("上次活跃按时间从近到远且其余好友保持网页相对顺序",
     sorter.sortFriends(friends, "activity", activities).map(({ userId }) => userId),
     ["newer-a", "newer-b", "older", "unknown", "empty"],
   );
+  assert.deepEqual(
+    sorter.sortFriends(friends, "activity", activities, undefined, "asc").map(
+      ({ userId }) => userId,
+    ),
+    ["older", "newer-a", "newer-b", "unknown", "empty"],
+  );
+});
+
+test("方向文案随排序维度切换", () => {
+  assert.deepEqual(sorter.directionLabelsFor("name"), {
+    asc: "升序",
+    desc: "降序",
+  });
+  assert.deepEqual(sorter.directionLabelsFor("added"), {
+    asc: "从旧到新",
+    desc: "从新到旧",
+  });
+  assert.deepEqual(sorter.directionLabelsFor("activity"), {
+    asc: "从旧到新",
+    desc: "从新到旧",
+  });
 });
 
 test("仅为缺失或超过二十四小时的活跃缓存安排请求", () => {
@@ -211,6 +257,185 @@ test("仅为缺失或超过二十四小时的活跃缓存安排请求", () => {
     sorter.findFriendsNeedingActivity(friends, activities, now).map(({ userId }) => userId),
     ["stale", "missing"],
   );
+});
+
+test("排序栏分左右两组按钮并更新方向文案", () => {
+  const page = friendPageWith([]);
+  const criteria = [];
+  const directions = [];
+  const controls = sorter.createSortBar(
+    page.document,
+    (criterion) => criteria.push(criterion),
+    (direction) => directions.push(direction),
+  );
+  const filters = controls.bar.children[0];
+  const sortOptions = filters.children[0];
+  const directionOptions = filters.children[1];
+  const sortButtons = sortOptions.children.filter(
+    (child) => child?.tagName === "button",
+  );
+  const directionButtons = directionOptions.children.filter(
+    (child) => child?.tagName === "button",
+  );
+
+  assert.equal(sortOptions.className, "bangumi-friend-sorter-sort-options");
+  assert.equal(
+    directionOptions.className,
+    "bangumi-friend-sorter-direction-options",
+  );
+  assert.deepEqual(sortButtons.map(({ textContent }) => textContent), [
+    "加好友时间",
+    "名称",
+    "上次活跃",
+  ]);
+
+  controls.setCurrent("name", "desc");
+  assert.deepEqual(directionButtons.map(({ textContent }) => textContent), [
+    "升序",
+    "降序",
+  ]);
+  assert.equal(sortButtons[1].getAttribute("aria-current"), "true");
+  assert.equal(directionButtons[1].getAttribute("aria-current"), "true");
+  directionButtons[0].click();
+  sortButtons[2].click();
+  assert.deepEqual(directions, ["asc"]);
+  assert.deepEqual(criteria, ["activity"]);
+
+  controls.setCurrent("activity", "asc");
+  assert.deepEqual(directionButtons.map(({ textContent }) => textContent), [
+    "从旧到新",
+    "从新到旧",
+  ]);
+  assert.equal(directionButtons[0].getAttribute("aria-current"), "true");
+});
+
+test("页面交互按排序维度记忆方向并仅重排当前缓存", () => {
+  const page = friendPageWith([
+    { href: "/user/z", name: "Zed" },
+    { href: "/user/b", name: "Bob" },
+    { href: "/user/a", name: "Ada" },
+  ]);
+  const previousDocument = global.document;
+  const previousWindow = global.window;
+  global.document = page.document;
+  global.window = {
+    localStorage: {
+      getItem: () => null,
+      removeItem() {},
+      setItem() {},
+    },
+    location: { href: "https://bgm.tv/user/sai/friends" },
+  };
+
+  try {
+    sorter.initialize();
+  } finally {
+    global.document = previousDocument;
+    global.window = previousWindow;
+  }
+
+  const filters = page.list.beforeNodes[0].children[0];
+  const sortOptions = filters.children[0];
+  const directionOptions = filters.children[1];
+  const sortButtons = sortOptions.children.filter(
+    (child) => child?.tagName === "button",
+  );
+  const directionButtons = directionOptions.children.filter(
+    (child) => child?.tagName === "button",
+  );
+
+  sortButtons[1].click();
+  assert.deepEqual(page.list.children.map((item) => item.textContent), [
+    "Ada",
+    "Bob",
+    "Zed",
+  ]);
+  directionButtons[1].click();
+  assert.deepEqual(page.list.children.map((item) => item.textContent), [
+    "Zed",
+    "Bob",
+    "Ada",
+  ]);
+  sortButtons[0].click();
+  assert.deepEqual(directionButtons.map(({ textContent }) => textContent), [
+    "从旧到新",
+    "从新到旧",
+  ]);
+  sortButtons[1].click();
+  assert.equal(directionButtons[1].getAttribute("aria-current"), "true");
+  assert.deepEqual(page.list.children.map((item) => item.textContent), [
+    "Zed",
+    "Bob",
+    "Ada",
+  ]);
+});
+
+test("活跃刷新完成后沿用刷新期间选择的方向", async () => {
+  const page = friendPageWith([
+    { href: "/user/a", name: "Ada" },
+    { href: "/user/b", name: "Bob" },
+  ]);
+  const previousDocument = global.document;
+  const previousWindow = global.window;
+  const previousDomParser = global.DOMParser;
+  const fetchedAt = Date.now();
+  global.document = page.document;
+  global.DOMParser = class {
+    parseFromString() {
+      return timelineDocumentFromFixture("timeline-active-seconds.html");
+    }
+  };
+  global.window = {
+    fetch: async () => ({
+      ok: true,
+      headers: { get: () => null },
+      text: async () => "fixture",
+    }),
+    localStorage: {
+      getItem(key) {
+        if (key !== "bangumi-friend-sorter:activity-cache:v2") return null;
+        return JSON.stringify({
+          version: 2,
+          records: {
+            b: {
+              kind: "active",
+              activityAtSeconds: Date.UTC(2026, 7, 27) / 1_000,
+              fetchedAt,
+            },
+          },
+        });
+      },
+      removeItem() {},
+      setItem() {},
+    },
+    location: { href: "https://bgm.tv/user/sai/friends" },
+  };
+
+  try {
+    sorter.initialize();
+    const filters = page.list.beforeNodes[0].children[0];
+    const sortOptions = filters.children[0];
+    const directionOptions = filters.children[1];
+    const sortButtons = sortOptions.children.filter(
+      (child) => child?.tagName === "button",
+    );
+    const directionButtons = directionOptions.children.filter(
+      (child) => child?.tagName === "button",
+    );
+
+    sortButtons[2].click();
+    directionButtons[0].click();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(page.list.children.map((item) => item.textContent), [
+      "Ada",
+      "Bob",
+    ]);
+  } finally {
+    global.document = previousDocument;
+    global.window = previousWindow;
+    global.DOMParser = previousDomParser;
+  }
 });
 
 test("上次活跃点击按排序切换、待命和刷新状态分流", () => {
