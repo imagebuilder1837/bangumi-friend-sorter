@@ -157,24 +157,24 @@ function timelineDocumentFromFixture(filename) {
 
 test("加好友时间默认从旧到新，也支持从新到旧", () => {
   const friends = [
-    { userId: "third", displayName: "三", originalIndex: 2 },
-    { userId: "first", displayName: "一", originalIndex: 0 },
-    { userId: "second", displayName: "二", originalIndex: 1 },
+    { userIdentifier: "third", displayName: "三", originalIndex: 2 },
+    { userIdentifier: "first", displayName: "一", originalIndex: 0 },
+    { userIdentifier: "second", displayName: "二", originalIndex: 1 },
   ];
 
   assert.deepEqual(
-    sorter.sortFriends(friends, "added", new Map()).map(({ userId }) => userId),
+    sorter.sortFriends(friends, "added", new Map()).map(({ userIdentifier }) => userIdentifier),
     ["first", "second", "third"],
   );
   assert.deepEqual(
     sorter.sortFriends(friends, "added", new Map(), undefined, "asc").map(
-      ({ userId }) => userId,
+      ({ userIdentifier }) => userIdentifier,
     ),
     ["first", "second", "third"],
   );
   assert.deepEqual(
     sorter.sortFriends(friends, "added", new Map(), undefined, "desc").map(
-      ({ userId }) => userId,
+      ({ userIdentifier }) => userIdentifier,
     ),
     ["third", "second", "first"],
   );
@@ -182,19 +182,19 @@ test("加好友时间默认从旧到新，也支持从新到旧", () => {
 
 test("名称排序支持升序和降序，同名随方向比较用户主键", () => {
   const friends = [
-    { userId: "z", displayName: "user10", originalIndex: 0 },
-    { userId: "b", displayName: "User2", originalIndex: 1 },
-    { userId: "a", displayName: "user2", originalIndex: 2 },
+    { userIdentifier: "z", displayName: "user10", originalIndex: 0 },
+    { userIdentifier: "b", displayName: "User2", originalIndex: 1 },
+    { userIdentifier: "a", displayName: "user2", originalIndex: 2 },
   ];
   const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 
   assert.deepEqual(
-    sorter.sortFriends(friends, "name", new Map(), collator).map(({ userId }) => userId),
+    sorter.sortFriends(friends, "name", new Map(), collator).map(({ userIdentifier }) => userIdentifier),
     ["a", "b", "z"],
   );
   assert.deepEqual(
     sorter.sortFriends(friends, "name", new Map(), collator, "desc").map(
-      ({ userId }) => userId,
+      ({ userIdentifier }) => userIdentifier,
     ),
     ["z", "b", "a"],
   );
@@ -202,11 +202,11 @@ test("名称排序支持升序和降序，同名随方向比较用户主键", ()
 
 test("上次活跃支持从新到旧和从旧到新，未知时间始终在后", () => {
   const friends = [
-    { userId: "unknown", displayName: "未知", originalIndex: 0 },
-    { userId: "older", displayName: "较早", originalIndex: 1 },
-    { userId: "empty", displayName: "无动态", originalIndex: 2 },
-    { userId: "newer-a", displayName: "较新甲", originalIndex: 3 },
-    { userId: "newer-b", displayName: "较新乙", originalIndex: 4 },
+    { userIdentifier: "unknown", displayName: "未知", originalIndex: 0 },
+    { userIdentifier: "older", displayName: "较早", originalIndex: 1 },
+    { userIdentifier: "empty", displayName: "无动态", originalIndex: 2 },
+    { userIdentifier: "newer-a", displayName: "较新甲", originalIndex: 3 },
+    { userIdentifier: "newer-b", displayName: "较新乙", originalIndex: 4 },
   ];
   const activities = new Map([
     ["older", { kind: "active", activityAtSeconds: 1, fetchedAt: 4_000 }],
@@ -216,12 +216,12 @@ test("上次活跃支持从新到旧和从旧到新，未知时间始终在后",
   ]);
 
   assert.deepEqual(
-    sorter.sortFriends(friends, "activity", activities).map(({ userId }) => userId),
+    sorter.sortFriends(friends, "activity", activities).map(({ userIdentifier }) => userIdentifier),
     ["newer-a", "newer-b", "older", "unknown", "empty"],
   );
   assert.deepEqual(
     sorter.sortFriends(friends, "activity", activities, undefined, "asc").map(
-      ({ userId }) => userId,
+      ({ userIdentifier }) => userIdentifier,
     ),
     ["older", "newer-a", "newer-b", "unknown", "empty"],
   );
@@ -246,11 +246,11 @@ test("仅为缺失或超过二十四小时的活跃缓存安排请求", () => {
   const hour = 60 * 60 * 1_000;
   const now = 30 * hour;
   const friends = [
-    { userId: "fresh-active" },
-    { userId: "fresh-empty" },
-    { userId: "boundary" },
-    { userId: "stale" },
-    { userId: "missing" },
+    { userIdentifier: "fresh-active" },
+    { userIdentifier: "fresh-empty" },
+    { userIdentifier: "boundary" },
+    { userIdentifier: "stale" },
+    { userIdentifier: "missing" },
   ];
   const activities = new Map([
     ["fresh-active", { kind: "active", activityAtSeconds: 10, fetchedAt: now - hour }],
@@ -260,7 +260,7 @@ test("仅为缺失或超过二十四小时的活跃缓存安排请求", () => {
   ]);
 
   assert.deepEqual(
-    sorter.findFriendsNeedingActivity(friends, activities, now).map(({ userId }) => userId),
+    sorter.findFriendsNeedingActivity(friends, activities, now).map(({ userIdentifier }) => userIdentifier),
     ["stale", "missing"],
   );
 });
@@ -637,7 +637,7 @@ test("升级缓存版本时迁移有效的 v2 活跃记录到 v3", () => {
     },
   };
 
-  const cache = sorter.createActivityCache(storage);
+  const cache = sorter.createActivityCache(storage, { now: () => 3_000 });
 
   assert.deepEqual(cache.get("sai"), record);
   assert.deepEqual(writes, [[
@@ -647,6 +647,39 @@ test("升级缓存版本时迁移有效的 v2 活跃记录到 v3", () => {
   assert.deepEqual(removedKeys, [
     "bangumi-friend-sorter:activity-cache:v2",
     "bangumi-friend-sorter:activity-cache:v1",
+  ]);
+});
+
+test("v2 活跃记录迁移遵守二十四小时有效期边界", () => {
+  const hour = 60 * 60 * 1_000;
+  const now = 100 * hour;
+  const records = {
+    fresh: { kind: "active", activityAtSeconds: 1, fetchedAt: now - hour },
+    boundary: {
+      kind: "active",
+      activityAtSeconds: 2,
+      fetchedAt: now - 24 * hour,
+    },
+    stale: {
+      kind: "active",
+      activityAtSeconds: 3,
+      fetchedAt: now - 24 * hour - 1,
+    },
+  };
+  const storage = {
+    getItem(key) {
+      if (key !== "bangumi-friend-sorter:activity-cache:v2") return null;
+      return JSON.stringify({ version: 2, records });
+    },
+    removeItem() {},
+    setItem() {},
+  };
+
+  const cache = sorter.createActivityCache(storage, { now: () => now });
+
+  assert.deepEqual([...cache.entries()], [
+    ["fresh", records.fresh],
+    ["boundary", records.boundary],
   ]);
 });
 
@@ -676,6 +709,7 @@ test("v3 缓存不完整时仍合并尚未迁移的 v2 活跃记录", () => {
     fieldValidators: {
       preference: (value) => Number.isFinite(value?.value),
     },
+    now: () => 3_000,
   });
 
   assert.deepEqual(cache.get("sai"), {
@@ -789,11 +823,11 @@ test("请求响应头的时间按整秒传给活跃时间解析并写入秒级�
   const records = [];
   const responseTime = Date.UTC(2026, 7, 26, 9, 43, 36);
 
-  await sorter.refreshActivities([{ userId: "sai" }], {
+  await sorter.refreshActivities([{ userIdentifier: "sai" }], {
     cache: {
       persist() {},
-      set(userId, record) {
-        records.push([userId, record]);
+      set(userIdentifier, record) {
+        records.push([userIdentifier, record]);
       },
     },
     domParser: { parseFromString: () => document },
@@ -820,7 +854,7 @@ test("时间胶囊返回四零四时计入失败且不覆盖缓存", async () =>
   let cacheWrites = 0;
   const progress = [];
 
-  const result = await sorter.refreshActivities([{ userId: "missing" }], {
+  const result = await sorter.refreshActivities([{ userIdentifier: "missing" }], {
     cache: {
       persist() {},
       set() {
@@ -844,18 +878,21 @@ test("页面获取任务通过请求结果、成功回调和进度回调驱动",
   const progress = [];
 
   const result = await sorter.runPageFetchTask(["sai", "tom"], {
-    fetchPage: async (userId) => {
-      requested.push(userId);
-      return { kind: "success", record: { userId, fetchedAt: 2_000 } };
+    fetchPage: async (userIdentifier) => {
+      requested.push(userIdentifier);
+      return {
+        kind: "success",
+        record: { userIdentifier, fetchedAt: 2_000 },
+      };
     },
-    onSuccess: (userId, record) => saved.push([userId, record]),
+    onSuccess: (userIdentifier, record) => saved.push([userIdentifier, record]),
     onProgress: (completed, total) => progress.push([completed, total]),
   });
 
   assert.deepEqual(requested.sort(), ["sai", "tom"]);
   assert.deepEqual(saved.sort(([left], [right]) => left.localeCompare(right)), [
-    ["sai", { userId: "sai", fetchedAt: 2_000 }],
-    ["tom", { userId: "tom", fetchedAt: 2_000 }],
+    ["sai", { userIdentifier: "sai", fetchedAt: 2_000 }],
+    ["tom", { userIdentifier: "tom", fetchedAt: 2_000 }],
   ]);
   assert.deepEqual(result, { failures: 0, stopped: false });
   assert.deepEqual(

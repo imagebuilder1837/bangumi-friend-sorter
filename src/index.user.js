@@ -70,13 +70,21 @@
     return effectiveDirection === DIRECTION.ASCENDING;
   }
 
+  function userIdentifierFor(friend) {
+    // Accept the pre-v3 friend shape while using the glossary term everywhere new.
+    return friend.userIdentifier ?? friend.userId;
+  }
+
   function isActivityRecord(value) {
     if (!value || !Number.isFinite(value.fetchedAt)) return false;
     if (value.kind === "empty") return true;
     return value.kind === "active" && Number.isInteger(value.activityAtSeconds);
   }
 
-  function createFriendCache(storage, { fieldValidators = {} } = {}) {
+  function createFriendCache(
+    storage,
+    { fieldValidators = {}, now = Date.now } = {},
+  ) {
     const records = new Map();
     const validators = new Map([
       ["activity", isActivityRecord],
@@ -124,9 +132,9 @@
         return false;
       }
 
-      for (const [userId, value] of Object.entries(saved.records)) {
+      for (const [userIdentifier, value] of Object.entries(saved.records)) {
         const fields = validateFields(value);
-        if (Object.keys(fields).length > 0) records.set(userId, fields);
+        if (Object.keys(fields).length > 0) records.set(userIdentifier, fields);
       }
       return true;
     }
@@ -153,19 +161,27 @@
       typeof previous.records === "object" &&
       !Array.isArray(previous.records)
     ) {
+      const migrationNow = now();
       let migrated = false;
-      for (const [userId, record] of Object.entries(previous.records)) {
+      for (const [userIdentifier, record] of Object.entries(previous.records)) {
         if (
           validators.get("activity")?.(record) &&
-          !records.get(userId)?.activity
+          Number.isFinite(migrationNow) &&
+          migrationNow - record.fetchedAt <= CACHE_TTL_MS &&
+          !records.get(userIdentifier)?.activity
         ) {
-          records.set(userId, { ...records.get(userId), activity: record });
+          records.set(userIdentifier, {
+            ...records.get(userIdentifier),
+            activity: record,
+          });
           migrated = true;
         }
       }
       if (migrated) {
         if (persist()) remove(PREVIOUS_CACHE_STORAGE_KEY);
       } else if (hasCurrentCache) {
+        remove(PREVIOUS_CACHE_STORAGE_KEY);
+      } else if (persist()) {
         remove(PREVIOUS_CACHE_STORAGE_KEY);
       }
     }
@@ -174,46 +190,49 @@
 
     return {
       entries: () => records.entries(),
-      get: (userId) => records.get(userId),
-      getField(userId, field) {
-        return records.get(userId)?.[field];
+      get: (userIdentifier) => records.get(userIdentifier),
+      getField(userIdentifier, field) {
+        return records.get(userIdentifier)?.[field];
       },
       persist,
-      setField(userId, field, value, shouldPersist = true) {
+      setField(userIdentifier, field, value, shouldPersist = true) {
         const validator = validators.get(field);
         if (typeof validator !== "function" || !validator(value)) {
           return this;
         }
-        const fields = records.get(userId) || {};
+        const fields = records.get(userIdentifier) || {};
         fields[field] = value;
-        records.set(userId, fields);
+        records.set(userIdentifier, fields);
         if (shouldPersist) persist();
         return this;
       },
-      setFields(userId, values, shouldPersist = true) {
+      setFields(userIdentifier, values, shouldPersist = true) {
         const fields = validateFields(values);
         if (Object.keys(fields).length === 0) return this;
-        records.set(userId, { ...records.get(userId), ...fields });
+        records.set(userIdentifier, {
+          ...records.get(userIdentifier),
+          ...fields,
+        });
         if (shouldPersist) persist();
         return this;
       },
     };
   }
 
-  function createActivityCache(storage) {
-    const cache = createFriendCache(storage);
+  function createActivityCache(storage, options) {
+    const cache = createFriendCache(storage, options);
     return {
       entries() {
         return (function* () {
-          for (const [userId, fields] of cache.entries()) {
-            yield [userId, fields.activity];
+          for (const [userIdentifier, fields] of cache.entries()) {
+            yield [userIdentifier, fields.activity];
           }
         })();
       },
-      get: (userId) => cache.getField(userId, "activity"),
+      get: (userIdentifier) => cache.getField(userIdentifier, "activity"),
       persist: () => cache.persist(),
-      set(userId, record, shouldPersist = true) {
-        cache.setField(userId, "activity", record, shouldPersist);
+      set(userIdentifier, record, shouldPersist = true) {
+        cache.setField(userIdentifier, "activity", record, shouldPersist);
         return this;
       },
     };
@@ -244,15 +263,18 @@
         return (
           (isAscending ? 1 : -1) *
           (collator.compare(left.displayName, right.displayName) ||
-            collator.compare(left.userId, right.userId))
+            collator.compare(
+              userIdentifierFor(left),
+              userIdentifierFor(right),
+            ))
         );
       });
     }
 
     if (criterion === SORT.ACTIVITY) {
       sorted.sort((left, right) => {
-        const leftActivity = activityByUser.get(left.userId);
-        const rightActivity = activityByUser.get(right.userId);
+        const leftActivity = activityByUser.get(userIdentifierFor(left));
+        const rightActivity = activityByUser.get(userIdentifierFor(right));
         const leftHasTime = leftActivity?.kind === "active";
         const rightHasTime = rightActivity?.kind === "active";
 
@@ -273,7 +295,7 @@
 
   function findFriendsNeedingActivity(friends, activityByUser, now) {
     return friends.filter((friend) => {
-      const activity = activityByUser.get(friend.userId);
+      const activity = activityByUser.get(userIdentifierFor(friend));
       return !activity || now - activity.fetchedAt > CACHE_TTL_MS;
     });
   }
@@ -509,18 +531,18 @@
       const anchor = element.querySelector('a.avatar[href*="/user/"]');
       if (!anchor) return null;
 
-      let userId;
+      let userIdentifier;
       try {
         const pathname = new URL(anchor.getAttribute("href"), baseUrl).pathname;
         const match = /^\/user\/([^/]+)\/?$/.exec(pathname);
-        userId = match ? decodeURIComponent(match[1]) : null;
+        userIdentifier = match ? decodeURIComponent(match[1]) : null;
       } catch {
         return null;
       }
 
       const displayName = anchor.textContent.trim();
-      if (!userId) return null;
-      return { displayName, element, originalIndex, userId };
+      if (!userIdentifier) return null;
+      return { displayName, element, originalIndex, userIdentifier };
     });
 
     return friends.every(Boolean) ? friends : [];
@@ -667,7 +689,7 @@
 
     try {
       const response = await fetchImpl(
-        `/user/${encodeURIComponent(friend.userId)}/timeline`,
+        `/user/${encodeURIComponent(userIdentifierFor(friend))}/timeline`,
         {
           credentials: "same-origin",
           signal: controller.signal,
@@ -704,7 +726,7 @@
           options.now,
         ),
       onSuccess(friend, record) {
-        options.cache.set(friend.userId, record, false);
+        options.cache.set(userIdentifierFor(friend), record, false);
       },
       onProgress: options.onProgress,
     });
