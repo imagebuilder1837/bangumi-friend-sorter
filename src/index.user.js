@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bangumi 好友排序
 // @namespace    https://github.com/imagebuilder1837/bangumi-friend-sorter
-// @version      0.1.3
+// @version      0.1.4
 // @description  为好友/反向好友页增加多种排序方式。
 // @author       imagebuilder1837
 // @match        https://bgm.tv/user/*/friends
@@ -21,6 +21,7 @@
   "use strict";
 
   const CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
+  const COMPLETION_CACHE_TTL_MS = 72 * 60 * 60 * 1_000;
   const SITE_OFFSET_SECONDS = 8 * 60 * 60;
   const CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v3";
   const PREVIOUS_CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v2";
@@ -28,7 +29,16 @@
   const SORT = Object.freeze({
     ACTIVITY: "activity",
     ADDED: "added",
+    COMPLETION: "completion",
     NAME: "name",
+  });
+  const COMPLETION_SCOPE = Object.freeze({
+    ALL: "all",
+    ANIMATION: "2",
+    BOOK: "1",
+    MUSIC: "3",
+    GAME: "4",
+    REAL_LIFE: "6",
   });
   const DIRECTION = Object.freeze({
     ASCENDING: "asc",
@@ -45,12 +55,27 @@
     [SORT.NAME, "名称"],
     [SORT.ACTIVITY, "上次活跃"],
   ];
+  const COMPLETION_CHOICES = [
+    [COMPLETION_SCOPE.ALL, "全部"],
+    [COMPLETION_SCOPE.ANIMATION, "动画"],
+    [COMPLETION_SCOPE.BOOK, "书籍"],
+    [COMPLETION_SCOPE.MUSIC, "音乐"],
+    [COMPLETION_SCOPE.GAME, "游戏"],
+    [COMPLETION_SCOPE.REAL_LIFE, "三次元"],
+  ];
+  const COMPLETION_CACHE_FIELD_PREFIX = "completion_";
 
   function directionLabelsFor(criterion) {
     if (criterion === SORT.NAME) {
       return {
         [DIRECTION.ASCENDING]: "升序",
         [DIRECTION.DESCENDING]: "降序",
+      };
+    }
+    if (criterion === SORT.COMPLETION) {
+      return {
+        [DIRECTION.ASCENDING]: "从低到高",
+        [DIRECTION.DESCENDING]: "从高到低",
       };
     }
     return {
@@ -79,6 +104,51 @@
     if (!value || !Number.isFinite(value.fetchedAt)) return false;
     if (value.kind === "empty") return true;
     return value.kind === "active" && Number.isInteger(value.activityAtSeconds);
+  }
+
+  function completionFieldFor(scope) {
+    return `${COMPLETION_CACHE_FIELD_PREFIX}${scope}`;
+  }
+
+  function isCompletionRecord(value) {
+    return Boolean(
+      value &&
+      typeof value === "object" &&
+      Number.isSafeInteger(value.value) &&
+      value.value >= 0 &&
+      Number.isFinite(value.fetchedAt),
+    );
+  }
+
+  function completionCacheFieldValidators() {
+    return Object.fromEntries(
+      COMPLETION_CHOICES.map(([scope]) => [
+        completionFieldFor(scope),
+        isCompletionRecord,
+      ]),
+    );
+  }
+
+  function completionRecordFromValue(value) {
+    if (isCompletionRecord(value)) return value;
+    if (Number.isSafeInteger(value) && value >= 0) {
+      return { value, fetchedAt: 0 };
+    }
+    return null;
+  }
+
+  function completionRecordFor(source, userIdentifier, scope) {
+    const field = completionFieldFor(scope);
+    if (typeof source?.getField === "function") {
+      return source.getField(userIdentifier, field);
+    }
+
+    const value = source?.get?.(userIdentifier);
+    return (
+      completionRecordFromValue(value) ||
+      completionRecordFromValue(value?.[field]) ||
+      completionRecordFromValue(value?.[scope])
+    );
   }
 
   function createFriendCache(
@@ -240,6 +310,17 @@
     };
   }
 
+  function activityCacheView(cache) {
+    return {
+      get: (userIdentifier) => cache.getField(userIdentifier, "activity"),
+      persist: () => cache.persist(),
+      set(userIdentifier, record, shouldPersist = true) {
+        cache.setField(userIdentifier, "activity", record, shouldPersist);
+        return this;
+      },
+    };
+  }
+
   function sortFriends(
     friends,
     criterion,
@@ -249,6 +330,7 @@
       sensitivity: "base",
     }),
     direction,
+    completionScope = COMPLETION_SCOPE.ALL,
   ) {
     const sorted = [...friends];
     const isAscending = isAscendingDirection(direction, criterion);
@@ -285,6 +367,33 @@
         }
         if (leftHasTime) return -1;
         if (rightHasTime) return 1;
+        return left.originalIndex - right.originalIndex;
+      });
+    }
+
+    if (criterion === SORT.COMPLETION) {
+      sorted.sort((left, right) => {
+        const leftCompletion = completionRecordFor(
+          activityByUser,
+          userIdentifierFor(left),
+          completionScope,
+        );
+        const rightCompletion = completionRecordFor(
+          activityByUser,
+          userIdentifierFor(right),
+          completionScope,
+        );
+        const leftHasValue = isCompletionRecord(leftCompletion);
+        const rightHasValue = isCompletionRecord(rightCompletion);
+
+        if (leftHasValue && rightHasValue) {
+          return (
+            (leftCompletion.value - rightCompletion.value) *
+              (isAscending ? 1 : -1) || left.originalIndex - right.originalIndex
+          );
+        }
+        if (leftHasValue) return -1;
+        if (rightHasValue) return 1;
         return left.originalIndex - right.originalIndex;
       });
     }
@@ -524,6 +633,135 @@
     return { failures, stopped: batchState.stopped };
   }
 
+  function parseCompletionCount(block) {
+    const descriptions = [...(block?.querySelectorAll?.(".desc") || [])];
+    const description = descriptions.find(
+      (node) => node.textContent.trim() === "完成",
+    );
+    if (!description) return null;
+
+    let card = description;
+    while (card && card !== block) {
+      const numberNode = card.querySelector?.(".num");
+      if (numberNode) {
+        const text = numberNode.textContent.trim().replace(/,/g, "");
+        if (!/^\d+$/.test(text)) return null;
+        const value = Number(text);
+        return Number.isSafeInteger(value) ? value : null;
+      }
+      card = card.parentElement;
+    }
+    return null;
+  }
+
+  function statsBlockFor(document, container, scope) {
+    const selector = `#userStats_${scope}`;
+    return (
+      container.querySelector?.(selector) || document.querySelector?.(selector)
+    );
+  }
+
+  function parseProfileDocument(document) {
+    const container = document?.querySelector?.("#userStatsContainers");
+    if (!container) return { kind: "invalid" };
+
+    const childCount = container.children?.length ?? 0;
+    if (childCount === 0 && container.textContent.trim() === "") {
+      return {
+        kind: "success",
+        values: Object.fromEntries(
+          COMPLETION_CHOICES.map(([scope]) => [scope, 0]),
+        ),
+      };
+    }
+
+    const aggregate = statsBlockFor(document, container, COMPLETION_SCOPE.ALL);
+    const aggregateValue = parseCompletionCount(aggregate);
+    if (!aggregate || aggregateValue === null) return { kind: "invalid" };
+
+    const values = { [COMPLETION_SCOPE.ALL]: aggregateValue };
+    for (const [scope] of COMPLETION_CHOICES.slice(1)) {
+      const block = statsBlockFor(document, container, scope);
+      if (!block) {
+        values[scope] = 0;
+        continue;
+      }
+      const value = parseCompletionCount(block);
+      if (value !== null) values[scope] = value;
+    }
+
+    return { kind: "success", values };
+  }
+
+  function findFriendsNeedingCompletion(
+    friends,
+    completionByUser,
+    scope = COMPLETION_SCOPE.ALL,
+    now = Date.now(),
+  ) {
+    if (typeof scope === "number") {
+      now = scope;
+      scope = COMPLETION_SCOPE.ALL;
+    }
+    return friends.filter((friend) => {
+      const completion = completionRecordFor(
+        completionByUser,
+        userIdentifierFor(friend),
+        scope,
+      );
+      return (
+        !completion || now - completion.fetchedAt > COMPLETION_CACHE_TTL_MS
+      );
+    });
+  }
+
+  async function fetchProfile(friend, fetchImpl, domParser, now) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+
+    try {
+      const response = await fetchImpl(
+        `/user/${encodeURIComponent(userIdentifierFor(friend))}`,
+        {
+          credentials: "same-origin",
+          signal: controller.signal,
+        },
+      );
+      if (!response.ok) return { kind: "http-error", status: response.status };
+
+      const html = await response.text();
+      const fetchedAt = now();
+      const document = domParser.parseFromString(html, "text/html");
+      const parsed = parseProfileDocument(document);
+      if (parsed.kind === "invalid") return { kind: "parse-error" };
+      return { kind: "success", record: { values: parsed.values, fetchedAt } };
+    } catch {
+      return { kind: "network-error" };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async function refreshCompletions(friends, options) {
+    const result = await runPageFetchTask(friends, {
+      fetchPage: (friend) =>
+        fetchProfile(friend, options.fetchImpl, options.domParser, options.now),
+      onSuccess(friend, record) {
+        for (const [scope, value] of Object.entries(record.values)) {
+          options.cache.setField(
+            userIdentifierFor(friend),
+            completionFieldFor(scope),
+            { value, fetchedAt: record.fetchedAt },
+            false,
+          );
+        }
+      },
+      onProgress: options.onProgress,
+    });
+    options.cache.persist();
+    return { failures: result.failures };
+  }
+
   function readFriends(list, baseUrl = window.location.href) {
     const elements = [...list.children];
     const friends = elements.map((element, originalIndex) => {
@@ -554,6 +792,7 @@
     activityByUser,
     collator,
     direction,
+    completionScope,
   ) {
     for (const friend of sortFriends(
       friends,
@@ -561,6 +800,7 @@
       activityByUser,
       collator,
       direction,
+      completionScope,
     )) {
       list.append(friend.element);
     }
@@ -585,6 +825,78 @@
       }
       #bangumi-friend-sorter .bangumi-friend-sorter-direction-options {
         margin-left: auto;
+      }
+      #browserTools.bangumi-friend-sorter-bar {
+        box-sizing: border-box;
+        width: 100%;
+      }
+      #bangumi-friend-sorter .bangumi-friend-sorter-dropdown {
+        display: inline-block;
+        position: relative;
+      }
+      #bangumi-friend-sorter .bangumi-friend-sorter-dropdown-menu {
+        -webkit-backdrop-filter: blur(5px);
+        backdrop-filter: blur(5px);
+        background-color: rgba(254, 254, 254, .9);
+        border: 1px solid #ddd;
+        border-radius: 5px;
+        box-shadow: 2px 2px 5px #eee;
+        display: flex;
+        flex-wrap: wrap;
+        left: -5px;
+        min-width: 230px;
+        opacity: 0;
+        padding: 0;
+        pointer-events: none;
+        position: absolute;
+        top: calc(100% + 3px);
+        transform: translateY(-4px);
+        transition: opacity .15s ease, transform .15s ease, visibility .15s;
+        visibility: hidden;
+        z-index: 10;
+      }
+      #bangumi-friend-sorter .bangumi-friend-sorter-dropdown:hover
+        .bangumi-friend-sorter-dropdown-menu,
+      #bangumi-friend-sorter .bangumi-friend-sorter-dropdown:focus-within
+        .bangumi-friend-sorter-dropdown-menu {
+        opacity: 1;
+        pointer-events: auto;
+        transform: translateY(0);
+        visibility: visible;
+      }
+      #bangumi-friend-sorter .bangumi-friend-sorter-dropdown-menu button.l {
+        border-left: 1px solid #eee;
+        border-right: 1px solid #fff;
+        border-radius: 0;
+        padding: 5px 10px;
+        width: auto;
+      }
+      #bangumi-friend-sorter
+        .bangumi-friend-sorter-dropdown-menu button.l:first-child {
+        border-left: 0;
+      }
+      #bangumi-friend-sorter
+        .bangumi-friend-sorter-dropdown-menu button.l:last-child {
+        border-right: 0;
+      }
+      #bangumi-friend-sorter .bangumi-friend-sorter-dropdown-menu button.l:hover,
+      #bangumi-friend-sorter
+        .bangumi-friend-sorter-dropdown-menu button.l:focus-visible {
+        background: #369cf8;
+        color: #fff;
+        outline: 2px solid var(--primary-color, #f09199);
+        outline-offset: -2px;
+      }
+      html[data-theme="dark"] #bangumi-friend-sorter
+        .bangumi-friend-sorter-dropdown-menu {
+        background-color: rgba(80, 80, 80, .7);
+        border-color: #6e6e6e;
+        box-shadow: 2px 2px 5px #444;
+      }
+      html[data-theme="dark"] #bangumi-friend-sorter
+        .bangumi-friend-sorter-dropdown-menu button.l {
+        border-left-color: #444;
+        border-right-color: #333;
       }
       #bangumi-friend-sorter button.l {
         appearance: none;
@@ -618,7 +930,7 @@
     const bar = document.createElement("div");
     // Reuse the site's #browserTools frame, including its horizontal borders.
     bar.id = "browserTools";
-    bar.className = "clearit";
+    bar.className = "clearit bangumi-friend-sorter-bar";
     bar.dataset.friendSorter = "";
     bar.setAttribute("aria-label", "好友排序");
 
@@ -640,6 +952,39 @@
       sortOptions.append(button);
       buttons.set(criterion, button);
     }
+
+    const completionDropdown = document.createElement("span");
+    completionDropdown.className = "bangumi-friend-sorter-dropdown";
+    const completionButton = document.createElement("button");
+    completionButton.type = "button";
+    completionButton.className = "l bangumi-friend-sorter-dropdown-toggle";
+    completionButton.textContent = "完成条目数";
+    completionButton.setAttribute("aria-haspopup", "true");
+    completionButton.setAttribute(
+      "aria-controls",
+      "bangumi-friend-sorter-completion-menu",
+    );
+    completionButton.addEventListener("click", () => {
+      onSelect(SORT.COMPLETION, COMPLETION_SCOPE.ALL);
+      completionButton.focus?.();
+    });
+    const completionMenu = document.createElement("span");
+    completionMenu.id = "bangumi-friend-sorter-completion-menu";
+    completionMenu.className = "bangumi-friend-sorter-dropdown-menu";
+    completionMenu.setAttribute("role", "menu");
+    const completionButtons = new Map();
+    for (const [scope, label] of COMPLETION_CHOICES) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "l";
+      button.textContent = label;
+      button.setAttribute("role", "menuitem");
+      button.addEventListener("click", () => onSelect(SORT.COMPLETION, scope));
+      completionMenu.append(button);
+      completionButtons.set(scope, button);
+    }
+    completionDropdown.append(completionButton, completionMenu);
+    sortOptions.append(completionDropdown);
 
     sortOptions.append("排序");
     const status = document.createElement("span");
@@ -666,10 +1011,26 @@
 
     return {
       bar,
-      setCurrent(criterion, direction = defaultDirectionFor(criterion)) {
+      setCurrent(
+        criterion,
+        direction = defaultDirectionFor(criterion),
+        completionScope = COMPLETION_SCOPE.ALL,
+      ) {
         for (const [value, button] of buttons) {
           if (value === criterion) button.setAttribute("aria-current", "true");
           else button.removeAttribute("aria-current");
+        }
+        if (criterion === SORT.COMPLETION) {
+          completionButton.setAttribute("aria-current", "true");
+        } else {
+          completionButton.removeAttribute("aria-current");
+        }
+        for (const [scope, button] of completionButtons) {
+          if (criterion === SORT.COMPLETION && scope === completionScope) {
+            button.setAttribute("aria-current", "true");
+          } else {
+            button.removeAttribute("aria-current");
+          }
         }
         const labels = directionLabelsFor(criterion);
         for (const [value, button] of directionButtons) {
@@ -679,6 +1040,9 @@
         }
       },
       status,
+      completionButton,
+      completionMenu,
+      completionButtons,
     };
   }
 
@@ -741,6 +1105,44 @@
     }
   }
 
+  function mountSortBar(pageDocument, list, bar) {
+    const canWalkAncestors = typeof list.closest === "function";
+    let mainWrapper = canWalkAncestors ? list.closest(".mainWrapper") : null;
+    if (!mainWrapper && !canWalkAncestors) {
+      try {
+        mainWrapper = pageDocument.querySelector?.(".mainWrapper");
+      } catch {
+        // Lightweight test doubles may only implement the list selector.
+      }
+    }
+    const columns = mainWrapper?.querySelector?.(".columns");
+    if (
+      mainWrapper &&
+      columns &&
+      typeof mainWrapper.insertBefore === "function"
+    ) {
+      mainWrapper.insertBefore(bar, columns);
+      return true;
+    }
+    if (!canWalkAncestors) {
+      list.before(bar);
+      return true;
+    }
+    return false;
+  }
+
+  function pageFetchDependencies(runtime, pageWindow) {
+    const domParser =
+      runtime.domParser ??
+      (typeof DOMParser === "function" ? new DOMParser() : null);
+    const fetchImpl =
+      runtime.fetchImpl ??
+      (typeof pageWindow.fetch === "function"
+        ? pageWindow.fetch.bind(pageWindow)
+        : null);
+    return domParser && fetchImpl ? { domParser, fetchImpl } : null;
+  }
+
   function initialize(runtime = {}) {
     const pageDocument = runtime.document ?? document;
     const pageWindow = runtime.window ?? window;
@@ -751,22 +1153,24 @@
     if (friends.length !== list.children.length) return;
 
     const now = runtime.now ?? Date.now;
-    const activityCache = createActivityCache(
+    const friendCache = createFriendCache(
       runtime.storage ?? browserStorage(pageWindow),
-      { now },
+      { fieldValidators: completionCacheFieldValidators(), now },
     );
+    const activityCache = activityCacheView(friendCache);
     const collator = new Intl.Collator(undefined, {
       numeric: true,
       sensitivity: "base",
     });
     let currentCriterion = SORT.ADDED;
+    let completionScope = COMPLETION_SCOPE.ALL;
     const directionByCriterion = new Map(
-      SORT_CHOICES.map(([criterion]) => [
-        criterion,
-        defaultDirectionFor(criterion),
-      ]),
+      [...SORT_CHOICES.map(([criterion]) => criterion), SORT.COMPLETION].map(
+        (criterion) => [criterion, defaultDirectionFor(criterion)],
+      ),
     );
     let activityTask = null;
+    let completionTask = null;
     let statusTimer = null;
     let statusKind = ACTIVITY_STATUS.IDLE;
     const confirmRequest =
@@ -805,11 +1209,14 @@
         return null;
       }
 
+      const dependencies = pageFetchDependencies(runtime, pageWindow);
+      if (!dependencies) return null;
+
       setStatus(ACTIVITY_STATUS.FETCHING, `正在获取 0/${pending.length}`);
       activityTask = refreshActivities(pending, {
         cache: activityCache,
-        domParser: runtime.domParser ?? new DOMParser(),
-        fetchImpl: runtime.fetchImpl ?? pageWindow.fetch.bind(pageWindow),
+        domParser: dependencies.domParser,
+        fetchImpl: dependencies.fetchImpl,
         now,
         onProgress(completed, total) {
           setStatus(ACTIVITY_STATUS.FETCHING, `正在获取 ${completed}/${total}`);
@@ -840,7 +1247,92 @@
       return null;
     }
 
-    function selectCriterion(criterion) {
+    async function startCompletionRefresh() {
+      if (completionTask) return completionTask;
+
+      const pending = findFriendsNeedingCompletion(
+        friends,
+        friendCache,
+        completionScope,
+        now(),
+      );
+      if (pending.length === 0) return null;
+      if (
+        needsLargeRequestConfirmation(pending.length) &&
+        !confirmRequest(
+          `需要获取的好友数量过多（${pending.length} 人），是否继续？`,
+        )
+      ) {
+        return null;
+      }
+
+      const dependencies = pageFetchDependencies(runtime, pageWindow);
+      if (!dependencies) return null;
+
+      setStatus(
+        ACTIVITY_STATUS.FETCHING,
+        `正在获取“完成条目数” 0/${pending.length}`,
+      );
+      completionTask = refreshCompletions(pending, {
+        cache: friendCache,
+        domParser: dependencies.domParser,
+        fetchImpl: dependencies.fetchImpl,
+        now,
+        onProgress(completed, total) {
+          setStatus(
+            ACTIVITY_STATUS.FETCHING,
+            `正在获取“完成条目数” ${completed}/${total}`,
+          );
+          runtime.onProgress?.(completed, total);
+        },
+      });
+
+      try {
+        const { failures } = await completionTask;
+        if (currentCriterion === SORT.COMPLETION) {
+          applyFriendSort(
+            list,
+            friends,
+            SORT.COMPLETION,
+            friendCache,
+            collator,
+            directionByCriterion.get(SORT.COMPLETION),
+            completionScope,
+          );
+        }
+        setStatus(
+          ACTIVITY_STATUS.COMPLETED,
+          failures
+            ? `“完成条目数”获取完成，${failures} 人失败`
+            : "“完成条目数”获取完成",
+          5_000,
+        );
+      } finally {
+        completionTask = null;
+      }
+      return null;
+    }
+
+    function selectCriterion(criterion, requestedCompletionScope) {
+      if (criterion === SORT.COMPLETION) {
+        if (statusKind === ACTIVITY_STATUS.ARMED) clearStatus();
+        completionScope = requestedCompletionScope || COMPLETION_SCOPE.ALL;
+        currentCriterion = criterion;
+        const direction = directionByCriterion.get(criterion);
+        controls.setCurrent(criterion, direction, completionScope);
+        applyFriendSort(
+          list,
+          friends,
+          criterion,
+          friendCache,
+          collator,
+          direction,
+          completionScope,
+        );
+        void startCompletionRefresh();
+        return;
+      }
+
       const action = nextActivitySelectionAction(
         currentCriterion,
         criterion,
@@ -850,7 +1342,7 @@
 
       currentCriterion = criterion;
       const direction = directionByCriterion.get(criterion);
-      controls.setCurrent(criterion, direction);
+      controls.setCurrent(criterion, direction, completionScope);
       applyFriendSort(
         list,
         friends,
@@ -858,6 +1350,7 @@
         activityCache,
         collator,
         direction,
+        completionScope,
       );
 
       if (action.clearPrompt) clearStatus();
@@ -879,7 +1372,7 @@
       if (directionByCriterion.get(currentCriterion) === direction) return;
 
       directionByCriterion.set(currentCriterion, direction);
-      controls.setCurrent(currentCriterion, direction);
+      controls.setCurrent(currentCriterion, direction, completionScope);
       applyFriendSort(
         list,
         friends,
@@ -887,6 +1380,7 @@
         activityCache,
         collator,
         direction,
+        completionScope,
       );
     }
 
@@ -895,25 +1389,35 @@
       selectCriterion,
       selectDirection,
     );
+    if (!mountSortBar(pageDocument, list, controls.bar)) return;
     installStyles(pageDocument);
-    list.before(controls.bar);
     controls.setCurrent(
       currentCriterion,
       directionByCriterion.get(currentCriterion),
+      completionScope,
     );
   }
 
   const core = {
+    COMPLETION_CHOICES,
+    COMPLETION_SCOPE,
     createActivityCache,
     createFriendCache,
     createSortBar,
+    completionCacheFieldValidators,
+    completionFieldFor,
     directionLabelsFor,
+    findFriendsNeedingCompletion,
     findFriendsNeedingActivity,
+    fetchProfile,
     initialize,
+    isCompletionRecord,
     needsLargeRequestConfirmation,
     nextBatchState,
     nextActivitySelectionAction,
+    parseProfileDocument,
     parseTimelineDocument,
+    refreshCompletions,
     refreshActivities,
     runPageFetchTask,
     sortFriends,

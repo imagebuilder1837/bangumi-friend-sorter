@@ -1024,3 +1024,363 @@ test("页面初始化使用注入时钟判断 v2 上次活跃记录迁移有效�
 
   assert.equal(requests, 1);
 });
+
+class ProfileNode {
+  constructor({ id = null, className = "", textContent = "", children = [] } = {}) {
+    this.attributes = new Map();
+    this.children = [];
+    this.id = id;
+    this.className = className;
+    this.textContent = textContent;
+    for (const child of children) this.append(child);
+  }
+
+  append(...children) {
+    for (const child of children) {
+      child.parentElement = this;
+      this.children.push(child);
+    }
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] ?? null;
+  }
+
+  querySelectorAll(selector) {
+    const matches = [];
+    const visit = (node) => {
+      if (
+        (selector.startsWith("#") && node.id === selector.slice(1)) ||
+        (selector.startsWith(".") &&
+          node.className.split(/\s+/).includes(selector.slice(1)))
+      ) {
+        matches.push(node);
+      }
+      for (const child of node.children) visit(child);
+    };
+    for (const child of this.children) visit(child);
+    return matches;
+  }
+}
+
+function profileStatsDocument({
+  counts = { all: 20, "2": 8, "1": 10, "3": 6, "4": 4, "6": 2 },
+  includeBooks = false,
+  malformedBooks = false,
+} = {}) {
+  const card = (count, label = "完成") =>
+    new ProfileNode({
+      children: [
+        new ProfileNode({ className: "desc", textContent: label }),
+        new ProfileNode({ className: "num", textContent: String(count) }),
+      ],
+    });
+  const block = (id, count) =>
+    new ProfileNode({ id: `userStats_${id}`, children: [card(count)] });
+  const blocks = [
+    block("all", counts.all),
+    block("2", counts["2"]),
+    block("3", counts["3"]),
+    block("4", counts["4"]),
+    block("6", counts["6"]),
+  ];
+  if (includeBooks) {
+    blocks.splice(
+      2,
+      0,
+      malformedBooks
+        ? new ProfileNode({ id: "userStats_1", children: [card("")] })
+        : block("1", counts["1"]),
+    );
+  }
+  const container = new ProfileNode({ id: "userStatsContainers", children: blocks });
+  return {
+    querySelector: (selector) =>
+      selector === "#userStatsContainers"
+        ? container
+        : container.querySelector(selector),
+  };
+}
+
+function profileStatsDocumentFromFixture(filename) {
+  const html = fs.readFileSync(path.join(__dirname, "fixtures", filename), "utf8");
+  const containerMatch = html.match(
+    /<div id=["']userStatsContainers["']>([\s\S]*?)<\/div>\s*<\/body>/,
+  );
+  assert.ok(containerMatch);
+  const container = new ProfileNode({ id: "userStatsContainers" });
+  const blockPattern = /<section id=["'](userStats_(?:all|1|2|3|4|6))["']>([\s\S]*?)<\/section>/g;
+  let blockMatch;
+  while ((blockMatch = blockPattern.exec(containerMatch[1]))) {
+    const block = new ProfileNode({ id: blockMatch[1] });
+    const cardPattern = /<article[^>]*>([\s\S]*?)<\/article>/g;
+    let cardMatch;
+    while ((cardMatch = cardPattern.exec(blockMatch[2]))) {
+      const description = cardMatch[1].match(
+        /<span[^>]*class=["']desc["'][^>]*>([^<]*)<\/span>/,
+      );
+      const number = cardMatch[1].match(
+        /<span[^>]*class=["']num["'][^>]*>([^<]*)<\/span>/,
+      );
+      block.append(
+        new ProfileNode({
+          children: [
+            new ProfileNode({
+              className: "desc",
+              textContent: description?.[1] || "",
+            }),
+            new ProfileNode({
+              className: "num",
+              textContent: number?.[1] || "",
+            }),
+          ],
+        }),
+      );
+    }
+    container.append(block);
+  }
+  return {
+    querySelector: (selector) =>
+      selector === "#userStatsContainers"
+        ? container
+        : container.querySelector(selector),
+  };
+}
+
+test("主页完成统计按完成描述定位六个统计范围", () => {
+  const parsed = sorter.parseProfileDocument(
+    profileStatsDocumentFromFixture("profile-stats.html"),
+  );
+
+  assert.deepEqual(parsed, {
+    kind: "success",
+    values: { all: 20, "2": 8, "1": 10, "3": 6, "4": 4, "6": 2 },
+  });
+});
+
+test("缺失分类块可靠解析为零，缺失聚合块视为失败", () => {
+  assert.deepEqual(sorter.parseProfileDocument(profileStatsDocument()), {
+    kind: "success",
+    values: { all: 20, "1": 0, "2": 8, "3": 6, "4": 4, "6": 2 },
+  });
+
+  const invalid = new ProfileNode({
+    id: "userStatsContainers",
+    children: [new ProfileNode({ id: "userStats_2" })],
+  });
+  assert.deepEqual(sorter.parseProfileDocument({
+    querySelector: (selector) =>
+      selector === "#userStatsContainers"
+        ? invalid
+        : invalid.querySelector(selector),
+    }), { kind: "invalid" });
+
+  const empty = new ProfileNode({ id: "userStatsContainers" });
+  assert.deepEqual(sorter.parseProfileDocument({
+    querySelector: (selector) =>
+      selector === "#userStatsContainers"
+        ? empty
+        : empty.querySelector(selector),
+  }), {
+    kind: "success",
+    values: { all: 0, "1": 0, "2": 0, "3": 0, "4": 0, "6": 0 },
+  });
+
+  const partial = sorter.parseProfileDocument(
+    profileStatsDocument({ includeBooks: true, malformedBooks: true }),
+  );
+  assert.equal(partial.values["1"], undefined);
+});
+
+test("完成条目数按当前范围从高到低或从低到高稳定排序", () => {
+  const friends = [
+    { userIdentifier: "unknown", originalIndex: 0 },
+    { userIdentifier: "same-b", originalIndex: 1 },
+    { userIdentifier: "high", originalIndex: 2 },
+    { userIdentifier: "zero", originalIndex: 3 },
+    { userIdentifier: "same-a", originalIndex: 4 },
+  ];
+  const values = new Map([
+    ["same-b", { value: 5, fetchedAt: 1 }],
+    ["high", { value: 10, fetchedAt: 1 }],
+    ["zero", { value: 0, fetchedAt: 1 }],
+    ["same-a", { value: 5, fetchedAt: 1 }],
+  ]);
+
+  assert.deepEqual(
+    sorter.sortFriends(friends, "completion", values, undefined, "desc", "all")
+      .map(({ userIdentifier }) => userIdentifier),
+    ["high", "same-b", "same-a", "zero", "unknown"],
+  );
+  assert.deepEqual(
+    sorter.sortFriends(friends, "completion", values, undefined, "asc", "all")
+      .map(({ userIdentifier }) => userIdentifier),
+    ["zero", "same-b", "same-a", "high", "unknown"],
+  );
+});
+
+test("完成统计缓存的七十二小时边界只请求缺失或过期范围", () => {
+  const hour = 60 * 60 * 1_000;
+  const now = 100 * hour;
+  const friends = [
+    { userIdentifier: "fresh" },
+    { userIdentifier: "boundary" },
+    { userIdentifier: "stale" },
+    { userIdentifier: "missing" },
+  ];
+  const values = new Map([
+    ["fresh", { value: 1, fetchedAt: now - hour }],
+    ["boundary", { value: 2, fetchedAt: now - 72 * hour }],
+    ["stale", { value: 3, fetchedAt: now - 72 * hour - 1 }],
+  ]);
+
+  assert.deepEqual(
+    sorter.findFriendsNeedingCompletion(friends, values, "all", now).map(
+      ({ userIdentifier }) => userIdentifier,
+    ),
+    ["stale", "missing"],
+  );
+});
+
+test("同一主页响应分别刷新完成统计，失败范围保留旧缓存", async () => {
+  const now = 10_000;
+  const oldBook = { value: 99, fetchedAt: now - 1 };
+  const writes = [];
+  const storage = {
+    getItem(key) {
+      if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
+      return JSON.stringify({
+        version: 3,
+        records: { sai: { completion_1: oldBook } },
+      });
+    },
+    setItem(key, value) {
+      writes.push([key, JSON.parse(value)]);
+    },
+  };
+  const cache = sorter.createFriendCache(storage, {
+    fieldValidators: sorter.completionCacheFieldValidators(),
+  });
+
+  await sorter.refreshCompletions([{ userIdentifier: "sai" }], {
+    cache,
+    domParser: { parseFromString: () => profileStatsDocument({ includeBooks: true, malformedBooks: true }) },
+    fetchImpl: async () => ({ ok: true, text: async () => "profile" }),
+    now: () => now,
+    onProgress() {},
+  });
+
+  assert.deepEqual(cache.get("sai"), {
+    completion_all: { value: 20, fetchedAt: now },
+    completion_1: oldBook,
+    completion_2: { value: 8, fetchedAt: now },
+    completion_3: { value: 6, fetchedAt: now },
+    completion_4: { value: 4, fetchedAt: now },
+    completion_6: { value: 2, fetchedAt: now },
+  });
+  assert.equal(writes.length, 1);
+});
+
+test("完成条目数菜单按范围回调并只表达当前子项的无障碍状态", () => {
+  const selected = [];
+  const controls = sorter.createSortBar(
+    friendPageWith([]).document,
+    (criterion, scope) => selected.push([criterion, scope]),
+  );
+  const filters = controls.bar.children[0];
+  const sortOptions = filters.children[0];
+  const dropdown = sortOptions.children.find(
+    (child) => child?.className === "bangumi-friend-sorter-dropdown",
+  );
+  const toggle = dropdown.children[0];
+  const menu = dropdown.children[1];
+
+  assert.equal(toggle.textContent, "完成条目数");
+  assert.deepEqual(menu.children.map(({ textContent }) => textContent), [
+    "全部",
+    "动画",
+    "书籍",
+    "音乐",
+    "游戏",
+    "三次元",
+  ]);
+  controls.setCurrent("completion", "desc", "2");
+  assert.equal(toggle.getAttribute("aria-current"), "true");
+  assert.equal(menu.children[1].getAttribute("aria-current"), "true");
+  assert.equal(menu.children[1].className, "l");
+  menu.children[3].click();
+  toggle.click();
+  assert.deepEqual(selected, [
+    ["completion", "3"],
+    ["completion", "all"],
+  ]);
+});
+
+test("初始化将排序栏挂在主内容列之前并使用完成条目数方向文案", async () => {
+  const page = friendPageWith([
+    { href: "/user/a", name: "A" },
+    { href: "/user/b", name: "B" },
+  ]);
+  const columns = { children: [] };
+  const wrapper = {
+    children: [columns],
+    querySelector: (selector) => (selector === ".columns" ? columns : null),
+    insertBefore(node, before) {
+      this.children.splice(this.children.indexOf(before), 0, node);
+    },
+  };
+  page.list.closest = (selector) =>
+    selector === ".mainWrapper" ? wrapper : null;
+
+  sorter.initialize({
+    document: page.document,
+    window: { location: { href: "https://bgm.tv/user/sai/friends" } },
+    storage: { getItem: () => null, setItem() {}, removeItem() {} },
+    domParser: {
+      parseFromString: (html) =>
+        profileStatsDocument({
+          counts: html.includes("/user/a")
+            ? { all: 2, "2": 2, "1": 2, "3": 2, "4": 2, "6": 2 }
+            : { all: 20, "2": 20, "1": 20, "3": 20, "4": 20, "6": 20 },
+        }),
+    },
+    fetchImpl: async (url) => ({
+      ok: true,
+      text: async () => url,
+    }),
+  });
+
+  const bar = wrapper.children[0];
+  const filters = bar.children[0];
+  const sortOptions = filters.children[0];
+  const dropdown = sortOptions.children.find(
+    (child) => child?.className === "bangumi-friend-sorter-dropdown",
+  );
+  dropdown.children[0].click();
+  await new Promise((resolve) => setImmediate(resolve));
+  const directionButtons = filters.children[1].children.filter(
+    (child) => child?.tagName === "button",
+  );
+
+  assert.equal(bar.dataset.friendSorter, "");
+  assert.equal(wrapper.children[1], columns);
+  assert.deepEqual(directionButtons.map(({ textContent }) => textContent), [
+    "从低到高",
+    "从高到低",
+  ]);
+  assert.deepEqual(page.list.children.map((item) => item.textContent), ["B", "A"]);
+});
+
+test("缺少主内容布局时不修改好友页面", () => {
+  const page = friendPageWith([{ href: "/user/a", name: "A" }]);
+  page.list.closest = () => null;
+
+  sorter.initialize({
+    document: page.document,
+    window: { location: { href: "https://bgm.tv/user/sai/friends" } },
+    storage: { getItem: () => null, setItem() {}, removeItem() {} },
+  });
+
+  assert.equal(page.list.beforeNodes.length, 0);
+  assert.equal(page.document.head.children.length, 0);
+});
