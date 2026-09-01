@@ -18,11 +18,40 @@ function friendPageWith(entries) {
 
     addEventListener(type, handler) {
       this.listeners ??= new Map();
-      this.listeners.set(type, handler);
+      const handlers = this.listeners.get(type) || [];
+      handlers.push(handler);
+      this.listeners.set(type, handlers);
     }
 
     click() {
-      this.listeners?.get("click")?.();
+      this.dispatchEvent({ type: "click" });
+    }
+
+    dispatchEvent(event) {
+      event.target ??= this;
+      event.preventDefault ??= () => {
+        event.defaultPrevented = true;
+      };
+      for (const handler of this.listeners?.get(event.type) || []) {
+        handler.call(this, event);
+      }
+      return !event.defaultPrevented;
+    }
+
+    focus() {
+      const previous = this.ownerDocument?.activeElement;
+      if (previous === this) return;
+      this.ownerDocument.activeElement = this;
+      previous?.dispatchEvent({ type: "focusout", relatedTarget: this });
+      previous?.dispatchEvent({ type: "blur", relatedTarget: this });
+      this.dispatchEvent({ type: "focus", relatedTarget: previous });
+    }
+
+    blur() {
+      if (this.ownerDocument?.activeElement !== this) return;
+      this.ownerDocument.activeElement = null;
+      this.dispatchEvent({ type: "focusout", relatedTarget: null });
+      this.dispatchEvent({ type: "blur", relatedTarget: null });
     }
 
     append(...children) {
@@ -30,8 +59,19 @@ function friendPageWith(entries) {
         if (child && this.children.includes(child)) {
           this.children.splice(this.children.indexOf(child), 1);
         }
+        if (child && typeof child === "object") {
+          child.parentElement = this;
+          child.ownerDocument ??= this.ownerDocument;
+        }
         this.children.push(child);
       }
+    }
+
+    contains(target) {
+      return (
+        this === target ||
+        this.children.some((child) => child?.contains?.(target))
+      );
     }
 
     before(...nodes) {
@@ -65,15 +105,20 @@ function friendPageWith(entries) {
     return item;
   });
 
-  const head = new Element("head");
   const document = {
-    createElement: (tagName) => new Element(tagName),
-    head,
+    activeElement: null,
+    createElement: (tagName) => {
+      const element = new Element(tagName);
+      element.ownerDocument = document;
+      return element;
+    },
+    head: new Element("head"),
     querySelector(selector) {
       assert.equal(selector, "#memberUserList");
       return list;
     },
   };
+  document.head.ownerDocument = document;
   return { document, list };
 }
 
@@ -1177,6 +1222,35 @@ test("统计块存在多个完成描述时视为结构矛盾", () => {
   );
 });
 
+test("唯一完成卡存在多个数量节点时视为结构矛盾", () => {
+  const aggregate = new ProfileNode({
+    id: "userStats_all",
+    children: [
+      new ProfileNode({
+        children: [
+          new ProfileNode({ className: "desc", textContent: "完成" }),
+          new ProfileNode({ className: "num", textContent: "20" }),
+          new ProfileNode({ className: "num", textContent: "21" }),
+        ],
+      }),
+    ],
+  });
+  const container = new ProfileNode({
+    id: "userStatsContainers",
+    children: [aggregate],
+  });
+
+  assert.deepEqual(
+    sorter.parseProfileDocument({
+      querySelector: (selector) =>
+        selector === "#userStatsContainers"
+          ? container
+          : container.querySelector(selector),
+    }),
+    { kind: "invalid" },
+  );
+});
+
 test("缺失分类块可靠解析为零，缺失聚合块视为失败", () => {
   assert.deepEqual(sorter.parseProfileDocument(profileStatsDocument()), {
     kind: "success",
@@ -1451,6 +1525,91 @@ test("初始化将排序栏挂在主内容列之前并使用完成条目数方�
   assert.deepEqual(page.list.children.map((item) => item.textContent), ["B", "A"]);
 });
 
+test("完成统计范围在刷新期间切换后补取新增缺失好友", async () => {
+  const page = friendPageWith([
+    { href: "/user/a", name: "A" },
+    { href: "/user/b", name: "B" },
+  ]);
+  const now = 100_000;
+  const requests = [];
+  const writes = [];
+  let releaseA;
+  const responseFor = (userIdentifier) => ({
+    ok: true,
+    text: async () => userIdentifier,
+  });
+  const responseA = new Promise((resolve) => {
+    releaseA = resolve;
+  });
+  const storage = {
+    getItem(key) {
+      if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
+      return JSON.stringify({
+        version: 3,
+        records: {
+          b: { completion_all: { value: 5, fetchedAt: now } },
+        },
+      });
+    },
+    setItem(key, value) {
+      writes.push(JSON.parse(value));
+    },
+    removeItem() {},
+  };
+
+  sorter.initialize({
+    document: page.document,
+    window: { location: { href: "https://bgm.tv/user/sai/friends" } },
+    storage,
+    now: () => now,
+    domParser: {
+      parseFromString: (userIdentifier) =>
+        profileStatsDocument({
+          includeBooks: true,
+          counts:
+            userIdentifier === "a"
+              ? { all: 1, "1": 10, "2": 1, "3": 1, "4": 1, "6": 1 }
+              : { all: 2, "1": 20, "2": 2, "3": 2, "4": 2, "6": 2 },
+        }),
+    },
+    fetchImpl: (url) => {
+      const userIdentifier = url.split("/").pop();
+      requests.push(userIdentifier);
+      return userIdentifier === "a"
+        ? responseA
+        : Promise.resolve(responseFor(userIdentifier));
+    },
+  });
+
+  const filters = page.list.beforeNodes[0].children[0];
+  const sortOptions = filters.children[0];
+  const completionDropdown = sortOptions.children.find(
+    (child) => child?.className === "bangumi-friend-sorter-dropdown",
+  );
+  const completionButton = completionDropdown.children[0];
+  const completionMenu = completionDropdown.children[1];
+
+  completionButton.click();
+  assert.deepEqual(requests, ["a"]);
+  completionMenu.children[2].click();
+  releaseA(responseFor("a"));
+
+  for (let attempt = 0; attempt < 10 && requests.length < 2; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  assert.deepEqual(requests, ["a", "b"]);
+  assert.deepEqual(writes.at(-1).records.b, {
+    completion_all: { value: 2, fetchedAt: now },
+    completion_1: { value: 20, fetchedAt: now },
+    completion_2: { value: 2, fetchedAt: now },
+    completion_3: { value: 2, fetchedAt: now },
+    completion_4: { value: 2, fetchedAt: now },
+    completion_6: { value: 2, fetchedAt: now },
+  });
+  assert.deepEqual(page.list.children.map((item) => item.textContent), ["B", "A"]);
+});
+
 test("完成条目数菜单按钮与菜单项之间保持连续悬停区域", () => {
   const page = friendPageWith([{ href: "/user/a", name: "A" }]);
   const columns = { children: [] };
@@ -1480,6 +1639,63 @@ test("完成条目数菜单按钮与菜单项之间保持连续悬停区域", ()
     /\.bangumi-friend-sorter-dropdown-menu \{[\s\S]*top: 100%;/,
   );
   assert.doesNotMatch(styleText, /top: calc\(100% \+ 3px\)/);
+});
+
+test("完成条目数菜单支持悬停、焦点、键盘和触屏点击", () => {
+  const selected = [];
+  const page = friendPageWith([]);
+  const controls = sorter.createSortBar(
+    page.document,
+    (criterion, scope) => selected.push([criterion, scope]),
+  );
+  const filters = controls.bar.children[0];
+  const sortOptions = filters.children[0];
+  const dropdown = sortOptions.children.find(
+    (child) => child?.className === "bangumi-friend-sorter-dropdown",
+  );
+  const toggle = dropdown.children[0];
+  const menu = dropdown.children[1];
+  const bookButton = menu.children[2];
+
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  dropdown.dispatchEvent({ type: "pointerenter" });
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  assert.equal(dropdown.dataset.open, "true");
+
+  dropdown.dispatchEvent({ type: "pointerleave" });
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+
+  toggle.focus();
+  assert.equal(page.document.activeElement, toggle);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  bookButton.focus();
+  const keyboardEvent = { type: "keydown", key: "Enter" };
+  bookButton.dispatchEvent(keyboardEvent);
+  assert.equal(keyboardEvent.defaultPrevented, true);
+  assert.deepEqual(selected, [["completion", "1"]]);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+
+  const musicButton = menu.children[3];
+  musicButton.focus();
+  const spaceEvent = { type: "keydown", key: " " };
+  musicButton.dispatchEvent(spaceEvent);
+  assert.equal(spaceEvent.defaultPrevented, true);
+  assert.deepEqual(selected, [
+    ["completion", "1"],
+    ["completion", "3"],
+  ]);
+
+  page.document.createElement("div").focus();
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+
+  toggle.click();
+  assert.deepEqual(selected, [
+    ["completion", "1"],
+    ["completion", "3"],
+    ["completion", "all"],
+  ]);
+  assert.equal(page.document.activeElement, toggle);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
 });
 
 test("缺少主内容布局时不修改好友页面", () => {

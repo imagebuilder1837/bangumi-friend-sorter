@@ -44,12 +44,12 @@
     ASCENDING: "asc",
     DESCENDING: "desc",
   });
-  const ACTIVITY_STATUS = Object.freeze({
-    ARMED: "armed",
+  const REFRESH_STATUS = Object.freeze({
     COMPLETED: "completed",
     FETCHING: "fetching",
     IDLE: "idle",
   });
+  const ACTIVITY_PROMPT_STATUS = "armed";
   const SORT_CHOICES = [
     [SORT.ADDED, "加好友时间"],
     [SORT.NAME, "名称"],
@@ -435,17 +435,17 @@
     statusKind,
   ) {
     if (requestedCriterion !== SORT.ACTIVITY) {
-      return statusKind === ACTIVITY_STATUS.ARMED
+      return statusKind === ACTIVITY_PROMPT_STATUS
         ? { kind: "sort", clearPrompt: true }
         : { kind: "sort" };
     }
     if (currentCriterion !== SORT.ACTIVITY) {
-      return statusKind === ACTIVITY_STATUS.IDLE
+      return statusKind === REFRESH_STATUS.IDLE
         ? { kind: "sort", refresh: "incremental" }
         : { kind: "sort" };
     }
-    if (statusKind === ACTIVITY_STATUS.IDLE) return { kind: "arm" };
-    if (statusKind === ACTIVITY_STATUS.ARMED) {
+    if (statusKind === REFRESH_STATUS.IDLE) return { kind: "arm" };
+    if (statusKind === ACTIVITY_PROMPT_STATUS) {
       return { kind: "refresh", mode: "full" };
     }
     return { kind: "ignore" };
@@ -664,7 +664,9 @@
 
     let card = description;
     while (card && card !== block) {
-      const numberNode = card.querySelector?.(".num");
+      const numberNodes = [...(card.querySelectorAll?.(".num") || [])];
+      if (numberNodes.length > 1) return null;
+      const numberNode = numberNodes[0];
       if (numberNode) {
         const text = numberNode.textContent.trim().replace(/,/g, "");
         if (!/^\d+$/.test(text)) return null;
@@ -866,6 +868,8 @@
         visibility: hidden;
         z-index: 10;
       }
+      #bangumi-friend-sorter .bangumi-friend-sorter-dropdown[data-open="true"]
+        .bangumi-friend-sorter-dropdown-menu,
       #bangumi-friend-sorter .bangumi-friend-sorter-dropdown:hover
         .bangumi-friend-sorter-dropdown-menu,
       #bangumi-friend-sorter .bangumi-friend-sorter-dropdown:focus-within
@@ -994,6 +998,44 @@
       completionMenu.append(button);
       completionButtons.set(scope, button);
     }
+
+    function setCompletionMenuOpen(isOpen) {
+      completionDropdown.dataset.open = String(isOpen);
+      completionButton.setAttribute("aria-expanded", String(isOpen));
+    }
+
+    function isInsideCompletionDropdown(node) {
+      return Boolean(completionDropdown.contains?.(node));
+    }
+
+    function keepMenuOpenOnFocus(button) {
+      button.addEventListener("focus", () => setCompletionMenuOpen(true));
+      button.addEventListener("focusout", (event) => {
+        if (!isInsideCompletionDropdown(event.relatedTarget)) {
+          setCompletionMenuOpen(false);
+        }
+      });
+      button.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault?.();
+        button.click();
+      });
+    }
+
+    completionDropdown.addEventListener("pointerenter", () =>
+      setCompletionMenuOpen(true),
+    );
+    completionDropdown.addEventListener("pointerleave", () => {
+      if (!isInsideCompletionDropdown(document.activeElement)) {
+        setCompletionMenuOpen(false);
+      }
+    });
+    keepMenuOpenOnFocus(completionButton);
+    for (const button of completionButtons.values()) {
+      keepMenuOpenOnFocus(button);
+    }
+    setCompletionMenuOpen(false);
+
     completionDropdown.append(completionButton, completionMenu);
     sortOptions.append(completionDropdown);
 
@@ -1108,6 +1150,110 @@
     return { failures: result.failures };
   }
 
+  function createPageRefreshCoordinator({
+    confirmMessage,
+    confirmRequest,
+    getDependencies,
+    getPending,
+    keyFor,
+    onFetching,
+    onFinished,
+    onProgress,
+    onQueue,
+    refresh,
+  }) {
+    let task = null;
+    let batches = [];
+    let queuedKeys = new Set();
+    let completed = 0;
+    let total = 0;
+
+    function enqueue(mode) {
+      const pending = getPending(mode);
+      const items = pending.filter((item) => {
+        const key = keyFor(item);
+        if (queuedKeys.has(key)) return false;
+        queuedKeys.add(key);
+        return true;
+      });
+      if (items.length === 0) return false;
+
+      batches.push({ items, mode });
+      total += items.length;
+      if (task) onQueue?.({ completed, total, mode });
+      return true;
+    }
+
+    async function processQueue() {
+      let failures = 0;
+      let started = false;
+
+      try {
+        while (batches.length > 0) {
+          const { items, mode } = batches.shift();
+          if (
+            needsLargeRequestConfirmation(items.length) &&
+            !confirmRequest(confirmMessage(items.length, mode))
+          ) {
+            total -= items.length;
+            break;
+          }
+
+          const dependencies = getDependencies();
+          if (!dependencies) {
+            total -= items.length;
+            break;
+          }
+
+          started = true;
+          onFetching?.({ completed, total, mode });
+          const result = await refresh(
+            items,
+            dependencies,
+            (batchCompleted, batchTotal) => {
+              onProgress?.({
+                completed: completed + batchCompleted,
+                total,
+                mode,
+                batchTotal,
+              });
+            },
+          );
+          completed += items.length;
+          failures += result.failures;
+          if (result.stopped) {
+            batches = [];
+            break;
+          }
+        }
+
+        if (started) onFinished?.({ completed, failures, total });
+      } finally {
+        task = null;
+        batches = [];
+        queuedKeys = new Set();
+        completed = 0;
+        total = 0;
+      }
+    }
+
+    return {
+      start(mode) {
+        if (!task) {
+          batches = [];
+          queuedKeys = new Set();
+          completed = 0;
+          total = 0;
+        }
+        enqueue(mode);
+        if (task) return task;
+        if (batches.length === 0) return null;
+        task = processQueue();
+        return task;
+      },
+    };
+  }
+
   function browserStorage(pageWindow = window) {
     try {
       return pageWindow.localStorage;
@@ -1180,17 +1326,15 @@
         (criterion) => [criterion, defaultDirectionFor(criterion)],
       ),
     );
-    let activityTask = null;
-    let completionTask = null;
     let statusTimer = null;
-    let statusKind = ACTIVITY_STATUS.IDLE;
+    let statusKind = REFRESH_STATUS.IDLE;
     const confirmRequest =
       runtime.confirm ?? pageWindow.confirm?.bind(pageWindow) ?? (() => false);
 
     function clearStatus() {
       clearTimeout(statusTimer);
       statusTimer = null;
-      statusKind = ACTIVITY_STATUS.IDLE;
+      statusKind = REFRESH_STATUS.IDLE;
       controls.status.textContent = "";
     }
 
@@ -1203,40 +1347,33 @@
       }
     }
 
-    async function startActivityRefresh(mode = "incremental") {
-      if (activityTask) return activityTask;
+    function showActivityProgress(completed, total) {
+      setStatus(REFRESH_STATUS.FETCHING, `正在获取 ${completed}/${total}`);
+      runtime.onProgress?.(completed, total);
+    }
 
-      const pending =
+    function showCompletionProgress(completed, total) {
+      setStatus(
+        REFRESH_STATUS.FETCHING,
+        `正在获取“完成条目数” ${completed}/${total}`,
+      );
+      runtime.onProgress?.(completed, total);
+    }
+
+    const activityRefresh = createPageRefreshCoordinator({
+      confirmMessage: (count) =>
+        `需要获取的好友数量过多（${count} 人），是否继续？`,
+      confirmRequest,
+      getDependencies: () => pageFetchDependencies(runtime, pageWindow),
+      getPending: (mode) =>
         mode === "full"
           ? friends
-          : findFriendsNeedingActivity(friends, activityCache, now());
-      if (pending.length === 0) return null;
-      if (
-        needsLargeRequestConfirmation(pending.length) &&
-        !confirmRequest(
-          `需要获取的好友数量过多（${pending.length} 人），是否继续？`,
-        )
-      ) {
-        return null;
-      }
-
-      const dependencies = pageFetchDependencies(runtime, pageWindow);
-      if (!dependencies) return null;
-
-      setStatus(ACTIVITY_STATUS.FETCHING, `正在获取 0/${pending.length}`);
-      activityTask = refreshActivities(pending, {
-        cache: activityCache,
-        domParser: dependencies.domParser,
-        fetchImpl: dependencies.fetchImpl,
-        now,
-        onProgress(completed, total) {
-          setStatus(ACTIVITY_STATUS.FETCHING, `正在获取 ${completed}/${total}`);
-          runtime.onProgress?.(completed, total);
-        },
-      });
-
-      try {
-        const { failures } = await activityTask;
+          : findFriendsNeedingActivity(friends, activityCache, now()),
+      keyFor: userIdentifierFor,
+      onFetching: ({ completed, total }) => {
+        setStatus(REFRESH_STATUS.FETCHING, `正在获取 ${completed}/${total}`);
+      },
+      onFinished: ({ failures }) => {
         if (currentCriterion === SORT.ACTIVITY) {
           applyFriendSort({
             list,
@@ -1248,58 +1385,44 @@
           });
         }
         setStatus(
-          ACTIVITY_STATUS.COMPLETED,
+          REFRESH_STATUS.COMPLETED,
           failures ? `获取完成，${failures} 人失败` : "获取完成",
           5_000,
         );
-      } finally {
-        activityTask = null;
-      }
-      return null;
-    }
+      },
+      onProgress: ({ completed, total }) =>
+        showActivityProgress(completed, total),
+      onQueue: ({ completed, total }) => showActivityProgress(completed, total),
+      refresh: (pending, dependencies, onProgress) =>
+        refreshActivities(pending, {
+          cache: activityCache,
+          domParser: dependencies.domParser,
+          fetchImpl: dependencies.fetchImpl,
+          now,
+          onProgress,
+        }),
+    });
 
-    async function startCompletionRefresh() {
-      if (completionTask) return completionTask;
-
-      const pending = findFriendsNeedingCompletion(
-        friends,
-        friendCache,
-        completionScope,
-        now(),
-      );
-      if (pending.length === 0) return null;
-      if (
-        needsLargeRequestConfirmation(pending.length) &&
-        !confirmRequest(
-          `需要获取的好友数量过多（${pending.length} 人），是否继续？`,
-        )
-      ) {
-        return null;
-      }
-
-      const dependencies = pageFetchDependencies(runtime, pageWindow);
-      if (!dependencies) return null;
-
-      setStatus(
-        ACTIVITY_STATUS.FETCHING,
-        `正在获取“完成条目数” 0/${pending.length}`,
-      );
-      completionTask = refreshCompletions(pending, {
-        cache: friendCache,
-        domParser: dependencies.domParser,
-        fetchImpl: dependencies.fetchImpl,
-        now,
-        onProgress(completed, total) {
-          setStatus(
-            ACTIVITY_STATUS.FETCHING,
-            `正在获取“完成条目数” ${completed}/${total}`,
-          );
-          runtime.onProgress?.(completed, total);
-        },
-      });
-
-      try {
-        const { failures } = await completionTask;
+    const completionRefresh = createPageRefreshCoordinator({
+      confirmMessage: (count) =>
+        `需要获取的好友数量过多（${count} 人），是否继续？`,
+      confirmRequest,
+      getDependencies: () => pageFetchDependencies(runtime, pageWindow),
+      getPending: () =>
+        findFriendsNeedingCompletion(
+          friends,
+          friendCache,
+          completionScope,
+          now(),
+        ),
+      keyFor: userIdentifierFor,
+      onFetching: ({ completed, total }) => {
+        setStatus(
+          REFRESH_STATUS.FETCHING,
+          `正在获取“完成条目数” ${completed}/${total}`,
+        );
+      },
+      onFinished: ({ failures }) => {
         if (currentCriterion === SORT.COMPLETION) {
           applyFriendSort({
             list,
@@ -1312,21 +1435,30 @@
           });
         }
         setStatus(
-          ACTIVITY_STATUS.COMPLETED,
+          REFRESH_STATUS.COMPLETED,
           failures
             ? `“完成条目数”获取完成，${failures} 人失败`
             : "“完成条目数”获取完成",
           5_000,
         );
-      } finally {
-        completionTask = null;
-      }
-      return null;
-    }
+      },
+      onProgress: ({ completed, total }) =>
+        showCompletionProgress(completed, total),
+      onQueue: ({ completed, total }) =>
+        showCompletionProgress(completed, total),
+      refresh: (pending, dependencies, onProgress) =>
+        refreshCompletions(pending, {
+          cache: friendCache,
+          domParser: dependencies.domParser,
+          fetchImpl: dependencies.fetchImpl,
+          now,
+          onProgress,
+        }),
+    });
 
     function selectCriterion(criterion, requestedCompletionScope) {
       if (criterion === SORT.COMPLETION) {
-        if (statusKind === ACTIVITY_STATUS.ARMED) clearStatus();
+        if (statusKind === ACTIVITY_PROMPT_STATUS) clearStatus();
         completionScope = requestedCompletionScope || COMPLETION_SCOPE.ALL;
         currentCriterion = criterion;
         const direction = directionByCriterion.get(criterion);
@@ -1340,7 +1472,7 @@
           direction,
           completionScope,
         });
-        void startCompletionRefresh();
+        void completionRefresh.start();
         return;
       }
 
@@ -1367,15 +1499,15 @@
       if (action.clearPrompt) clearStatus();
       if (action.kind === "arm") {
         setStatus(
-          ACTIVITY_STATUS.ARMED,
+          ACTIVITY_PROMPT_STATUS,
           "5 秒内再次点击“上次活跃”以全量刷新",
           5_000,
         );
       } else if (action.refresh === "incremental") {
-        void startActivityRefresh("incremental");
+        void activityRefresh.start("incremental");
       } else if (action.kind === "refresh" && action.mode === "full") {
         clearStatus();
-        void startActivityRefresh("full");
+        void activityRefresh.start("full");
       }
     }
 
