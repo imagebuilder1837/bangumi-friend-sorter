@@ -1642,7 +1642,7 @@ test("完成条目数菜单按范围回调并只表达当前子项的无障碍�
   const filters = controls.bar.children[0];
   const sortOptions = filters.children[0];
   const dropdown = sortOptions.children.find(
-    (child) => child?.className === "bangumi-friend-sorter-dropdown",
+    (child) => child?.children?.[0]?.textContent === "完成条目数",
   );
   const toggle = dropdown.children[0];
   const menu = dropdown.children[1];
@@ -1678,6 +1678,10 @@ test("喜好契合菜单按指标回调并直接点击默认选择同步率", ()
   const dropdowns = sortOptions.children.filter(
     (child) => child?.className === "bangumi-friend-sorter-dropdown",
   );
+  assert.deepEqual(
+    dropdowns.map((dropdown) => dropdown.children[0]?.textContent),
+    ["喜好契合", "完成条目数"],
+  );
   const relationDropdown = dropdowns.find(
     (dropdown) => dropdown.children[0]?.textContent === "喜好契合",
   );
@@ -1698,6 +1702,24 @@ test("喜好契合菜单按指标回调并直接点击默认选择同步率", ()
     ["relation", "syncRate"],
     ["relation", "commonLikes"],
   ]);
+});
+
+test("喜好契合菜单的焦点状态只控制自身菜单", () => {
+  const page = friendPageWith([]);
+  const controls = sorter.createSortBar(page.document, () => {});
+  const sortOptions = controls.bar.children[0].children[0];
+  const relationDropdown = sortOptions.children.find(
+    (child) => child.children?.[0]?.textContent === "喜好契合",
+  );
+  const relationButton = relationDropdown.children[0];
+  const relationMenu = relationDropdown.children[1];
+
+  relationButton.focus();
+  assert.equal(relationButton.getAttribute("aria-expanded"), "true");
+  relationMenu.children[1].focus();
+  assert.equal(relationButton.getAttribute("aria-expanded"), "true");
+  page.document.createElement("div").focus();
+  assert.equal(relationButton.getAttribute("aria-expanded"), "false");
 });
 
 test("匿名选择喜好契合时不请求并且登录提示不会因重复选择续时", () => {
@@ -1726,8 +1748,75 @@ test("匿名选择喜好契合时不请求并且登录提示不会因重复选�
   relationButton.click();
   assert.equal(requests, 0);
   assert.equal(status.textContent, "请登录后使用喜好契合排序");
+  const completionDropdown = sortOptions.children.find(
+    (child) => child.children?.[0]?.textContent === "完成条目数",
+  );
+  completionDropdown.children[0].click();
+  assert.equal(status.textContent, "请登录后使用喜好契合排序");
   relationMenu.children[1].click();
   assert.equal(requests, 0);
+  assert.equal(status.textContent, "请登录后使用喜好契合排序");
+});
+
+test("选择喜好契合会清除已激活的上次活跃全量刷新提示", () => {
+  const page = friendPageWith([{ href: "/user/friend", name: "好友" }]);
+  sorter.initialize({
+    document: page.document,
+    window: {
+      CHOBITS_USERNAME: "visitor",
+      location: { href: "https://bgm.tv/user/viewed/friends" },
+    },
+    storage: { getItem: () => null, setItem() {}, removeItem() {} },
+  });
+
+  const sortOptions = page.list.beforeNodes[0].children[0].children[0];
+  const activityButton = sortOptions.children.find(
+    (child) => child?.tagName === "button" && child.textContent === "上次活跃",
+  );
+  const relationDropdown = sortOptions.children.find(
+    (child) => child.children?.[0]?.textContent === "喜好契合",
+  );
+  const status = sortOptions.children.at(-1);
+
+  activityButton.click();
+  activityButton.click();
+  assert.equal(status.textContent, "5 秒内再次点击“上次活跃”以全量刷新");
+  relationDropdown.children[0].click();
+  assert.equal(status.textContent, "");
+});
+
+test("登录提示不会被完成任务完成状态覆盖", async () => {
+  const page = friendPageWith([{ href: "/user/a", name: "A" }]);
+  let releaseProfile;
+  const pendingProfile = new Promise((resolve) => {
+    releaseProfile = resolve;
+  });
+  sorter.initialize({
+    document: page.document,
+    window: {
+      location: { href: "https://bgm.tv/user/viewed/friends" },
+    },
+    storage: { getItem: () => null, setItem() {}, removeItem() {} },
+    domParser: { parseFromString: () => profileStatsDocument() },
+    fetchImpl: () => pendingProfile,
+  });
+
+  const sortOptions = page.list.beforeNodes[0].children[0].children[0];
+  const completionDropdown = sortOptions.children.find(
+    (child) => child.children?.[0]?.textContent === "完成条目数",
+  );
+  const relationDropdown = sortOptions.children.find(
+    (child) => child.children?.[0]?.textContent === "喜好契合",
+  );
+  const status = sortOptions.children.at(-1);
+
+  completionDropdown.children[0].click();
+  relationDropdown.children[0].click();
+  assert.equal(status.textContent, "请登录后使用喜好契合排序");
+
+  releaseProfile({ ok: true, text: async () => "profile" });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(status.textContent, "请登录后使用喜好契合排序");
 });
 
@@ -1999,7 +2088,7 @@ test("初始化将排序栏挂在主内容列之前并使用完成条目数方�
   const filters = bar.children[0];
   const sortOptions = filters.children[0];
   const dropdown = sortOptions.children.find(
-    (child) => child?.className === "bangumi-friend-sorter-dropdown",
+    (child) => child?.children?.[0]?.textContent === "完成条目数",
   );
   dropdown.children[0].click();
   await new Promise((resolve) => setImmediate(resolve));
@@ -2080,7 +2169,7 @@ test("完成统计范围在刷新期间切换后补取新增缺失好友", async
   const filters = page.list.beforeNodes[0].children[0];
   const sortOptions = filters.children[0];
   const completionDropdown = sortOptions.children.find(
-    (child) => child?.className === "bangumi-friend-sorter-dropdown",
+    (child) => child?.children?.[0]?.textContent === "完成条目数",
   );
   const completionButton = completionDropdown.children[0];
   const completionMenu = completionDropdown.children[1];
@@ -2147,7 +2236,7 @@ test("完成条目数菜单支持悬停、焦点、键盘和触屏点击", () =>
   const filters = controls.bar.children[0];
   const sortOptions = filters.children[0];
   const dropdown = sortOptions.children.find(
-    (child) => child?.className === "bangumi-friend-sorter-dropdown",
+    (child) => child?.children?.[0]?.textContent === "完成条目数",
   );
   const toggle = dropdown.children[0];
   const menu = dropdown.children[1];

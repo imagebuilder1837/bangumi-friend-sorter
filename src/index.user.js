@@ -1254,11 +1254,11 @@
       return Boolean(completionDropdown.contains?.(node));
     }
 
-    function keepMenuOpenOnFocus(button) {
-      button.addEventListener("focus", () => setCompletionMenuOpen(true));
+    function keepMenuOpenOnFocus(button, setMenuOpen, isInsideDropdown) {
+      button.addEventListener("focus", () => setMenuOpen(true));
       button.addEventListener("focusout", (event) => {
-        if (!isInsideCompletionDropdown(event.relatedTarget)) {
-          setCompletionMenuOpen(false);
+        if (!isInsideDropdown(event.relatedTarget)) {
+          setMenuOpen(false);
         }
       });
       button.addEventListener("keydown", (event) => {
@@ -1276,9 +1276,17 @@
         setCompletionMenuOpen(false);
       }
     });
-    keepMenuOpenOnFocus(completionButton);
+    keepMenuOpenOnFocus(
+      completionButton,
+      setCompletionMenuOpen,
+      isInsideCompletionDropdown,
+    );
     for (const button of completionButtons.values()) {
-      keepMenuOpenOnFocus(button);
+      keepMenuOpenOnFocus(
+        button,
+        setCompletionMenuOpen,
+        isInsideCompletionDropdown,
+      );
     }
     setCompletionMenuOpen(false);
 
@@ -1330,16 +1338,24 @@
         setRelationMenuOpen(false);
       }
     });
-    keepMenuOpenOnFocus(relationButton);
+    keepMenuOpenOnFocus(
+      relationButton,
+      setRelationMenuOpen,
+      isInsideRelationDropdown,
+    );
     for (const button of relationButtons.values()) {
-      keepMenuOpenOnFocus(button);
+      keepMenuOpenOnFocus(
+        button,
+        setRelationMenuOpen,
+        isInsideRelationDropdown,
+      );
     }
     setRelationMenuOpen(false);
 
-    completionDropdown.append(completionButton, completionMenu);
-    sortOptions.append(completionDropdown);
     relationDropdown.append(relationButton, relationMenu);
     sortOptions.append(relationDropdown);
+    completionDropdown.append(completionButton, completionMenu);
+    sortOptions.append(completionDropdown);
 
     sortOptions.append("排序");
     const status = document.createElement("span");
@@ -1825,6 +1841,7 @@
     }
 
     function setStatus(kind, message, clearAfterMs = 0) {
+      if (statusKind === LOGIN_STATUS && kind !== LOGIN_STATUS) return;
       clearStatus();
       statusKind = kind;
       controls.status.textContent = message;
@@ -1964,6 +1981,7 @@
     function selectCriterion(criterion, requestedCompletionScope) {
       if (criterion === SORT.RELATION) {
         if (statusKind === LOGIN_STATUS) return;
+        if (statusKind === ACTIVITY_PROMPT_STATUS) clearStatus();
         relationMetric = requestedCompletionScope || RELATION_CHOICES[0][0];
         currentCriterion = criterion;
         const direction = directionByCriterion.get(criterion);
@@ -1990,10 +2008,7 @@
       }
 
       if (criterion === SORT.COMPLETION) {
-        if (
-          statusKind === ACTIVITY_PROMPT_STATUS ||
-          statusKind === LOGIN_STATUS
-        ) {
+        if (statusKind === ACTIVITY_PROMPT_STATUS) {
           clearStatus();
         }
         completionScope = requestedCompletionScope || COMPLETION_SCOPE.ALL;
