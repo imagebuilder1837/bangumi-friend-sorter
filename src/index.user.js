@@ -50,7 +50,7 @@
     FETCHING: "fetching",
     IDLE: "idle",
   });
-  const ACTIVITY_PROMPT_STATUS = "armed";
+  const REFRESH_PROMPT_STATUS = "armed";
   const LOGIN_STATUS = "login";
   const SORT_CHOICES = [
     [SORT.ADDED, "加好友时间"],
@@ -550,17 +550,17 @@
     statusKind,
   ) {
     if (requestedCriterion !== SORT.ACTIVITY) {
-      return statusKind === ACTIVITY_PROMPT_STATUS
+      return statusKind === REFRESH_PROMPT_STATUS
         ? { kind: "sort", clearPrompt: true }
         : { kind: "sort" };
     }
     if (currentCriterion !== SORT.ACTIVITY) {
-      return statusKind === REFRESH_STATUS.IDLE
-        ? { kind: "sort", refresh: "incremental" }
-        : { kind: "sort" };
+      return statusKind === REFRESH_PROMPT_STATUS
+        ? { kind: "sort", clearPrompt: true, refresh: "incremental" }
+        : { kind: "sort", refresh: "incremental" };
     }
     if (statusKind === REFRESH_STATUS.IDLE) return { kind: "arm" };
-    if (statusKind === ACTIVITY_PROMPT_STATUS) {
+    if (statusKind === REFRESH_PROMPT_STATUS) {
       return { kind: "refresh", mode: "full" };
     }
     return { kind: "ignore" };
@@ -846,7 +846,6 @@
           finishIfIdle();
         },
         enqueue(items, nextTarget) {
-          target = nextTarget;
           const candidateKeys = new Set(queuedKeys);
           const newItems = [];
           for (const item of items) {
@@ -858,15 +857,14 @@
           if (
             newItems.length > 400 &&
             options.confirmRequest &&
-            !options.confirmRequest(
-              confirmMessage(newItems.length, nextTarget),
-            )
+            !options.confirmRequest(confirmMessage(newItems.length, nextTarget))
           ) {
             if (started) {
               options.onQueue?.({ added: 0, completed, target, total });
             }
             return 0;
           }
+          target = nextTarget;
           for (const item of newItems) {
             queuedKeys.add(keyFor(item));
             queue.push(item);
@@ -1704,10 +1702,10 @@
     visitorIdentifier,
   }) {
     return {
-      start(target) {
+      start(target, mode = "incremental") {
         if (scheduler.isGloballyStopped() || !getDependencies()) return null;
 
-        const pending = getPending(target);
+        const pending = mode === "full" ? friends : getPending(target);
         if (pending.length === 0 && !scheduler.getTask("profile")) return null;
         scheduler.setForeground("profile");
         const { task } = scheduler.enqueue("profile", pending, {
@@ -1964,6 +1962,11 @@
 
     function setStatus(kind, message, clearAfterMs = 0) {
       if (kind === REFRESH_STATUS.COMPLETED) {
+        if (transientStatus?.kind === REFRESH_PROMPT_STATUS) {
+          clearStatusTimeout(statusTimer);
+          statusTimer = null;
+          transientStatus = null;
+        }
         const completedAt = now();
         completionStatuses.push({
           message,
@@ -1995,6 +1998,11 @@
     }
 
     function setProgressStatus(taskType, message) {
+      if (transientStatus?.kind === REFRESH_PROMPT_STATUS) {
+        clearStatusTimeout(statusTimer);
+        statusTimer = null;
+        transientStatus = null;
+      }
       progressStatuses.set(taskType, {
         message,
         sequence: ++progressSequence,
@@ -2007,14 +2015,23 @@
       renderStatus();
     }
 
+    function showRateLimitStatus() {
+      if (rateLimitStatusShown) return;
+      rateLimitStatusShown = true;
+      clearStatusTimeout(completionTimer);
+      completionTimer = null;
+      completionStatuses.splice(0);
+      setStatus(REFRESH_STATUS.COMPLETED, "请求受限，已停止全部获取", 5_000);
+    }
+
     function showActivityProgress(completed, total) {
-      setProgressStatus("activity", `正在获取 ${completed}/${total}`);
+      setProgressStatus("activity", `正在获取“上次活跃” ${completed}/${total}`);
       runtime.onProgress?.(completed, total);
     }
 
     const activityRefresh = createPageRefreshCoordinator({
       confirmMessage: (count) =>
-        `需要获取的好友数量过多（${count} 人），是否继续？`,
+        `本次新增获取的好友数量过多（${count} 人），是否继续？`,
       confirmRequest,
       getDependencies: () => pageFetchDependencies(runtime, pageWindow),
       getPending: (mode) =>
@@ -2025,7 +2042,10 @@
       onSuccess: (friend, record) =>
         activityCache.set(userIdentifierFor(friend), record, false),
       onFetching: ({ completed, total }) => {
-        setProgressStatus("activity", `正在获取 ${completed}/${total}`);
+        setProgressStatus(
+          "activity",
+          `正在获取“上次活跃” ${completed}/${total}`,
+        );
       },
       onFinished: ({ failures, globallyStopped }) => {
         clearProgressStatus("activity");
@@ -2041,19 +2061,14 @@
           });
         }
         if (globallyStopped) {
-          if (!rateLimitStatusShown) {
-            rateLimitStatusShown = true;
-            setStatus(
-              REFRESH_STATUS.COMPLETED,
-              "请求受限，已停止全部获取",
-              5_000,
-            );
-          }
+          showRateLimitStatus();
           return;
         }
         setStatus(
           REFRESH_STATUS.COMPLETED,
-          failures ? `获取完成，${failures} 人失败` : "获取完成",
+          failures
+            ? `“上次活跃”获取完成，${failures} 人失败`
+            : "“上次活跃”获取完成",
           5_000,
         );
       },
@@ -2075,9 +2090,8 @@
       return target.kind === "relation" ? "喜好契合" : "完成条目数";
     }
 
-    function applyProfileSort(target) {
-      if (target.kind === "relation") {
-        if (currentCriterion !== SORT.RELATION) return;
+    function applyCurrentProfileSort() {
+      if (currentCriterion === SORT.RELATION) {
         applyFriendSort({
           list,
           friends,
@@ -2085,7 +2099,7 @@
           sortData: friendCache,
           collator,
           direction: directionByCriterion.get(SORT.RELATION),
-          relationMetric: target.metric,
+          relationMetric,
           relationVisitorIdentifier: visitorIdentifier,
         });
         return;
@@ -2098,7 +2112,7 @@
         sortData: friendCache,
         collator,
         direction: directionByCriterion.get(SORT.COMPLETION),
-        completionScope: target.scope,
+        completionScope,
       });
     }
 
@@ -2111,7 +2125,7 @@
     const profileRefresh = createProfileRefreshCoordinator({
       cache: friendCache,
       confirmMessage: (count) =>
-        `需要获取的好友数量过多（${count} 人），是否继续？`,
+        `本次新增获取的好友数量过多（${count} 人），是否继续？`,
       confirmRequest,
       friends,
       getDependencies: () => pageFetchDependencies(runtime, pageWindow),
@@ -2134,16 +2148,9 @@
       onFetching: showProfileProgress,
       onFinished: ({ failures, globallyStopped, target }) => {
         clearProgressStatus("profile");
-        applyProfileSort(target);
+        applyCurrentProfileSort();
         if (globallyStopped) {
-          if (!rateLimitStatusShown) {
-            rateLimitStatusShown = true;
-            setStatus(
-              REFRESH_STATUS.COMPLETED,
-              "请求受限，已停止全部获取",
-              5_000,
-            );
-          }
+          showRateLimitStatus();
           return;
         }
         const label = profileMainLabel(target);
@@ -2164,8 +2171,33 @@
     function selectCriterion(criterion, requestedCompletionScope) {
       if (criterion === SORT.RELATION) {
         if (statusKind === LOGIN_STATUS) return;
-        if (statusKind === ACTIVITY_PROMPT_STATUS) clearStatus();
-        relationMetric = requestedCompletionScope || RELATION_CHOICES[0][0];
+        const requestedMetric =
+          requestedCompletionScope || RELATION_CHOICES[0][0];
+        const repeatsCurrentTarget =
+          currentCriterion === criterion && relationMetric === requestedMetric;
+        if (repeatsCurrentTarget && !visitorIdentifier) {
+          setStatus(LOGIN_STATUS, "请登录后使用喜好契合排序", 5_000);
+          return;
+        }
+        if (repeatsCurrentTarget && statusKind === REFRESH_PROMPT_STATUS) {
+          clearStatus();
+        } else if (repeatsCurrentTarget && statusKind === REFRESH_STATUS.IDLE) {
+          const label =
+            RELATION_CHOICES.find(
+              ([metric]) => metric === requestedMetric,
+            )?.[1] || requestedMetric;
+          setStatus(
+            REFRESH_PROMPT_STATUS,
+            `5 秒内再次点击“${label}”以全量刷新`,
+            5_000,
+          );
+          return;
+        } else if (repeatsCurrentTarget) {
+          return;
+        } else if (statusKind === REFRESH_PROMPT_STATUS) {
+          clearStatus();
+        }
+        relationMetric = requestedMetric;
         currentCriterion = criterion;
         const direction = directionByCriterion.get(criterion);
         controls.setCurrent(criterion, direction, relationMetric);
@@ -2182,19 +2214,40 @@
         if (!visitorIdentifier) {
           setStatus(LOGIN_STATUS, "请登录后使用喜好契合排序", 5_000);
         } else {
-          void profileRefresh.start({
-            kind: "relation",
-            metric: relationMetric,
-          });
+          void profileRefresh.start(
+            {
+              kind: "relation",
+              metric: relationMetric,
+            },
+            repeatsCurrentTarget ? "full" : "incremental",
+          );
         }
         return;
       }
 
       if (criterion === SORT.COMPLETION) {
-        if (statusKind === ACTIVITY_PROMPT_STATUS) {
+        const requestedScope = requestedCompletionScope || COMPLETION_SCOPE.ALL;
+        const repeatsCurrentTarget =
+          currentCriterion === criterion && completionScope === requestedScope;
+        if (repeatsCurrentTarget && statusKind === REFRESH_PROMPT_STATUS) {
+          clearStatus();
+        } else if (repeatsCurrentTarget && statusKind === REFRESH_STATUS.IDLE) {
+          const label =
+            COMPLETION_CHOICES.find(
+              ([scope]) => scope === requestedScope,
+            )?.[1] || requestedScope;
+          setStatus(
+            REFRESH_PROMPT_STATUS,
+            `5 秒内再次点击“${label}”以全量刷新`,
+            5_000,
+          );
+          return;
+        } else if (repeatsCurrentTarget) {
+          return;
+        } else if (statusKind === REFRESH_PROMPT_STATUS) {
           clearStatus();
         }
-        completionScope = requestedCompletionScope || COMPLETION_SCOPE.ALL;
+        completionScope = requestedScope;
         currentCriterion = criterion;
         const direction = directionByCriterion.get(criterion);
         controls.setCurrent(criterion, direction, completionScope);
@@ -2207,10 +2260,13 @@
           direction,
           completionScope,
         });
-        void profileRefresh.start({
-          kind: "completion",
-          scope: completionScope,
-        });
+        void profileRefresh.start(
+          {
+            kind: "completion",
+            scope: completionScope,
+          },
+          repeatsCurrentTarget ? "full" : "incremental",
+        );
         return;
       }
 
@@ -2238,7 +2294,7 @@
       if (action.clearPrompt) clearStatus();
       if (action.kind === "arm") {
         setStatus(
-          ACTIVITY_PROMPT_STATUS,
+          REFRESH_PROMPT_STATUS,
           "5 秒内再次点击“上次活跃”以全量刷新",
           5_000,
         );

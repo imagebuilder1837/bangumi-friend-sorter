@@ -538,11 +538,11 @@ test("上次活跃点击按排序切换、待命和刷新状态分流", () => {
   );
   assert.deepEqual(
     sorter.nextActivitySelectionAction("name", "activity", "fetching"),
-    { kind: "sort" },
+    { kind: "sort", refresh: "incremental" },
   );
   assert.deepEqual(
     sorter.nextActivitySelectionAction("name", "activity", "completed"),
-    { kind: "sort" },
+    { kind: "sort", refresh: "incremental" },
   );
   assert.deepEqual(
     sorter.nextActivitySelectionAction("activity", "name", "armed"),
@@ -2375,7 +2375,7 @@ test("不同页面类型的完成提示按实际完成时间排队并依次出�
   });
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(status.textContent, "获取完成");
+  assert.equal(status.textContent, "“上次活跃”获取完成");
 
   now = 1_000;
   releaseProfile({
@@ -2385,10 +2385,10 @@ test("不同页面类型的完成提示按实际完成时间排队并依次出�
   });
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(status.textContent, "获取完成");
+  assert.equal(status.textContent, "“上次活跃”获取完成");
 
   await advance(3_999);
-  assert.equal(status.textContent, "获取完成");
+  assert.equal(status.textContent, "“上次活跃”获取完成");
   await advance(1);
   assert.equal(status.textContent, "“完成条目数”获取完成");
   await advance(1_000);
@@ -2590,8 +2590,8 @@ test("同步率切换到完成条目数时复用同一主页任务", async () =>
   assert.deepEqual(page.list.children.map((item) => item.textContent), ["B", "A"]);
 });
 
-test("取消大批量扩充后按最新选择的主页字段统计失败", async () => {
-  const entries = Array.from({ length: 402 }, (_, index) => ({
+test("取消大批量扩充后恢复旧主页任务目标", async () => {
+  const entries = Array.from({ length: 403 }, (_, index) => ({
     href: `/user/friend-${index}`,
     name: `好友${index}`,
   }));
@@ -2604,6 +2604,9 @@ test("取消大批量扩充后按最新选择的主页字段统计失败", async
       [syncField]: { value: 10, fetchedAt: now },
     };
   }
+  cachedRecords["friend-402"][
+    sorter.relationFieldFor("visitor", "commonLikes")
+  ] = { value: 20, fetchedAt: now };
   const storage = {
     getItem(key) {
       if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
@@ -2617,6 +2620,7 @@ test("取消大批量扩充后按最新选择的主页字段统计失败", async
     releaseFirst = resolve;
   });
   const requests = [];
+  const confirmations = [];
 
   sorter.initialize({
     document: page.document,
@@ -2633,7 +2637,10 @@ test("取消大批量扩充后按最新选择的主页字段统计失败", async
       requests.push(url);
       return firstResponse;
     },
-    confirm: () => false,
+    confirm: (message) => {
+      confirmations.push(message);
+      return false;
+    },
   });
 
   const sortOptions = page.list.beforeNodes[0].children[0].children[0];
@@ -2646,6 +2653,9 @@ test("取消大批量扩充后按最新选择的主页字段统计失败", async
   relationDropdown.children[0].click();
   assert.deepEqual(requests, ["/user/friend-0"]);
   relationMenu.children[1].click();
+  assert.deepEqual(confirmations, [
+    "本次新增获取的好友数量过多（401 人），是否继续？",
+  ]);
   releaseFirst({ ok: true, text: async () => "profile" });
 
   for (let attempt = 0; attempt < 20 && status.textContent === ""; attempt += 1) {
@@ -2656,7 +2666,8 @@ test("取消大批量扩充后按最新选择的主页字段统计失败", async
   }
 
   assert.deepEqual(requests, ["/user/friend-0"]);
-  assert.equal(status.textContent, "“喜好契合”获取完成，1 人失败");
+  assert.equal(status.textContent, "“喜好契合”获取完成");
+  assert.equal(page.list.children[0].textContent, "好友402");
 });
 
 test("主页任务按好友用户标识去重重复条目", async () => {
@@ -2840,6 +2851,50 @@ test("完成统计范围在刷新期间切换后补取新增缺失好友", async
     completion_6: { value: 2, fetchedAt: now },
   });
   assert.deepEqual(page.list.children.map((item) => item.textContent), ["B", "A"]);
+});
+
+test("完成条目数两击全量刷新使用实际范围名称并忽略有效缓存", async () => {
+  const page = friendPageWith([{ href: "/user/a", name: "A" }]);
+  const now = 100_000;
+  const requests = [];
+  sorter.initialize({
+    document: page.document,
+    window: { location: { href: "https://bgm.tv/user/sai/friends" } },
+    storage: {
+      getItem(key) {
+        if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
+        return JSON.stringify({
+          version: 3,
+          records: {
+            a: { completion_all: { value: 1, fetchedAt: now } },
+          },
+        });
+      },
+      setItem() {},
+      removeItem() {},
+    },
+    now: () => now,
+    domParser: { parseFromString: () => profileStatsDocument() },
+    fetchImpl: (url) => {
+      requests.push(url);
+      return Promise.resolve({ ok: true, text: async () => "profile" });
+    },
+  });
+
+  const sortOptions = page.list.beforeNodes[0].children[0].children[0];
+  const completionDropdown = sortOptions.children.find(
+    (child) => child.children?.[0]?.textContent === "完成条目数",
+  );
+  const completionButton = completionDropdown.children[0];
+  const status = sortOptions.children.at(-1);
+
+  completionButton.click();
+  assert.deepEqual(requests, []);
+  completionButton.click();
+  assert.equal(status.textContent, "5 秒内再次点击“全部”以全量刷新");
+  completionButton.click();
+  assert.deepEqual(requests, ["/user/a"]);
+  await new Promise((resolve) => setImmediate(resolve));
 });
 
 test("完成条目数菜单按钮与菜单项之间保持连续悬停区域", () => {
