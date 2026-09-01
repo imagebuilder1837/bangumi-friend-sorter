@@ -180,7 +180,7 @@ test("加好友时间默认从旧到新，也支持从新到旧", () => {
   );
 });
 
-test("名称排序支持升序和降序，同名随方向比较用户主键", () => {
+test("名称排序支持升序和降序，同名随方向比较用户标识", () => {
   const friends = [
     { userIdentifier: "z", displayName: "user10", originalIndex: 0 },
     { userIdentifier: "b", displayName: "User2", originalIndex: 1 },
@@ -200,7 +200,7 @@ test("名称排序支持升序和降序，同名随方向比较用户主键", ()
   );
 });
 
-test("上次活跃支持从新到旧和从旧到新，未知时间始终在后", () => {
+test("上次活跃支持从新到旧和从旧到新，未知活跃时间始终在后", () => {
   const friends = [
     { userIdentifier: "unknown", displayName: "未知", originalIndex: 0 },
     { userIdentifier: "older", displayName: "较早", originalIndex: 1 },
@@ -966,4 +966,61 @@ test("页面初始化可以注入获取任务所需的运行时依赖", async ()
       },
     },
   ]]);
+});
+
+test("页面初始化使用注入时钟判断 v2 活跃记录迁移有效期", async () => {
+  const hour = 60 * 60 * 1_000;
+  const now = 100 * hour;
+  const records = {
+    fresh: { kind: "active", activityAtSeconds: 1, fetchedAt: now - hour },
+    boundary: {
+      kind: "active",
+      activityAtSeconds: 2,
+      fetchedAt: now - 24 * hour,
+    },
+    stale: {
+      kind: "active",
+      activityAtSeconds: 3,
+      fetchedAt: now - 24 * hour - 1,
+    },
+  };
+  const page = friendPageWith([
+    { href: "/user/fresh", name: "新鲜" },
+    { href: "/user/boundary", name: "边界" },
+    { href: "/user/stale", name: "过期" },
+  ]);
+  let requests = 0;
+  const storage = {
+    getItem(key) {
+      if (key === "bangumi-friend-sorter:activity-cache:v2") {
+        return JSON.stringify({ version: 2, records });
+      }
+      return null;
+    },
+    removeItem() {},
+    setItem() {},
+  };
+
+  sorter.initialize({
+    document: page.document,
+    window: { location: { href: "https://bgm.tv/user/sai/friends" } },
+    storage,
+    domParser: {
+      parseFromString: () => timelineDocumentFromFixture("timeline-active-seconds.html"),
+    },
+    fetchImpl: async () => {
+      requests += 1;
+      return { ok: false, status: 404 };
+    },
+    now: () => now,
+  });
+
+  const filters = page.list.beforeNodes[0].children[0];
+  const sortButtons = filters.children[0].children.filter(
+    (child) => child?.tagName === "button",
+  );
+  sortButtons[2].click();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(requests, 1);
 });

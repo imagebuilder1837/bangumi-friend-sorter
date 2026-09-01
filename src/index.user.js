@@ -219,6 +219,8 @@
     };
   }
 
+  // 保留 activity-only 适配边界供渐进迁移中的旧调用方使用；调用方迁移到
+  // createFriendCache 后即可删除该适配器。
   function createActivityCache(storage, options) {
     const cache = createFriendCache(storage, options);
     return {
@@ -263,10 +265,7 @@
         return (
           (isAscending ? 1 : -1) *
           (collator.compare(left.displayName, right.displayName) ||
-            collator.compare(
-              userIdentifierFor(left),
-              userIdentifierFor(right),
-            ))
+            collator.compare(userIdentifierFor(left), userIdentifierFor(right)))
         );
       });
     }
@@ -751,8 +750,10 @@
     const friends = readFriends(list, pageWindow.location.href);
     if (friends.length !== list.children.length) return;
 
+    const now = runtime.now ?? Date.now;
     const activityCache = createActivityCache(
       runtime.storage ?? browserStorage(pageWindow),
+      { now },
     );
     const collator = new Intl.Collator(undefined, {
       numeric: true,
@@ -768,7 +769,6 @@
     let activityTask = null;
     let statusTimer = null;
     let statusKind = ACTIVITY_STATUS.IDLE;
-    const now = runtime.now ?? Date.now;
     const confirmRequest =
       runtime.confirm ?? pageWindow.confirm?.bind(pageWindow) ?? (() => false);
 
