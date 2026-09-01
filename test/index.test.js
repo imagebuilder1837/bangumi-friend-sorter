@@ -122,6 +122,18 @@ function friendPageWith(entries) {
   return { document, list };
 }
 
+function sortOptionsFor(page) {
+  return page.list.beforeNodes[0].children[0].children[0];
+}
+
+function mainSortControl(page, label) {
+  return sortOptionsFor(page).children.find(
+    (child) =>
+      (child?.tagName === "button" && child.textContent === label) ||
+      child?.children?.[0]?.textContent === label,
+  );
+}
+
 test("纯空白展示名称不会阻止排序栏初始化", () => {
   const page = friendPageWith([
     { href: "/user/normal", name: "正常好友" },
@@ -382,7 +394,10 @@ test("页面初始化提供五个主排序目标、全部子项和各自主按�
 
   sorter.initialize({
     document: page.document,
-    window: { location: { href: "https://bgm.tv/user/sai/friends" } },
+    window: {
+      CHOBITS_USERNAME: "visitor",
+      location: { href: "https://bgm.tv/user/sai/friends" },
+    },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },
   });
 
@@ -420,18 +435,21 @@ test("页面初始化提供五个主排序目标、全部子项和各自主按�
     "从新到旧",
   ]);
 
-  directButtons[1].click();
-  directionButtons[1].click();
-  directButtons[0].click();
-  directButtons[1].click();
-  assert.equal(directionButtons[1].getAttribute("aria-current"), "true");
-
-  for (const dropdown of dropdowns) {
-    dropdown.children[0].click();
+  for (const control of [directButtons[1], directButtons[2], ...dropdowns]) {
+    const button = control.tagName === "button" ? control : control.children[0];
+    button.click();
     assert.deepEqual(directionButtons.map(({ textContent }) => textContent), [
-      "从低到高",
-      "从高到低",
+      ...(button.textContent === "上次活跃"
+        ? ["从旧到新", "从新到旧"]
+        : button.textContent === "名称"
+          ? ["升序", "降序"]
+          : ["从低到高", "从高到低"]),
     ]);
+    directionButtons[0].click();
+    directButtons[0].click();
+    button.click();
+    assert.equal(directionButtons[0].getAttribute("aria-current"), "true");
+    directionButtons[1].click();
     assert.equal(directionButtons[1].getAttribute("aria-current"), "true");
   }
 });
@@ -1086,6 +1104,46 @@ test("初始化在时间胶囊和用户主页任务之间切换并恢复暂停�
   await waitFor(() => pending.size === 0);
 });
 
+test("页面初始化全局最多四并发且限流会停止两类页面任务", async () => {
+  const page = friendPageWith(
+    ["a", "b", "c", "d", "e"].map((userIdentifier) => ({
+      href: `/user/${userIdentifier}`,
+      name: userIdentifier.toUpperCase(),
+    })),
+  );
+  const started = [];
+  const pending = new Map();
+
+  sorter.initialize({
+    document: page.document,
+    window: { location: { href: "https://bgm.tv/user/viewed/friends" } },
+    storage: { getItem: () => null, setItem() {}, removeItem() {} },
+    setTimeout: () => 1,
+    clearTimeout() {},
+    domParser: {
+      parseFromString: () =>
+        timelineDocumentFromFixture("timeline-active-seconds.html"),
+    },
+    fetchImpl: (url) => {
+      started.push(url);
+      return new Promise((resolve) => pending.set(url, resolve));
+    },
+  });
+
+  mainSortControl(page, "上次活跃").click();
+  assert.equal(started.length, 4);
+  mainSortControl(page, "完成条目数").children[0].click();
+  assert.equal(started.length, 4);
+
+  pending.get(started[0])({ ok: false, status: 429 });
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  assert.equal(started.length, 4);
+  assert.equal(sortOptionsFor(page).children.at(-1).textContent, "请求受限，已停止全部获取");
+});
+
 test("持久存储不可用时活跃缓存仍在当前页面内工作", () => {
   const unavailableStorage = {
     getItem() {
@@ -1454,40 +1512,61 @@ test("页面初始化可以注入获取任务所需的运行时依赖", async ()
   ]]);
 });
 
-test("三个支持站点都通过同源请求刷新时间胶囊", async () => {
+test("三个支持站点都使用隔离存储和同源请求刷新两类页面", async () => {
+  const domainWrites = new Map();
   for (const host of ["bgm.tv", "bangumi.tv", "chii.in"]) {
     const page = friendPageWith([{ href: "/user/friend", name: "好友" }]);
     const requests = [];
+    const writes = [];
+    domainWrites.set(host, writes);
     sorter.initialize({
       document: page.document,
-      window: { location: { href: `https://${host}/user/viewed/friends` } },
-      storage: { getItem: () => null, setItem() {}, removeItem() {} },
-      domParser: {
-        parseFromString: () =>
-          timelineDocumentFromFixture("timeline-active-seconds.html"),
+      window: {
+        location: { href: `https://${host}/user/viewed/friends` },
+        localStorage: {
+          getItem: () => null,
+          setItem: (key, value) => writes.push([key, value]),
+          removeItem() {},
+        },
       },
-      fetchImpl: async (...request) => {
+      setTimeout: () => 1,
+      clearTimeout() {},
+      domParser: {
+        parseFromString: (html) =>
+          html === "timeline"
+            ? timelineDocumentFromFixture("timeline-active-seconds.html")
+            : profileStatsDocument(),
+      },
+      fetchImpl: async (url, options) => {
+        const request = [url, options];
         requests.push(request);
         return {
           ok: true,
           headers: { get: () => null },
-          text: async () => "timeline",
+          text: async () => (url.endsWith("/timeline") ? "timeline" : "profile"),
         };
       },
     });
 
-    const sortOptions = page.list.beforeNodes[0].children[0].children[0];
-    sortOptions.children.find(
-      (child) => child?.tagName === "button" && child.textContent === "上次活跃",
-    ).click();
-    for (let attempt = 0; attempt < 10 && requests.length === 0; attempt += 1) {
+    mainSortControl(page, "上次活跃").click();
+    mainSortControl(page, "完成条目数").children[0].click();
+    for (
+      let attempt = 0;
+      attempt < 10 && (requests.length < 2 || writes.length === 0);
+      attempt += 1
+    ) {
       await new Promise((resolve) => setImmediate(resolve));
     }
 
-    assert.equal(requests.length, 1, host);
+    assert.equal(requests.length, 2, host);
     assert.equal(requests[0][0], "/user/friend/timeline", host);
     assert.equal(requests[0][1].credentials, "same-origin", host);
+    assert.equal(requests[1][0], "/user/friend", host);
+    assert.equal(requests[1][1].credentials, "same-origin", host);
+    assert.ok(writes.length > 0, host);
   }
+  assert.notEqual(domainWrites.get("bgm.tv"), domainWrites.get("bangumi.tv"));
+  assert.notEqual(domainWrites.get("bangumi.tv"), domainWrites.get("chii.in"));
 });
 
 test("单文件 userscript 元数据描述完整能力并匹配三个站点的双好友页", () => {
