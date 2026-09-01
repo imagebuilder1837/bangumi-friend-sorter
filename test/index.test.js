@@ -1560,7 +1560,7 @@ test("喜好契合缓存按访问者和指标判断七十二小时有效期", ()
   );
 });
 
-test("当前访问者标识按 UID、用户名、页头头像依次回退且不读取被查看者", () => {
+test("当前访问者标识按 UID、配置的访问者标识、页头头像依次回退且不读取被查看者", () => {
   const avatar = { getAttribute: () => "/user/header-user" };
   const headerDocument = {
     querySelector(selector) {
@@ -1577,6 +1577,13 @@ test("当前访问者标识按 UID、用户名、页头头像依次回退且不�
       location: { href: "https://bgm.tv/user/viewed/friends" },
     }),
     "42",
+  );
+  assert.equal(
+    sorter.currentVisitorIdentifier(headerDocument, {
+      CHOBITS_UID: "9007199254740993",
+      location: { href: "https://bgm.tv/user/viewed/friends" },
+    }),
+    "9007199254740993",
   );
   assert.equal(
     sorter.currentVisitorIdentifier(headerDocument, {
@@ -1803,7 +1810,7 @@ test("喜好契合菜单的焦点状态只控制自身菜单", () => {
   assert.equal(relationButton.getAttribute("aria-expanded"), "false");
 });
 
-test("匿名选择喜好契合时不请求并且登录提示不会因重复选择续时", () => {
+test("未登录时选择喜好契合不请求且登录提示不会因重复选择续时", () => {
   const page = friendPageWith([{ href: "/user/friend", name: "好友" }]);
   let requests = 0;
   sorter.initialize({
@@ -1901,7 +1908,7 @@ test("登录提示不会被完成任务完成状态覆盖", async () => {
   assert.equal(status.textContent, "请登录后使用喜好契合排序");
 });
 
-test("主页关系指标切换复用任务、去重请求并按最后字段统计失败", async () => {
+test("主页同步率与共同喜好数切换复用任务、去重请求并按最后字段统计失败", async () => {
   const page = friendPageWith([
     { href: "/user/a", name: "A" },
     { href: "/user/b", name: "B" },
@@ -2015,7 +2022,7 @@ test("主页关系指标切换复用任务、去重请求并按最后字段统�
   });
 });
 
-test("关系指标切换到完成条目数时复用同一主页任务", async () => {
+test("同步率切换到完成条目数时复用同一主页任务", async () => {
   const page = friendPageWith([
     { href: "/user/a", name: "A" },
     { href: "/user/b", name: "B" },
@@ -2094,6 +2101,75 @@ test("关系指标切换到完成条目数时复用同一主页任务", async ()
 
   assert.deepEqual(requests, ["a", "b"]);
   assert.deepEqual(page.list.children.map((item) => item.textContent), ["B", "A"]);
+});
+
+test("取消大批量扩充后按最新选择的主页字段统计失败", async () => {
+  const entries = Array.from({ length: 402 }, (_, index) => ({
+    href: `/user/friend-${index}`,
+    name: `好友${index}`,
+  }));
+  const page = friendPageWith(entries);
+  const now = 100_000;
+  const syncField = sorter.relationFieldFor("visitor", "syncRate");
+  const cachedRecords = {};
+  for (let index = 1; index < entries.length; index += 1) {
+    cachedRecords[`friend-${index}`] = {
+      [syncField]: { value: 10, fetchedAt: now },
+    };
+  }
+  const storage = {
+    getItem(key) {
+      if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
+      return JSON.stringify({ version: 3, records: cachedRecords });
+    },
+    setItem() {},
+    removeItem() {},
+  };
+  let releaseFirst;
+  const firstResponse = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  const requests = [];
+
+  sorter.initialize({
+    document: page.document,
+    window: {
+      CHOBITS_USERNAME: "visitor",
+      location: { href: "https://bgm.tv/user/viewed/friends" },
+    },
+    storage,
+    now: () => now,
+    domParser: {
+      parseFromString: () => relationProfileDocument({ syncRate: "50%" }),
+    },
+    fetchImpl: (url) => {
+      requests.push(url);
+      return firstResponse;
+    },
+    confirm: () => false,
+  });
+
+  const sortOptions = page.list.beforeNodes[0].children[0].children[0];
+  const relationDropdown = sortOptions.children.find(
+    (child) => child.children?.[0]?.textContent === "喜好契合",
+  );
+  const relationMenu = relationDropdown.children[1];
+  const status = sortOptions.children.at(-1);
+
+  relationDropdown.children[0].click();
+  assert.deepEqual(requests, ["/user/friend-0"]);
+  relationMenu.children[1].click();
+  releaseFirst({ ok: true, text: async () => "profile" });
+
+  for (let attempt = 0; attempt < 20 && status.textContent === ""; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  for (let attempt = 0; attempt < 20 && !status.textContent.includes("获取完成"); attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  assert.deepEqual(requests, ["/user/friend-0"]);
+  assert.equal(status.textContent, "“喜好契合”获取完成，1 人失败");
 });
 
 test("主页任务按好友用户标识去重重复条目", async () => {

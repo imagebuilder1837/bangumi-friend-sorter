@@ -919,8 +919,7 @@
   function positiveIntegerIdentifier(value) {
     const text = String(value ?? "").trim();
     if (!/^[1-9]\d*$/.test(text)) return null;
-    const number = Number(text);
-    return Number.isSafeInteger(number) ? String(number) : null;
+    return text;
   }
 
   function userIdentifierFromHref(href, baseUrl) {
@@ -1524,6 +1523,7 @@
       let promise = null;
 
       function enqueue(nextTarget) {
+        target = nextTarget;
         const pending = getPending(nextTarget);
         const candidateKeys = new Set(queuedKeys);
         const items = pending.filter((friend) => {
@@ -1536,10 +1536,10 @@
           items.length > 400 &&
           !confirmRequest(confirmMessage(items.length, nextTarget))
         ) {
+          if (running) onQueue?.({ added: 0, completed, target, total });
           return 0;
         }
 
-        target = nextTarget;
         for (const friend of items) {
           const key = userIdentifierFor(friend);
           queuedKeys.add(key);
