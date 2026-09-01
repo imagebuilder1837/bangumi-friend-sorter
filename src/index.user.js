@@ -745,6 +745,7 @@
     function runnableTask() {
       const foreground = foregroundType && tasks.get(foregroundType);
       if (foreground?.canSchedule()) return foreground;
+      if (foreground?.hasInFlight()) return null;
       if (foregroundType && !foreground && !foregroundTaskSeen) return null;
       return [...tasks.values()].find((task) => task.canSchedule()) || null;
     }
@@ -827,6 +828,9 @@
         canSchedule() {
           return !finished && !batchState.stopped && queue.length > 0;
         },
+        hasInFlight() {
+          return !batchState.stopped && inFlightForTask > 0;
+        },
         complete(item, outcome) {
           inFlightForTask -= 1;
           completed += 1;
@@ -853,7 +857,8 @@
           }
           if (
             newItems.length > 400 &&
-            !options.confirmRequest?.(
+            options.confirmRequest &&
+            !options.confirmRequest(
               confirmMessage(newItems.length, nextTarget),
             )
           ) {
@@ -939,48 +944,22 @@
   }
 
   async function runPageFetchTask(items, options) {
-    let nextIndex = 0;
-    let completed = 0;
-    let failures = 0;
-    let batchState = { consecutiveServerFailures: 0, stopped: false };
+    if (items.length === 0) return { failures: 0, stopped: false };
 
-    async function worker() {
-      while (!batchState.stopped) {
-        const index = nextIndex;
-        if (index >= items.length) return;
-        nextIndex += 1;
-
-        let outcome;
-        try {
-          outcome = await options.fetchPage(items[index]);
-        } catch {
-          outcome = { kind: "network-error" };
-        }
-        if (!outcome || typeof outcome !== "object") {
-          outcome = { kind: "network-error" };
-        }
-
-        completed += 1;
-        if (outcome.kind === "success") {
-          options.onSuccess?.(items[index], outcome.record, outcome);
-        } else {
-          failures += 1;
-        }
-        batchState = nextBatchState(batchState, outcome);
-        options.onProgress?.(completed, items.length);
-      }
-    }
-
-    const workerCount = Math.min(4, items.length);
-    await Promise.all(Array.from({ length: workerCount }, () => worker()));
-
-    const unattempted = items.length - nextIndex;
-    if (unattempted > 0) {
-      completed += unattempted;
-      failures += unattempted;
-      options.onProgress?.(completed, items.length);
-    }
-    return { failures, stopped: batchState.stopped };
+    const entries = items.map((item, index) => ({ index, item }));
+    return new Promise((resolve) => {
+      const scheduler = createTaskScheduler({ concurrency: 4 });
+      scheduler.enqueue("standalone", entries, {
+        fetch: ({ item }) => options.fetchPage(item),
+        isSuccess: (record, outcome) => outcome.kind === "success",
+        keyFor: ({ index }) => index,
+        onFinished: ({ failures, stopped }) => resolve({ failures, stopped }),
+        onProgress: ({ completed, total }) =>
+          options.onProgress?.(completed, total),
+        onSuccess: ({ item }, record, outcome) =>
+          options.onSuccess?.(item, record, outcome),
+      });
+    });
   }
 
   function parseCompletionCount(block) {
@@ -1726,10 +1705,11 @@
   }) {
     return {
       start(target) {
-        scheduler.setForeground("profile");
         if (scheduler.isGloballyStopped() || !getDependencies()) return null;
 
         const pending = getPending(target);
+        if (pending.length === 0 && !scheduler.getTask("profile")) return null;
+        scheduler.setForeground("profile");
         const { task } = scheduler.enqueue("profile", pending, {
           confirmMessage: (count, nextTarget) =>
             confirmMessage(count, nextTarget),
@@ -1782,10 +1762,11 @@
   }) {
     return {
       start(mode) {
-        scheduler.setForeground(taskType);
         if (scheduler.isGloballyStopped() || !getDependencies()) return null;
 
         const pending = getPending(mode);
+        if (pending.length === 0 && !scheduler.getTask(taskType)) return null;
+        scheduler.setForeground(taskType);
         const { task } = scheduler.enqueue(taskType, pending, {
           confirmMessage: (count, nextMode) => confirmMessage(count, nextMode),
           confirmRequest,
@@ -1889,29 +1870,145 @@
     );
     let statusTimer = null;
     let statusKind = REFRESH_STATUS.IDLE;
+    let transientStatus = null;
+    let loginStatus = null;
+    let completionTimer = null;
+    const completionStatuses = [];
+    const progressStatuses = new Map();
+    let progressSequence = 0;
+    let rateLimitStatusShown = false;
+    const setStatusTimeout = runtime.setTimeout ?? setTimeout;
+    const clearStatusTimeout = runtime.clearTimeout ?? clearTimeout;
     const confirmRequest =
       runtime.confirm ?? pageWindow.confirm?.bind(pageWindow) ?? (() => false);
     const scheduler = createTaskScheduler({ concurrency: 4 });
 
-    function clearStatus() {
-      clearTimeout(statusTimer);
-      statusTimer = null;
+    function pruneCompletionStatuses(currentTime = now()) {
+      while (
+        completionStatuses.length > 0 &&
+        completionStatuses[0].expiresAt <= currentTime
+      ) {
+        completionStatuses.shift();
+      }
+    }
+
+    function scheduleCompletionExpiry(currentTime = now()) {
+      clearStatusTimeout(completionTimer);
+      completionTimer = null;
+      const next = completionStatuses[0];
+      if (!next) return;
+      const scheduled = next;
+      completionTimer = setStatusTimeout(
+        () => {
+          completionTimer = null;
+          if (completionStatuses[0] === scheduled) completionStatuses.shift();
+          renderStatus();
+        },
+        Math.max(0, next.expiresAt - currentTime),
+      );
+    }
+
+    function currentProgressStatus() {
+      return [...progressStatuses.values()].sort(
+        (left, right) => right.sequence - left.sequence,
+      )[0];
+    }
+
+    function renderStatus(currentTime) {
+      if (completionStatuses.length > 0) {
+        const statusTime = currentTime ?? now();
+        pruneCompletionStatuses(statusTime);
+        scheduleCompletionExpiry(statusTime);
+      } else {
+        clearStatusTimeout(completionTimer);
+        completionTimer = null;
+      }
+
+      if (loginStatus) {
+        statusKind = LOGIN_STATUS;
+        controls.status.textContent = loginStatus.message;
+        return;
+      }
+
+      const completion = completionStatuses[0];
+      if (completion) {
+        statusKind = REFRESH_STATUS.COMPLETED;
+        controls.status.textContent = completion.message;
+        return;
+      }
+
+      if (transientStatus) {
+        statusKind = transientStatus.kind;
+        controls.status.textContent = transientStatus.message;
+        return;
+      }
+
+      const progress = currentProgressStatus();
+      if (progress) {
+        statusKind = REFRESH_STATUS.FETCHING;
+        controls.status.textContent = progress.message;
+        return;
+      }
+
       statusKind = REFRESH_STATUS.IDLE;
       controls.status.textContent = "";
     }
 
+    function clearStatus() {
+      clearStatusTimeout(statusTimer);
+      statusTimer = null;
+      transientStatus = null;
+      loginStatus = null;
+      renderStatus();
+    }
+
     function setStatus(kind, message, clearAfterMs = 0) {
-      if (statusKind === LOGIN_STATUS && kind !== LOGIN_STATUS) return;
-      clearStatus();
-      statusKind = kind;
-      controls.status.textContent = message;
+      if (kind === REFRESH_STATUS.COMPLETED) {
+        const completedAt = now();
+        completionStatuses.push({
+          message,
+          expiresAt: completedAt + Math.max(0, clearAfterMs),
+        });
+        renderStatus(completedAt);
+        return;
+      }
+
+      if (kind !== LOGIN_STATUS && loginStatus) return;
+      clearStatusTimeout(statusTimer);
+      statusTimer = null;
+      if (kind === LOGIN_STATUS) {
+        transientStatus = null;
+        loginStatus = { message };
+      } else {
+        loginStatus = null;
+        transientStatus = { kind, message };
+      }
+      renderStatus();
       if (clearAfterMs > 0) {
-        statusTimer = setTimeout(clearStatus, clearAfterMs);
+        statusTimer = setStatusTimeout(() => {
+          statusTimer = null;
+          transientStatus = null;
+          loginStatus = null;
+          renderStatus();
+        }, clearAfterMs);
       }
     }
 
+    function setProgressStatus(taskType, message) {
+      progressStatuses.set(taskType, {
+        message,
+        sequence: ++progressSequence,
+      });
+      renderStatus();
+    }
+
+    function clearProgressStatus(taskType) {
+      progressStatuses.delete(taskType);
+      renderStatus();
+    }
+
     function showActivityProgress(completed, total) {
-      setStatus(REFRESH_STATUS.FETCHING, `正在获取 ${completed}/${total}`);
+      setProgressStatus("activity", `正在获取 ${completed}/${total}`);
       runtime.onProgress?.(completed, total);
     }
 
@@ -1928,9 +2025,10 @@
       onSuccess: (friend, record) =>
         activityCache.set(userIdentifierFor(friend), record, false),
       onFetching: ({ completed, total }) => {
-        setStatus(REFRESH_STATUS.FETCHING, `正在获取 ${completed}/${total}`);
+        setProgressStatus("activity", `正在获取 ${completed}/${total}`);
       },
       onFinished: ({ failures, globallyStopped }) => {
+        clearProgressStatus("activity");
         activityCache.persist();
         if (currentCriterion === SORT.ACTIVITY) {
           applyFriendSort({
@@ -1943,11 +2041,14 @@
           });
         }
         if (globallyStopped) {
-          setStatus(
-            REFRESH_STATUS.COMPLETED,
-            "请求受限，已停止全部获取",
-            5_000,
-          );
+          if (!rateLimitStatusShown) {
+            rateLimitStatusShown = true;
+            setStatus(
+              REFRESH_STATUS.COMPLETED,
+              "请求受限，已停止全部获取",
+              5_000,
+            );
+          }
           return;
         }
         setStatus(
@@ -2003,10 +2104,7 @@
 
     function showProfileProgress({ completed, target, total }) {
       const label = profileMainLabel(target);
-      setStatus(
-        REFRESH_STATUS.FETCHING,
-        `正在获取“${label}” ${completed}/${total}`,
-      );
+      setProgressStatus("profile", `正在获取“${label}” ${completed}/${total}`);
       runtime.onProgress?.(completed, total);
     }
 
@@ -2035,13 +2133,17 @@
       now,
       onFetching: showProfileProgress,
       onFinished: ({ failures, globallyStopped, target }) => {
+        clearProgressStatus("profile");
         applyProfileSort(target);
         if (globallyStopped) {
-          setStatus(
-            REFRESH_STATUS.COMPLETED,
-            "请求受限，已停止全部获取",
-            5_000,
-          );
+          if (!rateLimitStatusShown) {
+            rateLimitStatusShown = true;
+            setStatus(
+              REFRESH_STATUS.COMPLETED,
+              "请求受限，已停止全部获取",
+              5_000,
+            );
+          }
           return;
         }
         const label = profileMainLabel(target);

@@ -718,6 +718,59 @@ test("页面任务调度器在全局四槽位内优先前台任务且不取消�
   assert.equal(scheduler.getTask("profile"), null);
 });
 
+test("前台队列耗尽但仍有在途请求时不会恢复后台任务", async () => {
+  const scheduler = sorter.createTaskScheduler({ concurrency: 2 });
+  const pending = new Map();
+  const started = [];
+  const options = (type) => ({
+    fetch: (item) =>
+      new Promise((resolve) => {
+        started.push(`${type}:${item}`);
+        pending.set(`${type}:${item}`, resolve);
+      }),
+    isSuccess: () => true,
+  });
+
+  scheduler.setForeground("activity");
+  scheduler.enqueue("activity", ["a1", "a2", "a3"], options("activity"));
+  scheduler.setForeground("profile");
+  scheduler.enqueue("profile", ["p1", "p2"], options("profile"));
+
+  pending.get("activity:a1")({ kind: "success" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(started, ["activity:a1", "activity:a2", "profile:p1"]);
+
+  pending.get("profile:p1")({ kind: "success" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(
+    started,
+    ["activity:a1", "activity:a2", "profile:p1", "profile:p2"],
+  );
+
+  pending.get("activity:a2")({ kind: "success" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(
+    started,
+    ["activity:a1", "activity:a2", "profile:p1", "profile:p2"],
+  );
+
+  pending.get("profile:p2")({ kind: "success" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(
+    started,
+    [
+      "activity:a1",
+      "activity:a2",
+      "profile:p1",
+      "profile:p2",
+      "activity:a3",
+    ],
+  );
+
+  pending.get("activity:a3")({ kind: "success" });
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
 test("页面任务调度器收到 429 时停止所有任务并统计未尝试好友", async () => {
   const scheduler = sorter.createTaskScheduler({ concurrency: 4 });
   const pending = new Map();
@@ -801,32 +854,87 @@ test("页面任务连续五次服务端失败后停止自身并恢复另一页�
   assert.equal(finished[1][1].failures, 0);
 });
 
-test("未产生请求的前台页面类型不会让暂停任务偷跑", async () => {
-  const scheduler = sorter.createTaskScheduler({ concurrency: 1 });
+test("没有待请求好友的远程目标不会暂停后台任务", async () => {
+  const page = friendPageWith(
+    ["a", "b", "c", "d", "e"].map((userIdentifier) => ({
+      href: `/user/${userIdentifier}`,
+      name: userIdentifier.toUpperCase(),
+    })),
+  );
+  const now = 100_000;
   const pending = new Map();
   const started = [];
-  const options = (type) => ({
-    fetch: (item) =>
-      new Promise((resolve) => {
-        started.push(`${type}:${item}`);
-        pending.set(`${type}:${item}`, resolve);
-      }),
-    isSuccess: () => true,
+  const responseFor = (url) => ({
+    ok: true,
+    headers: { get: () => null },
+    text: async () => (url.endsWith("/timeline") ? "timeline" : "profile"),
+  });
+  const release = (url) => {
+    const resolve = pending.get(url);
+    assert.ok(resolve, `expected a pending request for ${url}`);
+    pending.delete(url);
+    resolve(responseFor(url));
+  };
+  const waitFor = async (predicate) => {
+    for (let attempt = 0; attempt < 20 && !predicate(); attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(predicate(), true);
+  };
+  const records = Object.fromEntries(
+    ["a", "b", "c", "d", "e"].map((userIdentifier) => [
+      userIdentifier,
+      { completion_all: { value: 1, fetchedAt: now } },
+    ]),
+  );
+
+  sorter.initialize({
+    document: page.document,
+    window: { location: { href: "https://bgm.tv/user/sai/friends" } },
+    storage: {
+      getItem: (key) =>
+        key === "bangumi-friend-sorter:activity-cache:v3"
+          ? JSON.stringify({ version: 3, records })
+          : null,
+      setItem() {},
+      removeItem() {},
+    },
+    now: () => now,
+    domParser: {
+      parseFromString: (html) =>
+        html === "timeline"
+          ? timelineDocumentFromFixture("timeline-active-seconds.html")
+          : profileStatsDocument(),
+    },
+    fetchImpl: (url) => {
+      started.push(url);
+      return new Promise((resolve) => pending.set(url, resolve));
+    },
   });
 
-  scheduler.setForeground("activity");
-  scheduler.enqueue("activity", ["a1", "a2"], options("activity"));
-  scheduler.setForeground("profile");
-  scheduler.enqueue("profile", [], options("profile"));
-  pending.get("activity:a1")({ kind: "success" });
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(started, ["activity:a1"]);
+  const filters = page.list.beforeNodes[0].children[0];
+  const sortOptions = filters.children[0];
+  const activityButton = sortOptions.children.find(
+    (child) => child?.tagName === "button" && child.textContent === "上次活跃",
+  );
+  const completionDropdown = sortOptions.children.find(
+    (child) => child?.children?.[0]?.textContent === "完成条目数",
+  );
 
-  scheduler.setForeground(null);
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(started, ["activity:a1", "activity:a2"]);
-  pending.get("activity:a2")({ kind: "success" });
-  await new Promise((resolve) => setImmediate(resolve));
+  activityButton.click();
+  assert.equal(started.filter((url) => url.endsWith("/timeline")).length, 4);
+  completionDropdown.children[0].click();
+  assert.equal(started.filter((url) => !url.endsWith("/timeline")).length, 0);
+
+  release("/user/a/timeline");
+  await waitFor(
+    () => started.filter((url) => url.endsWith("/timeline")).length === 5,
+  );
+
+  for (const userIdentifier of ["b", "c", "d", "e"]) {
+    release(`/user/${userIdentifier}/timeline`);
+  }
+  await waitFor(() => pending.size === 0);
 });
 
 test("初始化在时间胶囊和用户主页任务之间切换并恢复暂停队列", async () => {
@@ -1265,7 +1373,7 @@ test("页面初始化可以注入获取任务所需的运行时依赖", async ()
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(requests, 1);
-  assert.equal(nowCalls, 2);
+  assert.equal(nowCalls, 3);
   assert.deepEqual(progress, [[1, 1]]);
   assert.deepEqual(writes, [[
     "bangumi-friend-sorter:activity-cache:v3",
@@ -2132,6 +2240,28 @@ test("选择喜好契合会清除已激活的上次活跃全量刷新提示", ()
 
 test("登录提示不会被完成任务完成状态覆盖", async () => {
   const page = friendPageWith([{ href: "/user/a", name: "A" }]);
+  let now = 0;
+  let nextTimerId = 0;
+  const timers = new Map();
+  const setTimer = (callback, delay) => {
+    const id = ++nextTimerId;
+    timers.set(id, { callback, due: now + delay });
+    return id;
+  };
+  const clearTimer = (id) => timers.delete(id);
+  const advance = async (milliseconds) => {
+    now += milliseconds;
+    while (true) {
+      const next = [...timers.entries()]
+        .filter(([, timer]) => timer.due <= now)
+        .sort(([, left], [, right]) => left.due - right.due)[0];
+      if (!next) break;
+      const [id, timer] = next;
+      timers.delete(id);
+      timer.callback();
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+  };
   let releaseProfile;
   const pendingProfile = new Promise((resolve) => {
     releaseProfile = resolve;
@@ -2142,6 +2272,9 @@ test("登录提示不会被完成任务完成状态覆盖", async () => {
       location: { href: "https://bgm.tv/user/viewed/friends" },
     },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },
+    now: () => now,
+    setTimeout: setTimer,
+    clearTimeout: clearTimer,
     domParser: { parseFromString: () => profileStatsDocument() },
     fetchImpl: () => pendingProfile,
   });
@@ -2159,10 +2292,107 @@ test("登录提示不会被完成任务完成状态覆盖", async () => {
   relationDropdown.children[0].click();
   assert.equal(status.textContent, "请登录后使用喜好契合排序");
 
+  now = 1_000;
   releaseProfile({ ok: true, text: async () => "profile" });
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(status.textContent, "请登录后使用喜好契合排序");
+
+  await advance(4_000);
+  assert.equal(status.textContent, "“完成条目数”获取完成");
+  await advance(1_000);
+  assert.equal(status.textContent, "");
+});
+
+test("不同页面类型的完成提示按实际完成时间排队并依次出队", async () => {
+  const page = friendPageWith([{ href: "/user/a", name: "A" }]);
+  let now = 0;
+  let nextTimerId = 0;
+  const timers = new Map();
+  const setTimer = (callback, delay) => {
+    const id = ++nextTimerId;
+    timers.set(id, { callback, due: now + delay });
+    return id;
+  };
+  const clearTimer = (id) => timers.delete(id);
+  const advance = async (milliseconds) => {
+    now += milliseconds;
+    while (true) {
+      const next = [...timers.entries()]
+        .filter(([, timer]) => timer.due <= now)
+        .sort(([, left], [, right]) => left.due - right.due)[0];
+      if (!next) break;
+      const [id, timer] = next;
+      timers.delete(id);
+      timer.callback();
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+  };
+  let releaseActivity;
+  let releaseProfile;
+  const activityResponse = new Promise((resolve) => {
+    releaseActivity = resolve;
+  });
+  const profileResponse = new Promise((resolve) => {
+    releaseProfile = resolve;
+  });
+
+  sorter.initialize({
+    document: page.document,
+    window: {
+      CHOBITS_USERNAME: "visitor",
+      location: { href: "https://bgm.tv/user/viewed/friends" },
+    },
+    storage: { getItem: () => null, setItem() {}, removeItem() {} },
+    now: () => now,
+    setTimeout: setTimer,
+    clearTimeout: clearTimer,
+    domParser: {
+      parseFromString: (html) =>
+        html === "timeline"
+          ? timelineDocumentFromFixture("timeline-active-seconds.html")
+          : profileStatsDocument(),
+    },
+    fetchImpl: (url) =>
+      url.endsWith("/timeline") ? activityResponse : profileResponse,
+  });
+
+  const sortOptions = page.list.beforeNodes[0].children[0].children[0];
+  const activityButton = sortOptions.children.find(
+    (child) => child?.tagName === "button" && child.textContent === "上次活跃",
+  );
+  const completionDropdown = sortOptions.children.find(
+    (child) => child?.children?.[0]?.textContent === "完成条目数",
+  );
+  const status = sortOptions.children.at(-1);
+
+  activityButton.click();
+  completionDropdown.children[0].click();
+  releaseActivity({
+    ok: true,
+    headers: { get: () => null },
+    text: async () => "timeline",
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(status.textContent, "获取完成");
+
+  now = 1_000;
+  releaseProfile({
+    ok: true,
+    headers: { get: () => null },
+    text: async () => "profile",
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(status.textContent, "获取完成");
+
+  await advance(3_999);
+  assert.equal(status.textContent, "获取完成");
+  await advance(1);
+  assert.equal(status.textContent, "“完成条目数”获取完成");
+  await advance(1_000);
+  assert.equal(status.textContent, "");
 });
 
 test("主页同步率与共同喜好数切换复用任务、去重请求并按最后字段统计失败", async () => {
