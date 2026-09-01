@@ -134,6 +134,16 @@ function mainSortControl(page, label) {
   );
 }
 
+function directionButtonsFor(page) {
+  return page.list.beforeNodes[0].children[0].children[1].children.filter(
+    (child) => child?.tagName === "button",
+  );
+}
+
+function dropdownItems(page, label) {
+  return mainSortControl(page, label).children[1].children;
+}
+
 test("纯空白展示名称不会阻止排序栏初始化", () => {
   const page = friendPageWith([
     { href: "/user/normal", name: "正常好友" },
@@ -399,13 +409,12 @@ test("页面初始化提供五个主排序目标、全部子项和各自主按�
       location: { href: "https://bgm.tv/user/sai/friends" },
     },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },
+    setTimeout: () => 1,
+    clearTimeout() {},
   });
 
-  const filters = page.list.beforeNodes[0].children[0];
-  const sortOptions = filters.children[0];
-  const directionButtons = filters.children[1].children.filter(
-    (child) => child?.tagName === "button",
-  );
+  const sortOptions = sortOptionsFor(page);
+  const directionButtons = directionButtonsFor(page);
   const directButtons = sortOptions.children.filter(
     (child) => child?.tagName === "button",
   );
@@ -420,13 +429,11 @@ test("页面初始化提供五个主排序目标、全部子项和各自主按�
     ["加好友时间", "名称", "上次活跃", "喜好契合", "完成条目数"],
   );
   assert.deepEqual(
-    dropdowns.find((dropdown) => dropdown.children[0].textContent === "喜好契合")
-      .children[1].children.map(({ textContent }) => textContent),
+    dropdownItems(page, "喜好契合").map(({ textContent }) => textContent),
     ["同步率", "共同喜好数"],
   );
   assert.deepEqual(
-    dropdowns.find((dropdown) => dropdown.children[0].textContent === "完成条目数")
-      .children[1].children.map(({ textContent }) => textContent),
+    dropdownItems(page, "完成条目数").map(({ textContent }) => textContent),
     ["全部", "动画", "书籍", "音乐", "游戏", "三次元"],
   );
   assert.equal(directButtons[0].getAttribute("aria-current"), "true");
@@ -1051,6 +1058,8 @@ test("初始化在时间胶囊和用户主页任务之间切换并恢复暂停�
       location: { href: "https://bgm.tv/user/viewed/friends" },
     },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },
+    setTimeout: () => 1,
+    clearTimeout() {},
     domParser: {
       parseFromString: (html) =>
         html === "timeline"
@@ -1081,11 +1090,14 @@ test("初始化在时间胶囊和用户主页任务之间切换并恢复暂停�
   await waitFor(
     () => started.filter((url) => !url.endsWith("/timeline")).length === 1,
   );
+  sortButtons[2].click();
+  release("/user/b/timeline");
+  await waitFor(() => started.includes("/user/e/timeline"));
+  completionDropdown.children[0].click();
   release("/user/a");
   await waitFor(
     () => started.filter((url) => !url.endsWith("/timeline")).length === 2,
   );
-  assert.equal(started.includes("/user/e/timeline"), false);
 
   for (const userIdentifier of ["b", "c", "d"]) {
     release(`/user/${userIdentifier}`);
@@ -1096,9 +1108,8 @@ test("初始化在时间胶囊和用户主页任务之间切换并恢复暂停�
     );
   }
   release("/user/e");
-  await waitFor(() => started.includes("/user/e/timeline"));
 
-  for (const userIdentifier of ["b", "c", "d", "e"]) {
+  for (const userIdentifier of ["c", "d", "e"]) {
     release(`/user/${userIdentifier}/timeline`);
   }
   await waitFor(() => pending.size === 0);
@@ -1142,6 +1153,81 @@ test("页面初始化全局最多四并发且限流会停止两类页面任务",
 
   assert.equal(started.length, 4);
   assert.equal(sortOptionsFor(page).children.at(-1).textContent, "请求受限，已停止全部获取");
+  for (const [url, resolve] of [...pending]) {
+    pending.delete(url);
+    resolve({ ok: false, status: 429 });
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
+test("主页连续五次服务端错误后停止并恢复暂停的时间胶囊任务", async () => {
+  const identifiers = ["a", "b", "c", "d", "e"];
+  const page = friendPageWith(
+    identifiers.map((userIdentifier) => ({
+      href: `/user/${userIdentifier}`,
+      name: userIdentifier.toUpperCase(),
+    })),
+  );
+  const started = [];
+  const pending = new Map();
+  const waitFor = async (predicate) => {
+    for (let attempt = 0; attempt < 20 && !predicate(); attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(predicate(), true);
+  };
+
+  sorter.initialize({
+    document: page.document,
+    window: { location: { href: "https://bgm.tv/user/viewed/friends" } },
+    storage: { getItem: () => null, setItem() {}, removeItem() {} },
+    setTimeout: () => 1,
+    clearTimeout() {},
+    domParser: {
+      parseFromString: (html) =>
+        html === "timeline"
+          ? timelineDocumentFromFixture("timeline-active-seconds.html")
+          : profileStatsDocument(),
+    },
+    fetchImpl: (url) => {
+      started.push(url);
+      return new Promise((resolve) => pending.set(url, resolve));
+    },
+  });
+
+  mainSortControl(page, "上次活跃").click();
+  mainSortControl(page, "完成条目数").children[0].click();
+  pending.get("/user/a/timeline")({
+    ok: true,
+    headers: { get: () => null },
+    text: async () => "timeline",
+  });
+  await waitFor(() => pending.has("/user/a"));
+
+  // Resolve failures one at a time because the three in-flight timeline
+  // requests leave one global slot for the foreground profile task.
+  for (const userIdentifier of identifiers) {
+    const url = `/user/${userIdentifier}`;
+    await waitFor(() => pending.has(url));
+    const resolve = pending.get(url);
+    pending.delete(url);
+    resolve({ ok: false, status: 500 });
+  }
+  await waitFor(() => started.includes("/user/e/timeline"));
+
+  assert.equal(
+    sortOptionsFor(page).children.at(-1).textContent,
+    "“完成条目数”获取完成，5 人失败",
+  );
+  for (const [url, resolve] of [...pending]) {
+    pending.delete(url);
+    resolve({
+      ok: true,
+      headers: { get: () => null },
+      text: async () => (url.endsWith("/timeline") ? "timeline" : "profile"),
+    });
+  }
+  await new Promise((resolve) => setImmediate(resolve));
 });
 
 test("持久存储不可用时活跃缓存仍在当前页面内工作", () => {
