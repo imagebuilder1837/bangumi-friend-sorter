@@ -391,20 +391,18 @@
     return createActivityCacheView(createFriendCache(storage, options));
   }
 
-  function activityCacheView(cache) {
-    return createActivityCacheView(cache);
-  }
-
   function sortFriends(
     friends,
-    criterion,
-    sortData = new Map(),
-    collator = new Intl.Collator(undefined, {
-      numeric: true,
-      sensitivity: "base",
-    }),
-    direction,
-    completionScope = COMPLETION_SCOPE.ALL,
+    {
+      criterion,
+      sortData = new Map(),
+      collator = new Intl.Collator(undefined, {
+        numeric: true,
+        sensitivity: "base",
+      }),
+      direction,
+      completionScope = COMPLETION_SCOPE.ALL,
+    } = {},
   ) {
     const sorted = [...friends];
     const isAscending = isAscendingDirection(direction, criterion);
@@ -658,10 +656,11 @@
 
   function parseCompletionCount(block) {
     const descriptions = [...(block?.querySelectorAll?.(".desc") || [])];
-    const description = descriptions.find(
+    const completionDescriptions = descriptions.filter(
       (node) => node.textContent.trim() === "完成",
     );
-    if (!description) return null;
+    if (completionDescriptions.length !== 1) return null;
+    const description = completionDescriptions[0];
 
     let card = description;
     while (card && card !== block) {
@@ -699,14 +698,11 @@
     }
 
     const aggregate = statsBlockFor(container, COMPLETION_SCOPE.ALL);
-    const aggregateValue = parseCompletionCount(aggregate);
-    if (
-      aggregate === INVALID_STATS_BLOCK ||
-      !aggregate ||
-      aggregateValue === null
-    ) {
+    if (aggregate === INVALID_STATS_BLOCK || !aggregate) {
       return { kind: "invalid" };
     }
+    const aggregateValue = parseCompletionCount(aggregate);
+    if (aggregateValue === null) return { kind: "invalid" };
 
     const values = { [COMPLETION_SCOPE.ALL]: aggregateValue };
     for (const [scope] of COMPLETION_CHOICES.slice(1)) {
@@ -815,23 +811,8 @@
     return friends.every(Boolean) ? friends : [];
   }
 
-  function applyFriendSort(
-    list,
-    friends,
-    criterion,
-    sortData,
-    collator,
-    direction,
-    completionScope,
-  ) {
-    for (const friend of sortFriends(
-      friends,
-      criterion,
-      sortData,
-      collator,
-      direction,
-      completionScope,
-    )) {
+  function applyFriendSort({ list, friends, ...sortOptions }) {
+    for (const friend of sortFriends(friends, sortOptions)) {
       list.append(friend.element);
     }
   }
@@ -879,7 +860,7 @@
         padding: 0;
         pointer-events: none;
         position: absolute;
-        top: calc(100% + 3px);
+        top: 100%;
         transform: translateY(-4px);
         transition: opacity .15s ease, transform .15s ease, visibility .15s;
         visibility: hidden;
@@ -1187,7 +1168,7 @@
       runtime.storage ?? browserStorage(pageWindow),
       { fieldValidators: completionCacheFieldValidators(), now },
     );
-    const activityCache = activityCacheView(friendCache);
+    const activityCache = createActivityCacheView(friendCache);
     const collator = new Intl.Collator(undefined, {
       numeric: true,
       sensitivity: "base",
@@ -1257,14 +1238,14 @@
       try {
         const { failures } = await activityTask;
         if (currentCriterion === SORT.ACTIVITY) {
-          applyFriendSort(
+          applyFriendSort({
             list,
             friends,
-            SORT.ACTIVITY,
-            activityCache,
+            criterion: SORT.ACTIVITY,
+            sortData: activityCache,
             collator,
-            directionByCriterion.get(SORT.ACTIVITY),
-          );
+            direction: directionByCriterion.get(SORT.ACTIVITY),
+          });
         }
         setStatus(
           ACTIVITY_STATUS.COMPLETED,
@@ -1320,15 +1301,15 @@
       try {
         const { failures } = await completionTask;
         if (currentCriterion === SORT.COMPLETION) {
-          applyFriendSort(
+          applyFriendSort({
             list,
             friends,
-            SORT.COMPLETION,
-            friendCache,
+            criterion: SORT.COMPLETION,
+            sortData: friendCache,
             collator,
-            directionByCriterion.get(SORT.COMPLETION),
+            direction: directionByCriterion.get(SORT.COMPLETION),
             completionScope,
-          );
+          });
         }
         setStatus(
           ACTIVITY_STATUS.COMPLETED,
@@ -1350,15 +1331,15 @@
         currentCriterion = criterion;
         const direction = directionByCriterion.get(criterion);
         controls.setCurrent(criterion, direction, completionScope);
-        applyFriendSort(
+        applyFriendSort({
           list,
           friends,
           criterion,
-          friendCache,
+          sortData: friendCache,
           collator,
           direction,
           completionScope,
-        );
+        });
         void startCompletionRefresh();
         return;
       }
@@ -1373,15 +1354,15 @@
       currentCriterion = criterion;
       const direction = directionByCriterion.get(criterion);
       controls.setCurrent(criterion, direction, completionScope);
-      applyFriendSort(
+      applyFriendSort({
         list,
         friends,
         criterion,
-        activityCache,
+        sortData: activityCache,
         collator,
         direction,
         completionScope,
-      );
+      });
 
       if (action.clearPrompt) clearStatus();
       if (action.kind === "arm") {
@@ -1403,15 +1384,16 @@
 
       directionByCriterion.set(currentCriterion, direction);
       controls.setCurrent(currentCriterion, direction, completionScope);
-      applyFriendSort(
+      applyFriendSort({
         list,
         friends,
-        currentCriterion,
-        currentCriterion === SORT.COMPLETION ? friendCache : activityCache,
+        criterion: currentCriterion,
+        sortData:
+          currentCriterion === SORT.COMPLETION ? friendCache : activityCache,
         collator,
         direction,
         completionScope,
-      );
+      });
     }
 
     const controls = createSortBar(

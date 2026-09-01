@@ -163,17 +163,19 @@ test("网页默认顺序默认从旧到新，也支持从新到旧", () => {
   ];
 
   assert.deepEqual(
-    sorter.sortFriends(friends, "added", new Map()).map(({ userIdentifier }) => userIdentifier),
-    ["first", "second", "third"],
-  );
-  assert.deepEqual(
-    sorter.sortFriends(friends, "added", new Map(), undefined, "asc").map(
+    sorter.sortFriends(friends, { criterion: "added" }).map(
       ({ userIdentifier }) => userIdentifier,
     ),
     ["first", "second", "third"],
   );
   assert.deepEqual(
-    sorter.sortFriends(friends, "added", new Map(), undefined, "desc").map(
+    sorter.sortFriends(friends, { criterion: "added", direction: "asc" }).map(
+      ({ userIdentifier }) => userIdentifier,
+    ),
+    ["first", "second", "third"],
+  );
+  assert.deepEqual(
+    sorter.sortFriends(friends, { criterion: "added", direction: "desc" }).map(
       ({ userIdentifier }) => userIdentifier,
     ),
     ["third", "second", "first"],
@@ -189,11 +191,13 @@ test("名称排序支持升序和降序，同名随方向比较用户标识", ()
   const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 
   assert.deepEqual(
-    sorter.sortFriends(friends, "name", new Map(), collator).map(({ userIdentifier }) => userIdentifier),
+    sorter.sortFriends(friends, { criterion: "name", collator }).map(
+      ({ userIdentifier }) => userIdentifier,
+    ),
     ["a", "b", "z"],
   );
   assert.deepEqual(
-    sorter.sortFriends(friends, "name", new Map(), collator, "desc").map(
+    sorter.sortFriends(friends, { criterion: "name", collator, direction: "desc" }).map(
       ({ userIdentifier }) => userIdentifier,
     ),
     ["z", "b", "a"],
@@ -216,11 +220,17 @@ test("上次活跃支持从新到旧和从旧到新，未知活跃时间始终�
   ]);
 
   assert.deepEqual(
-    sorter.sortFriends(friends, "activity", activities).map(({ userIdentifier }) => userIdentifier),
+    sorter.sortFriends(friends, { criterion: "activity", sortData: activities }).map(
+      ({ userIdentifier }) => userIdentifier,
+    ),
     ["newer-a", "newer-b", "older", "unknown", "empty"],
   );
   assert.deepEqual(
-    sorter.sortFriends(friends, "activity", activities, undefined, "asc").map(
+    sorter.sortFriends(friends, {
+      criterion: "activity",
+      sortData: activities,
+      direction: "asc",
+    }).map(
       ({ userIdentifier }) => userIdentifier,
     ),
     ["older", "newer-a", "newer-b", "unknown", "empty"],
@@ -1158,6 +1168,15 @@ test("主页完成统计按完成描述定位六个统计范围", () => {
   });
 });
 
+test("统计块存在多个完成描述时视为结构矛盾", () => {
+  assert.deepEqual(
+    sorter.parseProfileDocument(
+      profileStatsDocumentFromFixture("profile-stats-conflict.html"),
+    ),
+    { kind: "invalid" },
+  );
+});
+
 test("缺失分类块可靠解析为零，缺失聚合块视为失败", () => {
   assert.deepEqual(sorter.parseProfileDocument(profileStatsDocument()), {
     kind: "success",
@@ -1254,12 +1273,22 @@ test("完成条目数按当前范围从高到低或从低到高稳定排序", ()
   ]);
 
   assert.deepEqual(
-    sorter.sortFriends(friends, "completion", values, undefined, "desc", "all")
+    sorter.sortFriends(friends, {
+      criterion: "completion",
+      sortData: values,
+      direction: "desc",
+      completionScope: "all",
+    })
       .map(({ userIdentifier }) => userIdentifier),
     ["high", "same-b", "same-a", "zero", "unknown"],
   );
   assert.deepEqual(
-    sorter.sortFriends(friends, "completion", values, undefined, "asc", "all")
+    sorter.sortFriends(friends, {
+      criterion: "completion",
+      sortData: values,
+      direction: "asc",
+      completionScope: "all",
+    })
       .map(({ userIdentifier }) => userIdentifier),
     ["zero", "same-b", "same-a", "high", "unknown"],
   );
@@ -1420,6 +1449,37 @@ test("初始化将排序栏挂在主内容列之前并使用完成条目数方�
   assert.deepEqual(page.list.children.map((item) => item.textContent), ["A", "B"]);
   directionButtons[1].click();
   assert.deepEqual(page.list.children.map((item) => item.textContent), ["B", "A"]);
+});
+
+test("完成条目数菜单按钮与菜单项之间保持连续悬停区域", () => {
+  const page = friendPageWith([{ href: "/user/a", name: "A" }]);
+  const columns = { children: [] };
+  const wrapper = {
+    children: [columns],
+    querySelector: (selector) => (selector === ".columns" ? columns : null),
+    insertBefore(node, before) {
+      this.children.splice(this.children.indexOf(before), 0, node);
+    },
+  };
+  page.list.closest = (selector) =>
+    selector === ".mainWrapper" ? wrapper : null;
+
+  sorter.initialize({
+    document: page.document,
+    window: { location: { href: "https://bgm.tv/user/sai/friends" } },
+    storage: { getItem: () => null, setItem() {}, removeItem() {} },
+  });
+
+  const styleText = page.document.head.children[0].textContent;
+  assert.match(
+    styleText,
+    /\.bangumi-friend-sorter-dropdown:hover[\s\S]*\.bangumi-friend-sorter-dropdown-menu/,
+  );
+  assert.match(
+    styleText,
+    /\.bangumi-friend-sorter-dropdown-menu \{[\s\S]*top: 100%;/,
+  );
+  assert.doesNotMatch(styleText, /top: calc\(100% \+ 3px\)/);
 });
 
 test("缺少主内容布局时不修改好友页面", () => {
