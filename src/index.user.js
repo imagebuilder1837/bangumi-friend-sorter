@@ -854,6 +854,7 @@
             candidateKeys.add(key);
             newItems.push(item);
           }
+          target = nextTarget;
           if (
             newItems.length > 400 &&
             options.confirmRequest &&
@@ -862,9 +863,8 @@
             if (started) {
               options.onQueue?.({ added: 0, completed, target, total });
             }
-            return 0;
+            return { added: 0, accepted: false };
           }
-          target = nextTarget;
           for (const item of newItems) {
             queuedKeys.add(keyFor(item));
             queue.push(item);
@@ -878,7 +878,7 @@
               total,
             });
           }
-          return newItems.length;
+          return { added: newItems.length, accepted: true };
         },
         fetch: options.fetch,
         getState() {
@@ -908,18 +908,24 @@
       return task;
     }
 
-    function enqueue(type, items, options) {
+    function enqueue(type, items, options, { foreground = false } = {}) {
       if (globallyStopped) return { added: 0, task: null };
       let task = tasks.get(type);
       if (!task) {
         task = createTask(type, options);
         tasks.set(type, task);
       }
-      const added = task.enqueue(items, options.target);
-      if (added > 0 && type === foregroundType) foregroundTaskSeen = true;
+      const { added, accepted } = task.enqueue(items, options.target);
       if (added === 0 && task.getState().total === 0) {
         if (tasks.get(type) === task) tasks.delete(type);
+        pump();
         return { added: 0, task: null };
+      }
+      if (foreground && accepted) {
+        foregroundType = type;
+        foregroundTaskSeen = true;
+      } else if (added > 0 && type === foregroundType) {
+        foregroundTaskSeen = true;
       }
       pump();
       return { added, task };
@@ -1404,147 +1410,101 @@
       buttons.set(criterion, button);
     }
 
-    const completionDropdown = document.createElement("span");
-    completionDropdown.className = "bangumi-friend-sorter-dropdown";
-    const completionButton = document.createElement("button");
-    completionButton.type = "button";
-    completionButton.className = "l bangumi-friend-sorter-dropdown-toggle";
-    completionButton.textContent = "完成条目数";
-    completionButton.setAttribute("aria-haspopup", "true");
-    completionButton.setAttribute(
-      "aria-controls",
-      "bangumi-friend-sorter-completion-menu",
-    );
-    completionButton.addEventListener("click", () => {
-      onSelect(SORT.COMPLETION, COMPLETION_SCOPE.ALL);
-      completionButton.focus?.();
-    });
-    const completionMenu = document.createElement("span");
-    completionMenu.id = "bangumi-friend-sorter-completion-menu";
-    completionMenu.className = "bangumi-friend-sorter-dropdown-menu";
-    completionMenu.setAttribute("role", "menu");
-    const completionButtons = new Map();
-    for (const [scope, label] of COMPLETION_CHOICES) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "l";
-      button.textContent = label;
-      button.setAttribute("role", "menuitem");
-      button.addEventListener("click", () => onSelect(SORT.COMPLETION, scope));
-      completionMenu.append(button);
-      completionButtons.set(scope, button);
-    }
+    function createDropdown({
+      id,
+      label,
+      choices,
+      onDefaultSelect,
+      onSelect: onChoiceSelect,
+    }) {
+      const dropdown = document.createElement("span");
+      dropdown.className = "bangumi-friend-sorter-dropdown";
 
-    function setCompletionMenuOpen(isOpen) {
-      completionDropdown.dataset.open = String(isOpen);
-      completionButton.setAttribute("aria-expanded", String(isOpen));
-    }
-
-    function isInsideCompletionDropdown(node) {
-      return Boolean(completionDropdown.contains?.(node));
-    }
-
-    function keepMenuOpenOnFocus(button, setMenuOpen, isInsideDropdown) {
-      button.addEventListener("focus", () => setMenuOpen(true));
-      button.addEventListener("focusout", (event) => {
-        if (!isInsideDropdown(event.relatedTarget)) {
-          setMenuOpen(false);
-        }
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "l bangumi-friend-sorter-dropdown-toggle";
+      toggle.textContent = label;
+      toggle.setAttribute("aria-haspopup", "true");
+      toggle.setAttribute("aria-controls", id);
+      toggle.addEventListener("click", () => {
+        onDefaultSelect();
+        toggle.focus?.();
       });
-      button.addEventListener("keydown", (event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        event.preventDefault?.();
-        button.click();
+
+      const menu = document.createElement("span");
+      menu.id = id;
+      menu.className = "bangumi-friend-sorter-dropdown-menu";
+      menu.setAttribute("role", "menu");
+      const buttons = new Map();
+      for (const [value, choiceLabel] of choices) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "l";
+        button.textContent = choiceLabel;
+        button.setAttribute("role", "menuitem");
+        button.addEventListener("click", () => onChoiceSelect(value));
+        menu.append(button);
+        buttons.set(value, button);
+      }
+
+      function setMenuOpen(isOpen) {
+        dropdown.dataset.open = String(isOpen);
+        toggle.setAttribute("aria-expanded", String(isOpen));
+      }
+
+      function isInsideDropdown(node) {
+        return Boolean(dropdown.contains?.(node));
+      }
+
+      function keepMenuOpenOnFocus(button) {
+        button.addEventListener("focus", () => setMenuOpen(true));
+        button.addEventListener("focusout", (event) => {
+          if (!isInsideDropdown(event.relatedTarget)) setMenuOpen(false);
+        });
+        button.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault?.();
+          button.click();
+        });
+      }
+
+      dropdown.addEventListener("pointerenter", () => setMenuOpen(true));
+      dropdown.addEventListener("pointerleave", () => {
+        if (!isInsideDropdown(document.activeElement)) setMenuOpen(false);
       });
+      keepMenuOpenOnFocus(toggle);
+      for (const button of buttons.values()) keepMenuOpenOnFocus(button);
+      setMenuOpen(false);
+
+      dropdown.append(toggle, menu);
+      return { dropdown, button: toggle, menu, buttons };
     }
 
-    completionDropdown.addEventListener("pointerenter", () =>
-      setCompletionMenuOpen(true),
-    );
-    completionDropdown.addEventListener("pointerleave", () => {
-      if (!isInsideCompletionDropdown(document.activeElement)) {
-        setCompletionMenuOpen(false);
-      }
+    const completionControl = createDropdown({
+      id: "bangumi-friend-sorter-completion-menu",
+      label: "完成条目数",
+      choices: COMPLETION_CHOICES,
+      onDefaultSelect: () => onSelect(SORT.COMPLETION, COMPLETION_SCOPE.ALL),
+      onSelect: (scope) => onSelect(SORT.COMPLETION, scope),
     });
-    keepMenuOpenOnFocus(
-      completionButton,
-      setCompletionMenuOpen,
-      isInsideCompletionDropdown,
-    );
-    for (const button of completionButtons.values()) {
-      keepMenuOpenOnFocus(
-        button,
-        setCompletionMenuOpen,
-        isInsideCompletionDropdown,
-      );
-    }
-    setCompletionMenuOpen(false);
+    const completionDropdown = completionControl.dropdown;
+    const completionButton = completionControl.button;
+    const completionMenu = completionControl.menu;
+    const completionButtons = completionControl.buttons;
 
-    const relationDropdown = document.createElement("span");
-    relationDropdown.className = "bangumi-friend-sorter-dropdown";
-    const relationButton = document.createElement("button");
-    relationButton.type = "button";
-    relationButton.className = "l bangumi-friend-sorter-dropdown-toggle";
-    relationButton.textContent = "喜好契合";
-    relationButton.setAttribute("aria-haspopup", "true");
-    relationButton.setAttribute(
-      "aria-controls",
-      "bangumi-friend-sorter-relation-menu",
-    );
-    relationButton.addEventListener("click", () => {
-      onSelect(SORT.RELATION, RELATION_CHOICES[0][0]);
-      relationButton.focus?.();
+    const relationControl = createDropdown({
+      id: "bangumi-friend-sorter-relation-menu",
+      label: "喜好契合",
+      choices: RELATION_CHOICES,
+      onDefaultSelect: () => onSelect(SORT.RELATION, RELATION_CHOICES[0][0]),
+      onSelect: (metric) => onSelect(SORT.RELATION, metric),
     });
-    const relationMenu = document.createElement("span");
-    relationMenu.id = "bangumi-friend-sorter-relation-menu";
-    relationMenu.className = "bangumi-friend-sorter-dropdown-menu";
-    relationMenu.setAttribute("role", "menu");
-    const relationButtons = new Map();
-    for (const [metric, label] of RELATION_CHOICES) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "l";
-      button.textContent = label;
-      button.setAttribute("role", "menuitem");
-      button.addEventListener("click", () => onSelect(SORT.RELATION, metric));
-      relationMenu.append(button);
-      relationButtons.set(metric, button);
-    }
+    const relationDropdown = relationControl.dropdown;
+    const relationButton = relationControl.button;
+    const relationMenu = relationControl.menu;
+    const relationButtons = relationControl.buttons;
 
-    function setRelationMenuOpen(isOpen) {
-      relationDropdown.dataset.open = String(isOpen);
-      relationButton.setAttribute("aria-expanded", String(isOpen));
-    }
-
-    function isInsideRelationDropdown(node) {
-      return Boolean(relationDropdown.contains?.(node));
-    }
-
-    relationDropdown.addEventListener("pointerenter", () =>
-      setRelationMenuOpen(true),
-    );
-    relationDropdown.addEventListener("pointerleave", () => {
-      if (!isInsideRelationDropdown(document.activeElement)) {
-        setRelationMenuOpen(false);
-      }
-    });
-    keepMenuOpenOnFocus(
-      relationButton,
-      setRelationMenuOpen,
-      isInsideRelationDropdown,
-    );
-    for (const button of relationButtons.values()) {
-      keepMenuOpenOnFocus(
-        button,
-        setRelationMenuOpen,
-        isInsideRelationDropdown,
-      );
-    }
-    setRelationMenuOpen(false);
-
-    relationDropdown.append(relationButton, relationMenu);
     sortOptions.append(relationDropdown);
-    completionDropdown.append(completionButton, completionMenu);
     sortOptions.append(completionDropdown);
 
     sortOptions.append("排序");
@@ -1707,37 +1667,41 @@
 
         const pending = mode === "full" ? friends : getPending(target);
         if (pending.length === 0 && !scheduler.getTask("profile")) return null;
-        scheduler.setForeground("profile");
-        const { task } = scheduler.enqueue("profile", pending, {
-          confirmMessage: (count, nextTarget) =>
-            confirmMessage(count, nextTarget),
-          confirmRequest,
-          fetch: (friend) => {
-            const dependencies = getDependencies();
-            if (!dependencies) return { kind: "network-error" };
-            return fetchProfile(
-              friend,
-              dependencies.fetchImpl,
-              dependencies.domParser,
-              now,
-            );
+        const { task } = scheduler.enqueue(
+          "profile",
+          pending,
+          {
+            confirmMessage: (count, nextTarget) =>
+              confirmMessage(count, nextTarget),
+            confirmRequest,
+            fetch: (friend) => {
+              const dependencies = getDependencies();
+              if (!dependencies) return { kind: "network-error" };
+              return fetchProfile(
+                friend,
+                dependencies.fetchImpl,
+                dependencies.domParser,
+                now,
+              );
+            },
+            isSuccess: (record, outcome, nextTarget) =>
+              outcome.kind === "success" &&
+              profileRecordHasTarget(record, nextTarget),
+            keyFor: userIdentifierFor,
+            onFetching,
+            onFinished(result) {
+              cache.persist();
+              onFinished?.(result);
+            },
+            onProgress,
+            onQueue,
+            target,
+            onSuccess(friend, record) {
+              saveProfileRecord(cache, visitorIdentifier, friend, record);
+            },
           },
-          isSuccess: (record, outcome, nextTarget) =>
-            outcome.kind === "success" &&
-            profileRecordHasTarget(record, nextTarget),
-          keyFor: userIdentifierFor,
-          onFetching,
-          onFinished(result) {
-            cache.persist();
-            onFinished?.(result);
-          },
-          onProgress,
-          onQueue,
-          target,
-          onSuccess(friend, record) {
-            saveProfileRecord(cache, visitorIdentifier, friend, record);
-          },
-        });
+          { foreground: true },
+        );
         return task;
       },
     };
@@ -1764,24 +1728,29 @@
 
         const pending = getPending(mode);
         if (pending.length === 0 && !scheduler.getTask(taskType)) return null;
-        scheduler.setForeground(taskType);
-        const { task } = scheduler.enqueue(taskType, pending, {
-          confirmMessage: (count, nextMode) => confirmMessage(count, nextMode),
-          confirmRequest,
-          fetch: (item) => {
-            const dependencies = getDependencies();
-            if (!dependencies) return { kind: "network-error" };
-            return fetchPage(item, dependencies);
+        const { task } = scheduler.enqueue(
+          taskType,
+          pending,
+          {
+            confirmMessage: (count, nextMode) =>
+              confirmMessage(count, nextMode),
+            confirmRequest,
+            fetch: (item) => {
+              const dependencies = getDependencies();
+              if (!dependencies) return { kind: "network-error" };
+              return fetchPage(item, dependencies);
+            },
+            isSuccess: (record, outcome) => outcome.kind === "success",
+            keyFor,
+            onFetching: (state) => onFetching?.({ ...state, mode }),
+            onFinished,
+            onProgress: (state) => onProgress?.({ ...state, mode }),
+            onQueue: (state) => onQueue?.({ ...state, mode }),
+            target: mode,
+            onSuccess,
           },
-          isSuccess: (record, outcome) => outcome.kind === "success",
-          keyFor,
-          onFetching: (state) => onFetching?.({ ...state, mode }),
-          onFinished,
-          onProgress: (state) => onProgress?.({ ...state, mode }),
-          onQueue: (state) => onQueue?.({ ...state, mode }),
-          target: mode,
-          onSuccess,
-        });
+          { foreground: true },
+        );
         return task;
       },
     };
@@ -2179,98 +2148,98 @@
       return { ignore: true };
     }
 
-    function selectCriterion(criterion, requestedSubcriterion) {
-      if (criterion === SORT.RELATION) {
-        if (statusKind === LOGIN_STATUS) return;
-        const requestedMetric = requestedSubcriterion || RELATION_CHOICES[0][0];
-        const repeatsCurrentTarget =
-          currentCriterion === criterion && relationMetric === requestedMetric;
-        if (repeatsCurrentTarget && !visitorIdentifier) {
-          setStatus(LOGIN_STATUS, "请登录后使用喜好契合排序", 5_000);
-          return;
-        }
-        const action = profileSelectionAction(repeatsCurrentTarget);
-        if (action.ignore) return;
-        if (action.clearPrompt) clearStatus();
-        if (action.arm) {
-          const label =
-            RELATION_CHOICES.find(
-              ([metric]) => metric === requestedMetric,
-            )?.[1] || requestedMetric;
-          setStatus(
-            REFRESH_PROMPT_STATUS,
-            `5 秒内再次点击“${label}”以全量刷新`,
-            5_000,
-          );
-          return;
-        }
-        relationMetric = requestedMetric;
-        currentCriterion = criterion;
-        const direction = directionByCriterion.get(criterion);
-        controls.setCurrent(criterion, direction, relationMetric);
-        applyFriendSort({
-          list,
-          friends,
-          criterion,
-          sortData: friendCache,
-          collator,
-          direction,
-          relationMetric,
+    const profileTargetConfigurations = {
+      [SORT.RELATION]: {
+        choices: RELATION_CHOICES,
+        defaultSelection: RELATION_CHOICES[0][0],
+        requiresVisitor: true,
+        currentSelection: () => relationMetric,
+        setSelection: (selection) => {
+          relationMetric = selection;
+        },
+        createTarget: (selection) => ({
+          kind: "relation",
+          metric: selection,
+        }),
+        sortOptions: (selection) => ({
+          relationMetric: selection,
           relationVisitorIdentifier: visitorIdentifier,
-        });
-        if (!visitorIdentifier) {
-          setStatus(LOGIN_STATUS, "请登录后使用喜好契合排序", 5_000);
-        } else {
-          void profileRefresh.start(
-            {
-              kind: "relation",
-              metric: relationMetric,
-            },
-            action.refreshMode,
-          );
-        }
+        }),
+      },
+      [SORT.COMPLETION]: {
+        choices: COMPLETION_CHOICES,
+        defaultSelection: COMPLETION_SCOPE.ALL,
+        requiresVisitor: false,
+        currentSelection: () => completionScope,
+        setSelection: (selection) => {
+          completionScope = selection;
+        },
+        createTarget: (selection) => ({
+          kind: "completion",
+          scope: selection,
+        }),
+        sortOptions: (selection) => ({ completionScope: selection }),
+      },
+    };
+
+    function selectProfileCriterion(criterion, requestedSubcriterion) {
+      const configuration = profileTargetConfigurations[criterion];
+      const selection = requestedSubcriterion || configuration.defaultSelection;
+      if (configuration.requiresVisitor && statusKind === LOGIN_STATUS) return;
+
+      const repeatsCurrentTarget =
+        currentCriterion === criterion &&
+        configuration.currentSelection() === selection;
+      if (
+        configuration.requiresVisitor &&
+        repeatsCurrentTarget &&
+        !visitorIdentifier
+      ) {
+        setStatus(LOGIN_STATUS, "请登录后使用喜好契合排序", 5_000);
         return;
       }
 
-      if (criterion === SORT.COMPLETION) {
-        const requestedScope = requestedSubcriterion || COMPLETION_SCOPE.ALL;
-        const repeatsCurrentTarget =
-          currentCriterion === criterion && completionScope === requestedScope;
-        const action = profileSelectionAction(repeatsCurrentTarget);
-        if (action.ignore) return;
-        if (action.clearPrompt) clearStatus();
-        if (action.arm) {
-          const label =
-            COMPLETION_CHOICES.find(
-              ([scope]) => scope === requestedScope,
-            )?.[1] || requestedScope;
-          setStatus(
-            REFRESH_PROMPT_STATUS,
-            `5 秒内再次点击“${label}”以全量刷新`,
-            5_000,
-          );
-          return;
-        }
-        completionScope = requestedScope;
-        currentCriterion = criterion;
-        const direction = directionByCriterion.get(criterion);
-        controls.setCurrent(criterion, direction, completionScope);
-        applyFriendSort({
-          list,
-          friends,
-          criterion,
-          sortData: friendCache,
-          collator,
-          direction,
-          completionScope,
-        });
+      const action = profileSelectionAction(repeatsCurrentTarget);
+      if (action.ignore) return;
+      if (action.clearPrompt) clearStatus();
+      if (action.arm) {
+        const label =
+          configuration.choices.find(([value]) => value === selection)?.[1] ||
+          selection;
+        setStatus(
+          REFRESH_PROMPT_STATUS,
+          `5 秒内再次点击“${label}”以全量刷新`,
+          5_000,
+        );
+        return;
+      }
+
+      configuration.setSelection(selection);
+      currentCriterion = criterion;
+      const direction = directionByCriterion.get(criterion);
+      controls.setCurrent(criterion, direction, selection);
+      applyFriendSort({
+        list,
+        friends,
+        criterion,
+        sortData: friendCache,
+        collator,
+        direction,
+        ...configuration.sortOptions(selection),
+      });
+      if (configuration.requiresVisitor && !visitorIdentifier) {
+        setStatus(LOGIN_STATUS, "请登录后使用喜好契合排序", 5_000);
+      } else {
         void profileRefresh.start(
-          {
-            kind: "completion",
-            scope: completionScope,
-          },
+          configuration.createTarget(selection),
           action.refreshMode,
         );
+      }
+    }
+
+    function selectCriterion(criterion, requestedSubcriterion) {
+      if (profileTargetConfigurations[criterion]) {
+        selectProfileCriterion(criterion, requestedSubcriterion);
         return;
       }
 
@@ -2281,7 +2250,7 @@
       );
       if (action.kind === "ignore") return;
 
-      scheduler.setForeground(criterion === SORT.ACTIVITY ? "activity" : null);
+      if (criterion !== SORT.ACTIVITY) scheduler.setForeground(null);
       currentCriterion = criterion;
       const direction = directionByCriterion.get(criterion);
       controls.setCurrent(criterion, direction, completionScope);

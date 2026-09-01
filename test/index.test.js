@@ -2953,8 +2953,99 @@ test("取消大批量扩充后恢复旧主页任务目标", async () => {
   }
 
   assert.deepEqual(requests, ["/user/friend-0"]);
-  assert.equal(status.textContent, "“喜好契合”获取完成");
+  assert.equal(status.textContent, "“喜好契合”获取完成，1 人失败");
   assert.equal(page.list.children[0].textContent, "好友402");
+});
+
+test("取消大批量主页扩充后恢复先前时间胶囊任务", async () => {
+  const entries = Array.from({ length: 402 }, (_, index) => ({
+    href: `/user/friend-${index}`,
+    name: `好友${index}`,
+  }));
+  const page = friendPageWith(entries);
+  const now = 100_000;
+  const cachedRecords = Object.fromEntries(
+    entries.slice(5).map(({ href }) => [
+      href.split("/").pop(),
+      { activity: { kind: "active", activityAtSeconds: 1, fetchedAt: now } },
+    ]),
+  );
+  const storage = {
+    getItem(key) {
+      if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
+      return JSON.stringify({ version: 3, records: cachedRecords });
+    },
+    setItem() {},
+    removeItem() {},
+  };
+  const started = [];
+  const pending = new Map();
+  const confirmations = [];
+  const responseFor = (url) => ({
+    ok: true,
+    headers: { get: () => null },
+    text: async () => (url.endsWith("/timeline") ? "timeline" : "profile"),
+  });
+  const waitFor = async (predicate) => {
+    for (let attempt = 0; attempt < 40 && !predicate(); attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(predicate(), true);
+  };
+
+  sorter.initialize({
+    document: page.document,
+    window: {
+      CHOBITS_USERNAME: "visitor",
+      location: { href: "https://bgm.tv/user/viewed/friends" },
+    },
+    storage,
+    now: () => now,
+    domParser: {
+      parseFromString: (html) =>
+        html === "timeline"
+          ? timelineDocumentFromFixture("timeline-active-seconds.html")
+          : relationProfileDocument({ syncRate: "50%" }),
+    },
+    fetchImpl: (url) => {
+      started.push(url);
+      return new Promise((resolve) => pending.set(url, resolve));
+    },
+    confirm: (message) => {
+      confirmations.push(message);
+      return false;
+    },
+  });
+
+  const sortOptions = page.list.beforeNodes[0].children[0].children[0];
+  const activityButton = mainSortControl(page, "上次活跃");
+  const relationDropdown = mainSortControl(page, "喜好契合");
+  const status = sortOptions.children.at(-1);
+
+  activityButton.click();
+  assert.equal(
+    started.filter((url) => url.endsWith("/timeline")).length,
+    4,
+  );
+  relationDropdown.children[0].click();
+  assert.deepEqual(confirmations, [
+    "本次新增获取的好友数量过多（402 人），是否继续？",
+  ]);
+  assert.equal(started.filter((url) => !url.endsWith("/timeline")).length, 0);
+
+  const firstActivity = pending.get("/user/friend-0/timeline");
+  pending.delete("/user/friend-0/timeline");
+  firstActivity(responseFor("/user/friend-0/timeline"));
+  await waitFor(
+    () => started.filter((url) => url.endsWith("/timeline")).length === 5,
+  );
+
+  assert.equal(status.textContent, "正在获取“上次活跃” 1/5");
+  for (const [url, resolve] of [...pending]) {
+    pending.delete(url);
+    resolve(responseFor(url));
+  }
+  await waitFor(() => pending.size === 0);
 });
 
 test("主页任务按好友用户标识去重重复条目", async () => {
