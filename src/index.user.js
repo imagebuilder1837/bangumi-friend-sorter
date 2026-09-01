@@ -931,6 +931,8 @@
     return {
       enqueue,
       getInFlightCount: () => inFlight,
+      getForegroundType: () =>
+        foregroundType && tasks.has(foregroundType) ? foregroundType : null,
       getTask: (type) => tasks.get(type) || null,
       isGloballyStopped: () => globallyStopped,
       setForeground(type) {
@@ -1902,6 +1904,11 @@
     }
 
     function currentProgressStatus() {
+      const foregroundType = scheduler.getForegroundType();
+      const foregroundProgress = foregroundType
+        ? progressStatuses.get(foregroundType)
+        : null;
+      if (foregroundProgress) return foregroundProgress;
       return [...progressStatuses.values()].sort(
         (left, right) => right.sequence - left.sequence,
       )[0];

@@ -156,6 +156,32 @@ async function waitForCondition(predicate) {
   assert.equal(predicate(), true);
 }
 
+function initializeRefreshPage({
+  confirm,
+  domParser,
+  entries,
+  fetchImpl,
+  now,
+  records,
+}) {
+  const page = friendPageWith(entries);
+  sorter.initialize({
+    document: page.document,
+    window: {
+      CHOBITS_USERNAME: "visitor",
+      location: { href: "https://bgm.tv/user/viewed/friends" },
+    },
+    storage: friendCacheStorage(records),
+    now: () => now,
+    setTimeout: () => 1,
+    clearTimeout() {},
+    domParser,
+    fetchImpl,
+    confirm,
+  });
+  return page;
+}
+
 function mainSortControl(page, label) {
   return sortOptionsFor(page).children.find(
     (child) =>
@@ -172,6 +198,10 @@ function directionButtonsFor(page) {
 
 function dropdownItems(page, label) {
   return mainSortControl(page, label).children[1].children;
+}
+
+function dropdownButtonFor(page, label) {
+  return mainSortControl(page, label).children[0];
 }
 
 test("纯空白展示名称不会阻止排序栏初始化", () => {
@@ -2912,7 +2942,6 @@ test("取消大批量扩充后恢复旧主页任务目标", async () => {
     href: `/user/friend-${index}`,
     name: `好友${index}`,
   }));
-  const page = friendPageWith(entries);
   const now = 100_000;
   const syncField = sorter.relationFieldFor("visitor", "syncRate");
   const cachedRecords = {};
@@ -2924,7 +2953,6 @@ test("取消大批量扩充后恢复旧主页任务目标", async () => {
   cachedRecords["friend-402"][
     sorter.relationFieldFor("visitor", "commonLikes")
   ] = { value: 20, fetchedAt: now };
-  const storage = friendCacheStorage(cachedRecords);
   let releaseFirst;
   const firstResponse = new Promise((resolve) => {
     releaseFirst = resolve;
@@ -2932,14 +2960,10 @@ test("取消大批量扩充后恢复旧主页任务目标", async () => {
   const requests = [];
   const confirmations = [];
 
-  sorter.initialize({
-    document: page.document,
-    window: {
-      CHOBITS_USERNAME: "visitor",
-      location: { href: "https://bgm.tv/user/viewed/friends" },
-    },
-    storage,
-    now: () => now,
+  const page = initializeRefreshPage({
+    entries,
+    now,
+    records: cachedRecords,
     domParser: {
       parseFromString: () => relationProfileDocument({ syncRate: "50%" }),
     },
@@ -2953,13 +2977,13 @@ test("取消大批量扩充后恢复旧主页任务目标", async () => {
     },
   });
 
-  const relationDropdown = mainSortControl(page, "喜好契合");
-  const relationMenu = relationDropdown.children[1];
+  const relationButton = dropdownButtonFor(page, "喜好契合");
+  const relationChoices = dropdownItems(page, "喜好契合");
   const status = statusFor(page);
 
-  relationDropdown.children[0].click();
+  relationButton.click();
   assert.deepEqual(requests, ["/user/friend-0"]);
-  relationMenu.children[1].click();
+  relationChoices[1].click();
   assert.deepEqual(confirmations, [
     "本次新增获取的好友数量过多（401 人），是否继续？",
   ]);
@@ -2982,7 +3006,6 @@ test("取消大批量主页扩充后恢复先前时间胶囊任务", async () =>
     href: `/user/friend-${index}`,
     name: `好友${index}`,
   }));
-  const page = friendPageWith(entries);
   const now = 100_000;
   const cachedRecords = Object.fromEntries(
     entries.slice(5).map(({ href }) => [
@@ -2990,19 +3013,14 @@ test("取消大批量主页扩充后恢复先前时间胶囊任务", async () =>
       { activity: { kind: "active", activityAtSeconds: 1, fetchedAt: now } },
     ]),
   );
-  const storage = friendCacheStorage(cachedRecords);
   const started = [];
   const pending = new Map();
   const confirmations = [];
 
-  sorter.initialize({
-    document: page.document,
-    window: {
-      CHOBITS_USERNAME: "visitor",
-      location: { href: "https://bgm.tv/user/viewed/friends" },
-    },
-    storage,
-    now: () => now,
+  const page = initializeRefreshPage({
+    entries,
+    now,
+    records: cachedRecords,
     domParser: {
       parseFromString: (html) =>
         html === "timeline"
@@ -3020,7 +3038,7 @@ test("取消大批量主页扩充后恢复先前时间胶囊任务", async () =>
   });
 
   const activityButton = mainSortControl(page, "上次活跃");
-  const relationDropdown = mainSortControl(page, "喜好契合");
+  const relationButton = dropdownButtonFor(page, "喜好契合");
   const status = statusFor(page);
 
   activityButton.click();
@@ -3028,7 +3046,7 @@ test("取消大批量主页扩充后恢复先前时间胶囊任务", async () =>
     started.filter((url) => url.endsWith("/timeline")).length,
     4,
   );
-  relationDropdown.children[0].click();
+  relationButton.click();
   assert.deepEqual(confirmations, [
     "本次新增获取的好友数量过多（402 人），是否继续？",
   ]);
@@ -3050,41 +3068,29 @@ test("取消大批量主页扩充后恢复先前时间胶囊任务", async () =>
 });
 
 test("取消大批量主页扩充后保留前台时间胶囊进度提示", async () => {
-  const entries = Array.from({ length: 402 }, (_, index) => ({
+  const entries = Array.from({ length: 403 }, (_, index) => ({
     href: `/user/friend-${index}`,
     name: `好友${index}`,
   }));
-  const page = friendPageWith(entries);
   const now = 100_000;
   const syncField = sorter.relationFieldFor("visitor", "syncRate");
   const cachedRecords = Object.fromEntries(
-    entries.slice(1).map(({ href }) => [
+    entries.slice(1).map(({ href }, index) => [
       href.split("/").pop(),
       {
-        [syncField]: { value: 10, fetchedAt: now },
+        ...(index > 0 ? { [syncField]: { value: 10, fetchedAt: now } } : {}),
         activity: { kind: "active", activityAtSeconds: 1, fetchedAt: now },
       },
     ]),
   );
-  const storage = friendCacheStorage(cachedRecords);
-  let releaseProfile;
-  const profileResponse = new Promise((resolve) => {
-    releaseProfile = resolve;
-  });
   const started = [];
   const pending = new Map();
   const confirmations = [];
 
-  sorter.initialize({
-    document: page.document,
-    window: {
-      CHOBITS_USERNAME: "visitor",
-      location: { href: "https://bgm.tv/user/viewed/friends" },
-    },
-    storage,
-    now: () => now,
-    setTimeout: () => 1,
-    clearTimeout() {},
+  const page = initializeRefreshPage({
+    entries,
+    now,
+    records: cachedRecords,
     domParser: {
       parseFromString: (html) =>
         html === "timeline"
@@ -3093,7 +3099,6 @@ test("取消大批量主页扩充后保留前台时间胶囊进度提示", async
     },
     fetchImpl: (url) => {
       started.push(url);
-      if (url === "/user/friend-0") return profileResponse;
       return new Promise((resolve) => pending.set(url, resolve));
     },
     confirm: (message) => {
@@ -3103,25 +3108,33 @@ test("取消大批量主页扩充后保留前台时间胶囊进度提示", async
   });
 
   const activityButton = mainSortControl(page, "上次活跃");
-  const relationDropdown = mainSortControl(page, "喜好契合");
-  const relationMenu = relationDropdown.children[1];
+  const relationButton = dropdownButtonFor(page, "喜好契合");
+  const relationChoices = dropdownItems(page, "喜好契合");
   const status = statusFor(page);
 
-  relationDropdown.children[0].click();
-  assert.deepEqual(started, ["/user/friend-0"]);
+  relationButton.click();
+  assert.deepEqual(started, ["/user/friend-0", "/user/friend-1"]);
   activityButton.click();
   assert.equal(status.textContent, "正在获取“上次活跃” 0/1");
 
-  relationMenu.children[1].click();
+  relationChoices[1].click();
   assert.deepEqual(confirmations, [
     "本次新增获取的好友数量过多（401 人），是否继续？",
   ]);
   assert.equal(status.textContent, "正在获取“上次活跃” 0/1");
 
+  const firstProfile = pending.get("/user/friend-0");
+  pending.delete("/user/friend-0");
+  firstProfile(refreshResponseFor("/user/friend-0"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(status.textContent, "正在获取“上次活跃” 0/1");
+
   const activityResponse = pending.get("/user/friend-0/timeline");
   pending.delete("/user/friend-0/timeline");
   activityResponse(refreshResponseFor("/user/friend-0/timeline"));
-  releaseProfile({ ok: true, text: async () => "profile" });
+  const secondProfile = pending.get("/user/friend-1");
+  pending.delete("/user/friend-1");
+  secondProfile(refreshResponseFor("/user/friend-1"));
   await new Promise((resolve) => setImmediate(resolve));
 });
 
