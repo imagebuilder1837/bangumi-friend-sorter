@@ -155,7 +155,7 @@ function timelineDocumentFromFixture(filename) {
   };
 }
 
-test("加好友时间默认从旧到新，也支持从新到旧", () => {
+test("网页默认顺序默认从旧到新，也支持从新到旧", () => {
   const friends = [
     { userIdentifier: "third", displayName: "三", originalIndex: 2 },
     { userIdentifier: "first", displayName: "一", originalIndex: 0 },
@@ -1192,6 +1192,52 @@ test("缺失分类块可靠解析为零，缺失聚合块视为失败", () => {
   assert.equal(partial.values["1"], undefined);
 });
 
+test("统计范围只接受容器内的唯一统计块", () => {
+  const statBlock = (scope, count) =>
+    new ProfileNode({
+      id: `userStats_${scope}`,
+      children: [
+        new ProfileNode({
+          children: [
+            new ProfileNode({ className: "desc", textContent: "完成" }),
+            new ProfileNode({ className: "num", textContent: String(count) }),
+          ],
+        }),
+      ],
+    });
+  const outsideAggregate = statBlock("all", 99);
+  const incompleteContainer = new ProfileNode({
+    id: "userStatsContainers",
+    children: [statBlock("2", 8)],
+  });
+  const documentWithOutsideAggregate = {
+    querySelector(selector) {
+      if (selector === "#userStatsContainers") return incompleteContainer;
+      if (selector === "#userStats_all") return outsideAggregate;
+      return incompleteContainer.querySelector(selector);
+    },
+  };
+
+  assert.deepEqual(
+    sorter.parseProfileDocument(documentWithOutsideAggregate),
+    { kind: "invalid" },
+  );
+
+  const duplicateContainer = new ProfileNode({
+    id: "userStatsContainers",
+    children: [statBlock("all", 20), statBlock("all", 21)],
+  });
+  assert.deepEqual(
+    sorter.parseProfileDocument({
+      querySelector: (selector) =>
+        selector === "#userStatsContainers"
+          ? duplicateContainer
+          : duplicateContainer.querySelector(selector),
+    }),
+    { kind: "invalid" },
+  );
+});
+
 test("完成条目数按当前范围从高到低或从低到高稳定排序", () => {
   const friends = [
     { userIdentifier: "unknown", originalIndex: 0 },
@@ -1368,6 +1414,11 @@ test("初始化将排序栏挂在主内容列之前并使用完成条目数方�
     "从低到高",
     "从高到低",
   ]);
+  assert.deepEqual(page.list.children.map((item) => item.textContent), ["B", "A"]);
+
+  directionButtons[0].click();
+  assert.deepEqual(page.list.children.map((item) => item.textContent), ["A", "B"]);
+  directionButtons[1].click();
   assert.deepEqual(page.list.children.map((item) => item.textContent), ["B", "A"]);
 });
 

@@ -64,36 +64,7 @@
     [COMPLETION_SCOPE.REAL_LIFE, "三次元"],
   ];
   const COMPLETION_CACHE_FIELD_PREFIX = "completion_";
-
-  function directionLabelsFor(criterion) {
-    if (criterion === SORT.NAME) {
-      return {
-        [DIRECTION.ASCENDING]: "升序",
-        [DIRECTION.DESCENDING]: "降序",
-      };
-    }
-    if (criterion === SORT.COMPLETION) {
-      return {
-        [DIRECTION.ASCENDING]: "从低到高",
-        [DIRECTION.DESCENDING]: "从高到低",
-      };
-    }
-    return {
-      [DIRECTION.ASCENDING]: "从旧到新",
-      [DIRECTION.DESCENDING]: "从新到旧",
-    };
-  }
-
-  function defaultDirectionFor(criterion) {
-    return criterion === SORT.NAME || criterion === SORT.ADDED
-      ? DIRECTION.ASCENDING
-      : DIRECTION.DESCENDING;
-  }
-
-  function isAscendingDirection(direction, criterion) {
-    const effectiveDirection = direction || defaultDirectionFor(criterion);
-    return effectiveDirection === DIRECTION.ASCENDING;
-  }
+  const INVALID_STATS_BLOCK = Symbol("invalid-stats-block");
 
   function userIdentifierFor(friend) {
     // Accept the pre-v3 friend shape while using the glossary term everywhere new.
@@ -149,6 +120,113 @@
       completionRecordFromValue(value?.[field]) ||
       completionRecordFromValue(value?.[scope])
     );
+  }
+
+  const SORT_CONFIG = Object.freeze({
+    [SORT.ADDED]: {
+      defaultDirection: DIRECTION.ASCENDING,
+      directionLabels: Object.freeze({
+        [DIRECTION.ASCENDING]: "从旧到新",
+        [DIRECTION.DESCENDING]: "从新到旧",
+      }),
+      compare(left, right, { isAscending }) {
+        return (
+          (left.originalIndex - right.originalIndex) * (isAscending ? 1 : -1)
+        );
+      },
+    },
+    [SORT.NAME]: {
+      defaultDirection: DIRECTION.ASCENDING,
+      directionLabels: Object.freeze({
+        [DIRECTION.ASCENDING]: "升序",
+        [DIRECTION.DESCENDING]: "降序",
+      }),
+      compare(left, right, { collator, isAscending }) {
+        return (
+          (isAscending ? 1 : -1) *
+          (collator.compare(left.displayName, right.displayName) ||
+            collator.compare(userIdentifierFor(left), userIdentifierFor(right)))
+        );
+      },
+    },
+    [SORT.ACTIVITY]: {
+      defaultDirection: DIRECTION.DESCENDING,
+      directionLabels: Object.freeze({
+        [DIRECTION.ASCENDING]: "从旧到新",
+        [DIRECTION.DESCENDING]: "从新到旧",
+      }),
+      compare(left, right, { isAscending, sortData }) {
+        const leftActivity = sortData.get(userIdentifierFor(left));
+        const rightActivity = sortData.get(userIdentifierFor(right));
+        const leftHasTime = leftActivity?.kind === "active";
+        const rightHasTime = rightActivity?.kind === "active";
+
+        if (leftHasTime && rightHasTime) {
+          return (
+            (leftActivity.activityAtSeconds - rightActivity.activityAtSeconds) *
+              (isAscending ? 1 : -1) || left.originalIndex - right.originalIndex
+          );
+        }
+        if (leftHasTime) return -1;
+        if (rightHasTime) return 1;
+        return left.originalIndex - right.originalIndex;
+      },
+    },
+    [SORT.COMPLETION]: {
+      defaultDirection: DIRECTION.DESCENDING,
+      directionLabels: Object.freeze({
+        [DIRECTION.ASCENDING]: "从低到高",
+        [DIRECTION.DESCENDING]: "从高到低",
+      }),
+      compare(left, right, { completionScope, isAscending, sortData }) {
+        const leftCompletion = completionRecordFor(
+          sortData,
+          userIdentifierFor(left),
+          completionScope,
+        );
+        const rightCompletion = completionRecordFor(
+          sortData,
+          userIdentifierFor(right),
+          completionScope,
+        );
+        const leftHasValue = isCompletionRecord(leftCompletion);
+        const rightHasValue = isCompletionRecord(rightCompletion);
+
+        if (leftHasValue && rightHasValue) {
+          return (
+            (leftCompletion.value - rightCompletion.value) *
+              (isAscending ? 1 : -1) || left.originalIndex - right.originalIndex
+          );
+        }
+        if (leftHasValue) return -1;
+        if (rightHasValue) return 1;
+        return left.originalIndex - right.originalIndex;
+      },
+    },
+  });
+  const DEFAULT_SORT_CONFIG = Object.freeze({
+    defaultDirection: DIRECTION.DESCENDING,
+    directionLabels: Object.freeze({
+      [DIRECTION.ASCENDING]: "从旧到新",
+      [DIRECTION.DESCENDING]: "从新到旧",
+    }),
+  });
+
+  function sortConfigFor(criterion) {
+    return SORT_CONFIG[criterion] || DEFAULT_SORT_CONFIG;
+  }
+
+  function directionLabelsFor(criterion) {
+    return { ...sortConfigFor(criterion).directionLabels };
+  }
+
+  function defaultDirectionFor(criterion) {
+    return sortConfigFor(criterion).defaultDirection;
+  }
+
+  function isAscendingDirection(direction, criterion) {
+    const effectiveDirection = direction || defaultDirectionFor(criterion);
+    return effectiveDirection === DIRECTION.ASCENDING;
   }
 
   function createFriendCache(
@@ -291,8 +369,7 @@
 
   // 保留 activity-only 适配边界供渐进迁移中的旧调用方使用；调用方迁移到
   // createFriendCache 后即可删除该适配器。
-  function createActivityCache(storage, options) {
-    const cache = createFriendCache(storage, options);
+  function createActivityCacheView(cache) {
     return {
       entries() {
         return (function* () {
@@ -310,21 +387,18 @@
     };
   }
 
+  function createActivityCache(storage, options) {
+    return createActivityCacheView(createFriendCache(storage, options));
+  }
+
   function activityCacheView(cache) {
-    return {
-      get: (userIdentifier) => cache.getField(userIdentifier, "activity"),
-      persist: () => cache.persist(),
-      set(userIdentifier, record, shouldPersist = true) {
-        cache.setField(userIdentifier, "activity", record, shouldPersist);
-        return this;
-      },
-    };
+    return createActivityCacheView(cache);
   }
 
   function sortFriends(
     friends,
     criterion,
-    activityByUser = new Map(),
+    sortData = new Map(),
     collator = new Intl.Collator(undefined, {
       numeric: true,
       sensitivity: "base",
@@ -335,67 +409,16 @@
     const sorted = [...friends];
     const isAscending = isAscendingDirection(direction, criterion);
 
-    if (criterion === SORT.ADDED) {
-      sorted.sort(
-        (left, right) =>
-          (left.originalIndex - right.originalIndex) * (isAscending ? 1 : -1),
+    const sortConfig = SORT_CONFIG[criterion];
+    if (sortConfig?.compare) {
+      sorted.sort((left, right) =>
+        sortConfig.compare(left, right, {
+          collator,
+          completionScope,
+          isAscending,
+          sortData,
+        }),
       );
-    }
-
-    if (criterion === SORT.NAME) {
-      sorted.sort((left, right) => {
-        return (
-          (isAscending ? 1 : -1) *
-          (collator.compare(left.displayName, right.displayName) ||
-            collator.compare(userIdentifierFor(left), userIdentifierFor(right)))
-        );
-      });
-    }
-
-    if (criterion === SORT.ACTIVITY) {
-      sorted.sort((left, right) => {
-        const leftActivity = activityByUser.get(userIdentifierFor(left));
-        const rightActivity = activityByUser.get(userIdentifierFor(right));
-        const leftHasTime = leftActivity?.kind === "active";
-        const rightHasTime = rightActivity?.kind === "active";
-
-        if (leftHasTime && rightHasTime) {
-          return (
-            (leftActivity.activityAtSeconds - rightActivity.activityAtSeconds) *
-              (isAscending ? 1 : -1) || left.originalIndex - right.originalIndex
-          );
-        }
-        if (leftHasTime) return -1;
-        if (rightHasTime) return 1;
-        return left.originalIndex - right.originalIndex;
-      });
-    }
-
-    if (criterion === SORT.COMPLETION) {
-      sorted.sort((left, right) => {
-        const leftCompletion = completionRecordFor(
-          activityByUser,
-          userIdentifierFor(left),
-          completionScope,
-        );
-        const rightCompletion = completionRecordFor(
-          activityByUser,
-          userIdentifierFor(right),
-          completionScope,
-        );
-        const leftHasValue = isCompletionRecord(leftCompletion);
-        const rightHasValue = isCompletionRecord(rightCompletion);
-
-        if (leftHasValue && rightHasValue) {
-          return (
-            (leftCompletion.value - rightCompletion.value) *
-              (isAscending ? 1 : -1) || left.originalIndex - right.originalIndex
-          );
-        }
-        if (leftHasValue) return -1;
-        if (rightHasValue) return 1;
-        return left.originalIndex - right.originalIndex;
-      });
     }
 
     return sorted;
@@ -654,11 +677,11 @@
     return null;
   }
 
-  function statsBlockFor(document, container, scope) {
+  function statsBlockFor(container, scope) {
     const selector = `#userStats_${scope}`;
-    return (
-      container.querySelector?.(selector) || document.querySelector?.(selector)
-    );
+    const blocks = [...(container?.querySelectorAll?.(selector) || [])];
+    if (blocks.length > 1) return INVALID_STATS_BLOCK;
+    return blocks[0] || null;
   }
 
   function parseProfileDocument(document) {
@@ -675,13 +698,20 @@
       };
     }
 
-    const aggregate = statsBlockFor(document, container, COMPLETION_SCOPE.ALL);
+    const aggregate = statsBlockFor(container, COMPLETION_SCOPE.ALL);
     const aggregateValue = parseCompletionCount(aggregate);
-    if (!aggregate || aggregateValue === null) return { kind: "invalid" };
+    if (
+      aggregate === INVALID_STATS_BLOCK ||
+      !aggregate ||
+      aggregateValue === null
+    ) {
+      return { kind: "invalid" };
+    }
 
     const values = { [COMPLETION_SCOPE.ALL]: aggregateValue };
     for (const [scope] of COMPLETION_CHOICES.slice(1)) {
-      const block = statsBlockFor(document, container, scope);
+      const block = statsBlockFor(container, scope);
+      if (block === INVALID_STATS_BLOCK) return { kind: "invalid" };
       if (!block) {
         values[scope] = 0;
         continue;
@@ -789,7 +819,7 @@
     list,
     friends,
     criterion,
-    activityByUser,
+    sortData,
     collator,
     direction,
     completionScope,
@@ -797,7 +827,7 @@
     for (const friend of sortFriends(
       friends,
       criterion,
-      activityByUser,
+      sortData,
       collator,
       direction,
       completionScope,
@@ -1377,7 +1407,7 @@
         list,
         friends,
         currentCriterion,
-        activityCache,
+        currentCriterion === SORT.COMPLETION ? friendCache : activityCache,
         collator,
         direction,
         completionScope,
