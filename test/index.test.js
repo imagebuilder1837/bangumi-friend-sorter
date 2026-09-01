@@ -295,6 +295,10 @@ test("方向文案随排序维度切换", () => {
     asc: "从旧到新",
     desc: "从新到旧",
   });
+  assert.deepEqual(sorter.directionLabelsFor("relation"), {
+    asc: "从低到高",
+    desc: "从高到低",
+  });
 });
 
 test("仅为缺失或超过二十四小时的活跃缓存安排请求", () => {
@@ -1202,6 +1206,62 @@ function profileStatsDocumentFromFixture(filename) {
   };
 }
 
+function relationProfileDocument({ syncRate, commonLikes } = {}) {
+  const relation = new ProfileNode({
+    className: "userSynchronize",
+    textContent:
+      commonLikes === undefined ? "" : `${commonLikes}个共同喜好`,
+    children:
+      syncRate === undefined
+        ? []
+        : [new ProfileNode({ className: "percent_text", textContent: syncRate })],
+  });
+  return {
+    querySelector(selector) {
+      if (selector === ".userSynchronize") return relation;
+      return relation.querySelector(selector);
+    },
+  };
+}
+
+function profileDocumentWithRelation({ syncRate, commonLikes, counts } = {}) {
+  const statsDocument = profileStatsDocument({ counts });
+  const relationDocument = relationProfileDocument({ syncRate, commonLikes });
+  return {
+    querySelector(selector) {
+      if (selector === ".userSynchronize") {
+        return relationDocument.querySelector(selector);
+      }
+      return statsDocument.querySelector(selector);
+    },
+  };
+}
+
+test("主页解析同步率和共同喜好数，缺失字段不转换为零", () => {
+  assert.deepEqual(
+    sorter.parseProfileDocument(
+      relationProfileDocument({ syncRate: "-3.5%", commonLikes: 0 }),
+    ),
+    { kind: "success", relation: { syncRate: -3.5, commonLikes: 0 } },
+  );
+  assert.deepEqual(
+    sorter.parseProfileDocument(relationProfileDocument({ syncRate: "2.25%" })),
+    { kind: "success", relation: { syncRate: 2.25 } },
+  );
+  assert.deepEqual(
+    sorter.parseProfileDocument(
+      relationProfileDocument({ syncRate: "2.25%", commonLikes: "-3" }),
+    ),
+    { kind: "success", relation: { syncRate: 2.25 } },
+  );
+  assert.deepEqual(
+    sorter.parseProfileDocument(
+      relationProfileDocument({ syncRate: "2.25%", commonLikes: "1.5" }),
+    ),
+    { kind: "success", relation: { syncRate: 2.25 } },
+  );
+});
+
 test("主页完成统计按完成描述定位六个统计范围", () => {
   const parsed = sorter.parseProfileDocument(
     profileStatsDocumentFromFixture("profile-stats.html"),
@@ -1368,6 +1428,63 @@ test("完成条目数按当前范围从高到低或从低到高稳定排序", ()
   );
 });
 
+test("喜好契合按访问者隔离并稳定排序可靠零和未知值", () => {
+  const now = 10_000;
+  const friends = [
+    { userIdentifier: "unknown", originalIndex: 0 },
+    { userIdentifier: "same-b", originalIndex: 1 },
+    { userIdentifier: "high", originalIndex: 2 },
+    { userIdentifier: "zero", originalIndex: 3 },
+    { userIdentifier: "same-a", originalIndex: 4 },
+  ];
+  const cache = sorter.createFriendCache(null);
+  for (const [userIdentifier, value] of [
+    ["same-b", 5],
+    ["high", 10],
+    ["zero", 0],
+    ["same-a", 5],
+  ]) {
+    cache.setRelationField("visitor-a", userIdentifier, "commonLikes", {
+      value,
+      fetchedAt: now,
+    });
+  }
+  cache.setRelationField("visitor-b", "unknown", "commonLikes", {
+    value: 99,
+    fetchedAt: now,
+  });
+
+  assert.deepEqual(
+    sorter.sortFriends(friends, {
+      criterion: "relation",
+      relationMetric: "commonLikes",
+      relationVisitorIdentifier: "visitor-a",
+      sortData: cache,
+      direction: "desc",
+    }).map(({ userIdentifier }) => userIdentifier),
+    ["high", "same-b", "same-a", "zero", "unknown"],
+  );
+  assert.deepEqual(
+    sorter.sortFriends(friends, {
+      criterion: "relation",
+      relationMetric: "commonLikes",
+      relationVisitorIdentifier: "visitor-a",
+      sortData: cache,
+      direction: "asc",
+    }).map(({ userIdentifier }) => userIdentifier),
+    ["zero", "same-b", "same-a", "high", "unknown"],
+  );
+  assert.deepEqual(
+    sorter.sortFriends(friends, {
+      criterion: "relation",
+      relationMetric: "commonLikes",
+      relationVisitorIdentifier: "visitor-b",
+      sortData: cache,
+    }).map(({ userIdentifier }) => userIdentifier),
+    ["unknown", "same-b", "high", "zero", "same-a"],
+  );
+});
+
 test("完成统计缓存的七十二小时边界只请求缺失或过期范围", () => {
   const hour = 60 * 60 * 1_000;
   const now = 100 * hour;
@@ -1388,6 +1505,92 @@ test("完成统计缓存的七十二小时边界只请求缺失或过期范围",
       ({ userIdentifier }) => userIdentifier,
     ),
     ["stale", "missing"],
+  );
+});
+
+test("喜好契合缓存按访问者和指标判断七十二小时有效期", () => {
+  const hour = 60 * 60 * 1_000;
+  const now = 100 * hour;
+  const friends = [
+    { userIdentifier: "fresh" },
+    { userIdentifier: "boundary" },
+    { userIdentifier: "stale" },
+    { userIdentifier: "missing" },
+  ];
+  const cache = sorter.createFriendCache(null);
+  cache.setRelationField("visitor", "fresh", "syncRate", {
+    value: 1.5,
+    fetchedAt: now - hour,
+  });
+  cache.setRelationField("visitor", "boundary", "syncRate", {
+    value: 2,
+    fetchedAt: now - 72 * hour,
+  });
+  cache.setRelationField("visitor", "stale", "syncRate", {
+    value: 3,
+    fetchedAt: now - 72 * hour - 1,
+  });
+
+  assert.deepEqual(
+    sorter.findFriendsNeedingRelation(
+      friends,
+      cache,
+      "visitor",
+      "syncRate",
+      now,
+    ).map(({ userIdentifier }) => userIdentifier),
+    ["stale", "missing"],
+  );
+  assert.deepEqual(
+    sorter.findFriendsNeedingRelation(
+      friends,
+      cache,
+      "other-visitor",
+      "syncRate",
+      now,
+    ).map(({ userIdentifier }) => userIdentifier),
+    ["fresh", "boundary", "stale", "missing"],
+  );
+});
+
+test("当前访问者标识按 UID、用户名、页头头像依次回退且不读取被查看者", () => {
+  const avatar = { getAttribute: () => "/user/header-user" };
+  const headerDocument = {
+    querySelector(selector) {
+      return selector === "#headerNeue2 .idBadgerNeue a.avatar[href*='/user/']"
+        ? avatar
+        : null;
+    },
+  };
+
+  assert.equal(
+    sorter.currentVisitorIdentifier(headerDocument, {
+      CHOBITS_UID: "42",
+      CHOBITS_USERNAME: "name",
+      location: { href: "https://bgm.tv/user/viewed/friends" },
+    }),
+    "42",
+  );
+  assert.equal(
+    sorter.currentVisitorIdentifier(headerDocument, {
+      CHOBITS_UID: "0",
+      CHOBITS_USERNAME: "  name  ",
+      location: { href: "https://bgm.tv/user/viewed/friends" },
+    }),
+    "name",
+  );
+  assert.equal(
+    sorter.currentVisitorIdentifier(headerDocument, {
+      location: { href: "https://bgm.tv/user/viewed/friends" },
+    }),
+    "header-user",
+  );
+  assert.equal(
+    sorter.currentVisitorIdentifier(
+      { querySelector: () => null },
+      { location: { href: "https://bgm.tv/user/viewed/friends" } },
+    ),
+    null,
   );
 });
 
@@ -1463,6 +1666,299 @@ test("完成条目数菜单按范围回调并只表达当前子项的无障碍�
     ["completion", "3"],
     ["completion", "all"],
   ]);
+});
+
+test("喜好契合菜单按指标回调并直接点击默认选择同步率", () => {
+  const selected = [];
+  const controls = sorter.createSortBar(
+    friendPageWith([]).document,
+    (criterion, metric) => selected.push([criterion, metric]),
+  );
+  const sortOptions = controls.bar.children[0].children[0];
+  const dropdowns = sortOptions.children.filter(
+    (child) => child?.className === "bangumi-friend-sorter-dropdown",
+  );
+  const relationDropdown = dropdowns.find(
+    (dropdown) => dropdown.children[0]?.textContent === "喜好契合",
+  );
+  const toggle = relationDropdown.children[0];
+  const menu = relationDropdown.children[1];
+
+  assert.equal(toggle.textContent, "喜好契合");
+  assert.deepEqual(menu.children.map(({ textContent }) => textContent), [
+    "同步率",
+    "共同喜好数",
+  ]);
+  controls.setCurrent("relation", "desc", "commonLikes");
+  assert.equal(toggle.getAttribute("aria-current"), "true");
+  assert.equal(menu.children[1].getAttribute("aria-current"), "true");
+  toggle.click();
+  menu.children[1].click();
+  assert.deepEqual(selected, [
+    ["relation", "syncRate"],
+    ["relation", "commonLikes"],
+  ]);
+});
+
+test("匿名选择喜好契合时不请求并且登录提示不会因重复选择续时", () => {
+  const page = friendPageWith([{ href: "/user/friend", name: "好友" }]);
+  let requests = 0;
+  sorter.initialize({
+    document: page.document,
+    window: {
+      location: { href: "https://bgm.tv/user/viewed/friends" },
+    },
+    storage: { getItem: () => null, setItem() {}, removeItem() {} },
+    fetchImpl: async () => {
+      requests += 1;
+      return { ok: false, status: 500 };
+    },
+  });
+
+  const sortOptions = page.list.beforeNodes[0].children[0].children[0];
+  const relationDropdown = sortOptions.children.find(
+    (child) => child.children?.[0]?.textContent === "喜好契合",
+  );
+  const relationButton = relationDropdown.children[0];
+  const relationMenu = relationDropdown.children[1];
+  const status = page.list.beforeNodes[0].children[0].children[0].children.at(-1);
+
+  relationButton.click();
+  assert.equal(requests, 0);
+  assert.equal(status.textContent, "请登录后使用喜好契合排序");
+  relationMenu.children[1].click();
+  assert.equal(requests, 0);
+  assert.equal(status.textContent, "请登录后使用喜好契合排序");
+});
+
+test("主页关系指标切换复用任务、去重请求并按最后字段统计失败", async () => {
+  const page = friendPageWith([
+    { href: "/user/a", name: "A" },
+    { href: "/user/b", name: "B" },
+  ]);
+  const now = 100_000;
+  const syncField = sorter.relationFieldFor("visitor", "syncRate");
+  const writes = [];
+  const requests = [];
+  const progress = [];
+  let releaseA;
+  const pendingA = new Promise((resolve) => {
+    releaseA = resolve;
+  });
+  const storage = {
+    getItem(key) {
+      if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
+      return JSON.stringify({
+        version: 3,
+        records: {
+          a: {
+            [sorter.relationFieldFor("visitor", "commonLikes")]: {
+              value: 1,
+              fetchedAt: now,
+            },
+          },
+          b: { [syncField]: { value: 10, fetchedAt: now } },
+        },
+      });
+    },
+    setItem(key, value) {
+      writes.push([key, JSON.parse(value)]);
+    },
+    removeItem() {},
+  };
+
+  sorter.initialize({
+    document: page.document,
+    window: {
+      CHOBITS_USERNAME: "visitor",
+      location: { href: "https://bgm.tv/user/viewed/friends" },
+    },
+    storage,
+    now: () => now,
+    domParser: {
+      parseFromString: (userIdentifier) =>
+        userIdentifier === "a"
+          ? profileDocumentWithRelation({
+              syncRate: "50%",
+              counts: { all: 1, "2": 1, "3": 1, "4": 1, "6": 1 },
+            })
+          : profileDocumentWithRelation({
+              syncRate: "70%",
+              commonLikes: 20,
+              counts: { all: 2, "2": 2, "3": 2, "4": 2, "6": 2 },
+            }),
+    },
+    fetchImpl: (url) => {
+      const userIdentifier = url.split("/").pop();
+      requests.push(userIdentifier);
+      return userIdentifier === "a"
+        ? pendingA
+        : Promise.resolve({ ok: true, text: async () => userIdentifier });
+    },
+    onProgress: (completed, total) => progress.push([completed, total]),
+  });
+
+  const sortOptions = page.list.beforeNodes[0].children[0].children[0];
+  const relationDropdown = sortOptions.children.find(
+    (child) => child.children?.[0]?.textContent === "喜好契合",
+  );
+  const relationButton = relationDropdown.children[0];
+  const relationMenu = relationDropdown.children[1];
+  const status = sortOptions.children.at(-1);
+
+  relationButton.click();
+  assert.deepEqual(requests, ["a"]);
+  relationMenu.children[1].click();
+  releaseA({ ok: true, text: async () => "a" });
+
+  for (let attempt = 0; attempt < 20 && requests.length < 2; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  for (let attempt = 0; attempt < 20 && writes.length < 1; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  assert.deepEqual(requests, ["a", "b"]);
+  assert.ok(progress.some(([completed, total]) => completed === 0 && total === 2));
+  assert.ok(progress.some(([completed, total]) => completed === 2 && total === 2));
+  assert.equal(status.textContent, "“喜好契合”获取完成，1 人失败");
+  assert.deepEqual(page.list.children.map((item) => item.textContent), ["B", "A"]);
+  assert.deepEqual(writes.at(-1)[1].records.a[syncField], {
+    value: 50,
+    fetchedAt: now,
+  });
+  assert.deepEqual(writes.at(-1)[1].records.a[sorter.relationFieldFor("visitor", "commonLikes")], {
+    value: 1,
+    fetchedAt: now,
+  });
+  assert.deepEqual(writes.at(-1)[1].records.b[sorter.relationFieldFor("visitor", "commonLikes")], {
+    value: 20,
+    fetchedAt: now,
+  });
+  assert.deepEqual(writes.at(-1)[1].records.a[sorter.completionFieldFor("all")], {
+    value: 1,
+    fetchedAt: now,
+  });
+  assert.deepEqual(writes.at(-1)[1].records.b[sorter.completionFieldFor("all")], {
+    value: 2,
+    fetchedAt: now,
+  });
+});
+
+test("关系指标切换到完成条目数时复用同一主页任务", async () => {
+  const page = friendPageWith([
+    { href: "/user/a", name: "A" },
+    { href: "/user/b", name: "B" },
+  ]);
+  const now = 100_000;
+  const syncField = sorter.relationFieldFor("visitor", "syncRate");
+  let releaseA;
+  const pendingA = new Promise((resolve) => {
+    releaseA = resolve;
+  });
+  const requests = [];
+  const storage = {
+    getItem(key) {
+      if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
+      return JSON.stringify({
+        version: 3,
+        records: {
+          b: { [syncField]: { value: 10, fetchedAt: now } },
+        },
+      });
+    },
+    setItem() {},
+    removeItem() {},
+  };
+
+  sorter.initialize({
+    document: page.document,
+    window: {
+      CHOBITS_USERNAME: "visitor",
+      location: { href: "https://bgm.tv/user/viewed/friends" },
+    },
+    storage,
+    now: () => now,
+    domParser: {
+      parseFromString: (userIdentifier) =>
+        profileDocumentWithRelation({
+          syncRate: userIdentifier === "a" ? "50%" : "70%",
+          commonLikes: userIdentifier === "a" ? 2 : 3,
+          counts: {
+            all: userIdentifier === "a" ? 1 : 5,
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "6": 1,
+          },
+        }),
+    },
+    fetchImpl: (url) => {
+      const userIdentifier = url.split("/").pop();
+      requests.push(userIdentifier);
+      return userIdentifier === "a"
+        ? pendingA
+        : Promise.resolve({ ok: true, text: async () => userIdentifier });
+    },
+  });
+
+  const sortOptions = page.list.beforeNodes[0].children[0].children[0];
+  const relationDropdown = sortOptions.children.find(
+    (child) => child.children?.[0]?.textContent === "喜好契合",
+  );
+  const completionDropdown = sortOptions.children.find(
+    (child) => child.children?.[0]?.textContent === "完成条目数",
+  );
+  relationDropdown.children[0].click();
+  assert.deepEqual(requests, ["a"]);
+  completionDropdown.children[0].click();
+  assert.deepEqual(requests, ["a"]);
+  releaseA({ ok: true, text: async () => "a" });
+
+  for (let attempt = 0; attempt < 20 && requests.length < 2; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  for (let attempt = 0; attempt < 20 && page.list.children[0].textContent !== "B"; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  assert.deepEqual(requests, ["a", "b"]);
+  assert.deepEqual(page.list.children.map((item) => item.textContent), ["B", "A"]);
+});
+
+test("主页任务按好友用户标识去重重复条目", async () => {
+  const page = friendPageWith([
+    { href: "/user/a", name: "A1" },
+    { href: "/user/a", name: "A2" },
+  ]);
+  const requests = [];
+  sorter.initialize({
+    document: page.document,
+    window: {
+      CHOBITS_USERNAME: "visitor",
+      location: { href: "https://bgm.tv/user/viewed/friends" },
+    },
+    storage: { getItem: () => null, setItem() {}, removeItem() {} },
+    now: () => 100_000,
+    domParser: {
+      parseFromString: () => relationProfileDocument({ syncRate: "50%" }),
+    },
+    fetchImpl: async (url) => {
+      requests.push(url);
+      return { ok: true, text: async () => "profile" };
+    },
+  });
+
+  const sortOptions = page.list.beforeNodes[0].children[0].children[0];
+  const relationDropdown = sortOptions.children.find(
+    (child) => child.children?.[0]?.textContent === "喜好契合",
+  );
+  relationDropdown.children[0].click();
+  for (let attempt = 0; attempt < 20 && requests.length < 1; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  assert.deepEqual(requests, ["/user/a"]);
 });
 
 test("初始化将排序栏挂在主内容列之前并使用完成条目数方向文案", async () => {

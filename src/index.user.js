@@ -31,6 +31,7 @@
     ADDED: "added",
     COMPLETION: "completion",
     NAME: "name",
+    RELATION: "relation",
   });
   const COMPLETION_SCOPE = Object.freeze({
     ALL: "all",
@@ -50,6 +51,7 @@
     IDLE: "idle",
   });
   const ACTIVITY_PROMPT_STATUS = "armed";
+  const LOGIN_STATUS = "login";
   const SORT_CHOICES = [
     [SORT.ADDED, "加好友时间"],
     [SORT.NAME, "名称"],
@@ -62,6 +64,10 @@
     [COMPLETION_SCOPE.MUSIC, "音乐"],
     [COMPLETION_SCOPE.GAME, "游戏"],
     [COMPLETION_SCOPE.REAL_LIFE, "三次元"],
+  ];
+  const RELATION_CHOICES = [
+    ["syncRate", "同步率"],
+    ["commonLikes", "共同喜好数"],
   ];
   const COMPLETION_CACHE_FIELD_PREFIX = "completion_";
   const INVALID_STATS_BLOCK = Symbol("invalid-stats-block");
@@ -89,6 +95,21 @@
       value.value >= 0 &&
       Number.isFinite(value.fetchedAt),
     );
+  }
+
+  function isRelationRecord(value, metric) {
+    if (!value || typeof value !== "object") return false;
+    if (!Number.isFinite(value.value) || !Number.isFinite(value.fetchedAt)) {
+      return false;
+    }
+    if (metric === "commonLikes") {
+      return Number.isSafeInteger(value.value) && value.value >= 0;
+    }
+    return metric === "syncRate";
+  }
+
+  function relationFieldFor(visitorIdentifier, metric) {
+    return `relation_${encodeURIComponent(String(visitorIdentifier))}_${metric}`;
   }
 
   function completionCacheFieldValidators() {
@@ -119,6 +140,29 @@
       completionRecordFromValue(value) ||
       completionRecordFromValue(value?.[field]) ||
       completionRecordFromValue(value?.[scope])
+    );
+  }
+
+  function relationRecordFor(
+    source,
+    userIdentifier,
+    visitorIdentifier,
+    metric = "syncRate",
+  ) {
+    if (!visitorIdentifier) return null;
+    const field = relationFieldFor(visitorIdentifier, metric);
+    if (typeof source?.getRelationField === "function") {
+      return source.getRelationField(visitorIdentifier, userIdentifier, metric);
+    }
+    if (typeof source?.getField === "function") {
+      return source.getField(userIdentifier, field);
+    }
+
+    const value = source?.get?.(userIdentifier);
+    return (
+      value?.[field] ||
+      value?.relation?.[visitorIdentifier]?.[metric] ||
+      (isRelationRecord(value, metric) ? value : null)
     );
   }
 
@@ -203,6 +247,43 @@
         return left.originalIndex - right.originalIndex;
       },
     },
+    [SORT.RELATION]: {
+      defaultDirection: DIRECTION.DESCENDING,
+      directionLabels: Object.freeze({
+        [DIRECTION.ASCENDING]: "从低到高",
+        [DIRECTION.DESCENDING]: "从高到低",
+      }),
+      compare(
+        left,
+        right,
+        { isAscending, relationMetric, relationVisitorIdentifier, sortData },
+      ) {
+        const leftRelation = relationRecordFor(
+          sortData,
+          userIdentifierFor(left),
+          relationVisitorIdentifier,
+          relationMetric,
+        );
+        const rightRelation = relationRecordFor(
+          sortData,
+          userIdentifierFor(right),
+          relationVisitorIdentifier,
+          relationMetric,
+        );
+        const leftHasValue = isRelationRecord(leftRelation, relationMetric);
+        const rightHasValue = isRelationRecord(rightRelation, relationMetric);
+
+        if (leftHasValue && rightHasValue) {
+          return (
+            (leftRelation.value - rightRelation.value) *
+              (isAscending ? 1 : -1) || left.originalIndex - right.originalIndex
+          );
+        }
+        if (leftHasValue) return -1;
+        if (rightHasValue) return 1;
+        return left.originalIndex - right.originalIndex;
+      },
+    },
   });
   const DEFAULT_SORT_CONFIG = Object.freeze({
     defaultDirection: DIRECTION.DESCENDING,
@@ -256,13 +337,22 @@
       }
     }
 
+    function validatorFor(field) {
+      const validator = validators.get(field);
+      if (validator) return validator;
+      const relationMatch = /^relation_.+_(syncRate|commonLikes)$/.exec(field);
+      return relationMatch
+        ? (relationValue) => isRelationRecord(relationValue, relationMatch[1])
+        : null;
+    }
+
     function validateFields(value) {
       if (!value || typeof value !== "object" || Array.isArray(value))
         return {};
 
       const fields = {};
       for (const [field, fieldValue] of Object.entries(value)) {
-        const validator = validators.get(field);
+        const validator = validatorFor(field);
         if (typeof validator === "function" && validator(fieldValue)) {
           fields[field] = fieldValue;
         }
@@ -342,9 +432,15 @@
       getField(userIdentifier, field) {
         return records.get(userIdentifier)?.[field];
       },
+      getRelationField(visitorIdentifier, userIdentifier, metric) {
+        return this.getField(
+          userIdentifier,
+          relationFieldFor(visitorIdentifier, metric),
+        );
+      },
       persist,
       setField(userIdentifier, field, value, shouldPersist = true) {
-        const validator = validators.get(field);
+        const validator = validatorFor(field);
         if (typeof validator !== "function" || !validator(value)) {
           return this;
         }
@@ -353,6 +449,21 @@
         records.set(userIdentifier, fields);
         if (shouldPersist) persist();
         return this;
+      },
+      setRelationField(
+        visitorIdentifier,
+        userIdentifier,
+        metric,
+        value,
+        shouldPersist = true,
+      ) {
+        if (!isRelationRecord(value, metric)) return this;
+        return this.setField(
+          userIdentifier,
+          relationFieldFor(visitorIdentifier, metric),
+          value,
+          shouldPersist,
+        );
       },
       setFields(userIdentifier, values, shouldPersist = true) {
         const fields = validateFields(values);
@@ -402,6 +513,8 @@
       }),
       direction,
       completionScope = COMPLETION_SCOPE.ALL,
+      relationMetric = "syncRate",
+      relationVisitorIdentifier,
     } = {},
   ) {
     const sorted = [...friends];
@@ -414,6 +527,8 @@
           collator,
           completionScope,
           isAscending,
+          relationMetric,
+          relationVisitorIdentifier,
           sortData,
         }),
       );
@@ -685,31 +800,60 @@
     return blocks[0] || null;
   }
 
-  function parseProfileDocument(document) {
+  function parseSyncRate(value) {
+    const text = value?.textContent?.trim() || "";
+    if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)\s*%?$/.test(text)) {
+      return null;
+    }
+    const parsed = Number(text.replace(/%\s*$/, "").trim());
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function parseCommonLikes(value) {
+    const match = /(^|[^\d])([+-]?\d[\d,]*(?:\.\d+)?)\s*个共同喜好/.exec(
+      value?.textContent || "",
+    );
+    if (!match) return null;
+    const parsed = Number(match[2].replace(/,/g, ""));
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+  }
+
+  function parseRelationValues(document) {
+    const synchronize = document?.querySelector?.(".userSynchronize");
+    if (!synchronize) return null;
+
+    const values = {};
+    const syncRate = parseSyncRate(
+      synchronize.querySelector?.(".percent_text"),
+    );
+    if (syncRate !== null) values.syncRate = syncRate;
+    const commonLikes = parseCommonLikes(synchronize);
+    if (commonLikes !== null) values.commonLikes = commonLikes;
+    return values;
+  }
+
+  function parseCompletionValues(document) {
     const container = document?.querySelector?.("#userStatsContainers");
-    if (!container) return { kind: "invalid" };
+    if (!container) return null;
 
     const childCount = container.children?.length ?? 0;
     if (childCount === 0 && container.textContent.trim() === "") {
-      return {
-        kind: "success",
-        values: Object.fromEntries(
-          COMPLETION_CHOICES.map(([scope]) => [scope, 0]),
-        ),
-      };
+      return Object.fromEntries(
+        COMPLETION_CHOICES.map(([scope]) => [scope, 0]),
+      );
     }
 
     const aggregate = statsBlockFor(container, COMPLETION_SCOPE.ALL);
     if (aggregate === INVALID_STATS_BLOCK || !aggregate) {
-      return { kind: "invalid" };
+      return null;
     }
     const aggregateValue = parseCompletionCount(aggregate);
-    if (aggregateValue === null) return { kind: "invalid" };
+    if (aggregateValue === null) return null;
 
     const values = { [COMPLETION_SCOPE.ALL]: aggregateValue };
     for (const [scope] of COMPLETION_CHOICES.slice(1)) {
       const block = statsBlockFor(container, scope);
-      if (block === INVALID_STATS_BLOCK) return { kind: "invalid" };
+      if (block === INVALID_STATS_BLOCK) return null;
       if (!block) {
         values[scope] = 0;
         continue;
@@ -718,7 +862,18 @@
       if (value !== null) values[scope] = value;
     }
 
-    return { kind: "success", values };
+    return values;
+  }
+
+  function parseProfileDocument(document) {
+    const values = parseCompletionValues(document);
+    const relation = parseRelationValues(document);
+    if (!values && relation === null) return { kind: "invalid" };
+
+    const parsed = { kind: "success" };
+    if (values) parsed.values = values;
+    if (relation !== null) parsed.relation = relation;
+    return parsed;
   }
 
   function findFriendsNeedingCompletion(
@@ -743,6 +898,71 @@
     });
   }
 
+  function findFriendsNeedingRelation(
+    friends,
+    relationCache,
+    visitorIdentifier,
+    metric = "syncRate",
+    now = Date.now(),
+  ) {
+    return friends.filter((friend) => {
+      const relation = relationRecordFor(
+        relationCache,
+        userIdentifierFor(friend),
+        visitorIdentifier,
+        metric,
+      );
+      return !relation || now - relation.fetchedAt > COMPLETION_CACHE_TTL_MS;
+    });
+  }
+
+  function positiveIntegerIdentifier(value) {
+    const text = String(value ?? "").trim();
+    if (!/^[1-9]\d*$/.test(text)) return null;
+    const number = Number(text);
+    return Number.isSafeInteger(number) ? String(number) : null;
+  }
+
+  function userIdentifierFromHref(href, baseUrl) {
+    try {
+      const pathname = new URL(href, baseUrl).pathname;
+      const match = /^\/user\/([^/]+)\/?$/.exec(pathname);
+      return match ? decodeURIComponent(match[1]) || null : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function currentVisitorIdentifier(pageDocument, pageWindow) {
+    const uid = positiveIntegerIdentifier(pageWindow?.CHOBITS_UID);
+    if (uid) return uid;
+
+    const username = pageWindow?.CHOBITS_USERNAME;
+    if (typeof username === "string" && username.trim()) {
+      return username.trim();
+    }
+
+    const selectors = [
+      "#headerNeue2 .idBadgerNeue a.avatar[href*='/user/']",
+      "#headerNeue2 a.avatar[href*='/user/']",
+      ".idBadgerNeue a.avatar[href*='/user/']",
+    ];
+    for (const selector of selectors) {
+      let avatar;
+      try {
+        avatar = pageDocument?.querySelector?.(selector);
+      } catch {
+        continue;
+      }
+      const identifier = userIdentifierFromHref(
+        avatar?.getAttribute?.("href"),
+        pageWindow?.location?.href,
+      );
+      if (identifier) return identifier;
+    }
+    return null;
+  }
+
   async function fetchProfile(friend, fetchImpl, domParser, now) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15_000);
@@ -762,7 +982,10 @@
       const document = domParser.parseFromString(html, "text/html");
       const parsed = parseProfileDocument(document);
       if (parsed.kind === "invalid") return { kind: "parse-error" };
-      return { kind: "success", record: { values: parsed.values, fetchedAt } };
+      const record = { fetchedAt };
+      if (parsed.values) record.values = parsed.values;
+      if (parsed.relation) record.relation = parsed.relation;
+      return { kind: "success", record };
     } catch {
       return { kind: "network-error" };
     } finally {
@@ -770,24 +993,47 @@
     }
   }
 
-  async function refreshCompletions(friends, options) {
+  function saveProfileRecord(cache, visitorIdentifier, friend, record) {
+    for (const [scope, value] of Object.entries(record.values || {})) {
+      cache.setField(
+        userIdentifierFor(friend),
+        completionFieldFor(scope),
+        { value, fetchedAt: record.fetchedAt },
+        false,
+      );
+    }
+    if (!visitorIdentifier) return;
+    for (const [metric, value] of Object.entries(record.relation || {})) {
+      cache.setRelationField(
+        visitorIdentifier,
+        userIdentifierFor(friend),
+        metric,
+        { value, fetchedAt: record.fetchedAt },
+        false,
+      );
+    }
+  }
+
+  async function refreshProfilePages(friends, options) {
     const result = await runPageFetchTask(friends, {
       fetchPage: (friend) =>
         fetchProfile(friend, options.fetchImpl, options.domParser, options.now),
       onSuccess(friend, record) {
-        for (const [scope, value] of Object.entries(record.values)) {
-          options.cache.setField(
-            userIdentifierFor(friend),
-            completionFieldFor(scope),
-            { value, fetchedAt: record.fetchedAt },
-            false,
-          );
-        }
+        saveProfileRecord(
+          options.cache,
+          options.visitorIdentifier,
+          friend,
+          record,
+        );
       },
       onProgress: options.onProgress,
     });
     options.cache.persist();
     return { failures: result.failures };
+  }
+
+  async function refreshCompletions(friends, options) {
+    return refreshProfilePages(friends, options);
   }
 
   function readFriends(list, baseUrl = window.location.href) {
@@ -1036,8 +1282,64 @@
     }
     setCompletionMenuOpen(false);
 
+    const relationDropdown = document.createElement("span");
+    relationDropdown.className = "bangumi-friend-sorter-dropdown";
+    const relationButton = document.createElement("button");
+    relationButton.type = "button";
+    relationButton.className = "l bangumi-friend-sorter-dropdown-toggle";
+    relationButton.textContent = "喜好契合";
+    relationButton.setAttribute("aria-haspopup", "true");
+    relationButton.setAttribute(
+      "aria-controls",
+      "bangumi-friend-sorter-relation-menu",
+    );
+    relationButton.addEventListener("click", () => {
+      onSelect(SORT.RELATION, RELATION_CHOICES[0][0]);
+      relationButton.focus?.();
+    });
+    const relationMenu = document.createElement("span");
+    relationMenu.id = "bangumi-friend-sorter-relation-menu";
+    relationMenu.className = "bangumi-friend-sorter-dropdown-menu";
+    relationMenu.setAttribute("role", "menu");
+    const relationButtons = new Map();
+    for (const [metric, label] of RELATION_CHOICES) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "l";
+      button.textContent = label;
+      button.setAttribute("role", "menuitem");
+      button.addEventListener("click", () => onSelect(SORT.RELATION, metric));
+      relationMenu.append(button);
+      relationButtons.set(metric, button);
+    }
+
+    function setRelationMenuOpen(isOpen) {
+      relationDropdown.dataset.open = String(isOpen);
+      relationButton.setAttribute("aria-expanded", String(isOpen));
+    }
+
+    function isInsideRelationDropdown(node) {
+      return Boolean(relationDropdown.contains?.(node));
+    }
+
+    relationDropdown.addEventListener("pointerenter", () =>
+      setRelationMenuOpen(true),
+    );
+    relationDropdown.addEventListener("pointerleave", () => {
+      if (!isInsideRelationDropdown(document.activeElement)) {
+        setRelationMenuOpen(false);
+      }
+    });
+    keepMenuOpenOnFocus(relationButton);
+    for (const button of relationButtons.values()) {
+      keepMenuOpenOnFocus(button);
+    }
+    setRelationMenuOpen(false);
+
     completionDropdown.append(completionButton, completionMenu);
     sortOptions.append(completionDropdown);
+    relationDropdown.append(relationButton, relationMenu);
+    sortOptions.append(relationDropdown);
 
     sortOptions.append("排序");
     const status = document.createElement("span");
@@ -1067,7 +1369,7 @@
       setCurrent(
         criterion,
         direction = defaultDirectionFor(criterion),
-        completionScope = COMPLETION_SCOPE.ALL,
+        selection = COMPLETION_SCOPE.ALL,
       ) {
         for (const [value, button] of buttons) {
           if (value === criterion) button.setAttribute("aria-current", "true");
@@ -1078,8 +1380,20 @@
         } else {
           completionButton.removeAttribute("aria-current");
         }
+        if (criterion === SORT.RELATION) {
+          relationButton.setAttribute("aria-current", "true");
+        } else {
+          relationButton.removeAttribute("aria-current");
+        }
         for (const [scope, button] of completionButtons) {
-          if (criterion === SORT.COMPLETION && scope === completionScope) {
+          if (criterion === SORT.COMPLETION && scope === selection) {
+            button.setAttribute("aria-current", "true");
+          } else {
+            button.removeAttribute("aria-current");
+          }
+        }
+        for (const [metric, button] of relationButtons) {
+          if (criterion === SORT.RELATION && metric === selection) {
             button.setAttribute("aria-current", "true");
           } else {
             button.removeAttribute("aria-current");
@@ -1093,6 +1407,9 @@
         }
       },
       status,
+      relationButton,
+      relationMenu,
+      relationButtons,
       completionButton,
       completionMenu,
       completionButtons,
@@ -1148,6 +1465,168 @@
     });
     options.cache.persist();
     return { failures: result.failures };
+  }
+
+  function profileRecordHasTarget(record, target) {
+    if (!record) return false;
+    if (target.kind === "completion") {
+      const value = record.values?.[target.scope];
+      return Number.isSafeInteger(value) && value >= 0;
+    }
+    const value = record.relation?.[target.metric];
+    return isRelationRecord(
+      { value, fetchedAt: record.fetchedAt },
+      target.metric,
+    );
+  }
+
+  function createProfileRefreshCoordinator({
+    cache,
+    confirmMessage,
+    confirmRequest,
+    getDependencies,
+    friends,
+    getPending,
+    now,
+    onFetching,
+    onFinished,
+    onProgress,
+    onQueue,
+    visitorIdentifier,
+  }) {
+    let activeTask = null;
+
+    function createTask() {
+      const queue = [];
+      const queuedKeys = new Set();
+      const results = new Map();
+      let completed = 0;
+      let total = 0;
+      let target = null;
+      let batchState = { consecutiveServerFailures: 0, stopped: false };
+      let running = false;
+      let promise = null;
+
+      function enqueue(nextTarget) {
+        const pending = getPending(nextTarget);
+        const candidateKeys = new Set(queuedKeys);
+        const items = pending.filter((friend) => {
+          const key = userIdentifierFor(friend);
+          if (candidateKeys.has(key)) return false;
+          candidateKeys.add(key);
+          return true;
+        });
+        if (
+          items.length > 400 &&
+          !confirmRequest(confirmMessage(items.length, nextTarget))
+        ) {
+          return 0;
+        }
+
+        target = nextTarget;
+        for (const friend of items) {
+          const key = userIdentifierFor(friend);
+          queuedKeys.add(key);
+          queue.push(friend);
+          total += 1;
+        }
+        const added = items.length;
+        if (running) onQueue?.({ added, completed, target, total });
+        return added;
+      }
+
+      async function worker(dependencies) {
+        while (!batchState.stopped) {
+          const friend = queue.shift();
+          if (!friend) return;
+
+          let outcome;
+          try {
+            outcome = await fetchProfile(
+              friend,
+              dependencies.fetchImpl,
+              dependencies.domParser,
+              now,
+            );
+          } catch {
+            outcome = { kind: "network-error" };
+          }
+          if (!outcome || typeof outcome !== "object") {
+            outcome = { kind: "network-error" };
+          }
+
+          completed += 1;
+          if (outcome.kind === "success") {
+            saveProfileRecord(cache, visitorIdentifier, friend, outcome.record);
+          }
+          results.set(userIdentifierFor(friend), {
+            outcome,
+            record: outcome.kind === "success" ? outcome.record : null,
+          });
+          batchState = nextBatchState(batchState, outcome);
+          onProgress?.({ completed, target, total });
+        }
+      }
+
+      async function process() {
+        const dependencies = getDependencies();
+        if (!dependencies) return;
+        running = true;
+        onFetching?.({ completed, target, total });
+        const workerCount = Math.min(4, queue.length);
+        await Promise.all(
+          Array.from({ length: workerCount }, () => worker(dependencies)),
+        );
+
+        if (queue.length > 0) {
+          for (const friend of queue.splice(0)) {
+            results.set(userIdentifierFor(friend), {
+              outcome: { kind: "unattempted" },
+              record: null,
+            });
+          }
+          completed = total;
+          onProgress?.({ completed, target, total });
+        }
+
+        cache.persist();
+        let failures = 0;
+        for (const result of results.values()) {
+          if (!profileRecordHasTarget(result.record, target)) failures += 1;
+        }
+        onFinished?.({ completed, failures, target, total });
+      }
+
+      return {
+        enqueue,
+        get promise() {
+          return promise;
+        },
+        start() {
+          promise = process();
+          return promise;
+        },
+      };
+    }
+
+    return {
+      start(target) {
+        if (activeTask) {
+          activeTask.enqueue(target);
+          return activeTask.promise;
+        }
+        if (!getDependencies()) return null;
+
+        const task = createTask();
+        if (task.enqueue(target) === 0) return null;
+        activeTask = task;
+        const promise = task.start();
+        void promise.finally(() => {
+          if (activeTask === task) activeTask = null;
+        });
+        return promise;
+      },
+    };
   }
 
   function createPageRefreshCoordinator({
@@ -1315,16 +1794,23 @@
       { fieldValidators: completionCacheFieldValidators(), now },
     );
     const activityCache = createActivityCacheView(friendCache);
+    const visitorIdentifier = currentVisitorIdentifier(
+      pageDocument,
+      pageWindow,
+    );
     const collator = new Intl.Collator(undefined, {
       numeric: true,
       sensitivity: "base",
     });
     let currentCriterion = SORT.ADDED;
     let completionScope = COMPLETION_SCOPE.ALL;
+    let relationMetric = RELATION_CHOICES[0][0];
     const directionByCriterion = new Map(
-      [...SORT_CHOICES.map(([criterion]) => criterion), SORT.COMPLETION].map(
-        (criterion) => [criterion, defaultDirectionFor(criterion)],
-      ),
+      [
+        ...SORT_CHOICES.map(([criterion]) => criterion),
+        SORT.COMPLETION,
+        SORT.RELATION,
+      ].map((criterion) => [criterion, defaultDirectionFor(criterion)]),
     );
     let statusTimer = null;
     let statusKind = REFRESH_STATUS.IDLE;
@@ -1349,14 +1835,6 @@
 
     function showActivityProgress(completed, total) {
       setStatus(REFRESH_STATUS.FETCHING, `正在获取 ${completed}/${total}`);
-      runtime.onProgress?.(completed, total);
-    }
-
-    function showCompletionProgress(completed, total) {
-      setStatus(
-        REFRESH_STATUS.FETCHING,
-        `正在获取“完成条目数” ${completed}/${total}`,
-      );
       runtime.onProgress?.(completed, total);
     }
 
@@ -1403,62 +1881,121 @@
         }),
     });
 
-    const completionRefresh = createPageRefreshCoordinator({
+    function profileMainLabel(target) {
+      return target.kind === "relation" ? "喜好契合" : "完成条目数";
+    }
+
+    function applyProfileSort(target) {
+      if (target.kind === "relation") {
+        if (currentCriterion !== SORT.RELATION) return;
+        applyFriendSort({
+          list,
+          friends,
+          criterion: SORT.RELATION,
+          sortData: friendCache,
+          collator,
+          direction: directionByCriterion.get(SORT.RELATION),
+          relationMetric: target.metric,
+          relationVisitorIdentifier: visitorIdentifier,
+        });
+        return;
+      }
+      if (currentCriterion !== SORT.COMPLETION) return;
+      applyFriendSort({
+        list,
+        friends,
+        criterion: SORT.COMPLETION,
+        sortData: friendCache,
+        collator,
+        direction: directionByCriterion.get(SORT.COMPLETION),
+        completionScope: target.scope,
+      });
+    }
+
+    function showProfileProgress({ completed, target, total }) {
+      const label = profileMainLabel(target);
+      setStatus(
+        REFRESH_STATUS.FETCHING,
+        `正在获取“${label}” ${completed}/${total}`,
+      );
+      runtime.onProgress?.(completed, total);
+    }
+
+    const profileRefresh = createProfileRefreshCoordinator({
+      cache: friendCache,
       confirmMessage: (count) =>
         `需要获取的好友数量过多（${count} 人），是否继续？`,
       confirmRequest,
+      friends,
       getDependencies: () => pageFetchDependencies(runtime, pageWindow),
-      getPending: () =>
-        findFriendsNeedingCompletion(
-          friends,
-          friendCache,
-          completionScope,
-          now(),
-        ),
-      keyFor: userIdentifierFor,
-      onFetching: ({ completed, total }) => {
-        setStatus(
-          REFRESH_STATUS.FETCHING,
-          `正在获取“完成条目数” ${completed}/${total}`,
-        );
-      },
-      onFinished: ({ failures }) => {
-        if (currentCriterion === SORT.COMPLETION) {
-          applyFriendSort({
-            list,
-            friends,
-            criterion: SORT.COMPLETION,
-            sortData: friendCache,
-            collator,
-            direction: directionByCriterion.get(SORT.COMPLETION),
-            completionScope,
-          });
-        }
+      getPending: (target) =>
+        target.kind === "relation"
+          ? findFriendsNeedingRelation(
+              friends,
+              friendCache,
+              visitorIdentifier,
+              target.metric,
+              now(),
+            )
+          : findFriendsNeedingCompletion(
+              friends,
+              friendCache,
+              target.scope,
+              now(),
+            ),
+      now,
+      onFetching: showProfileProgress,
+      onFinished: ({ failures, target }) => {
+        applyProfileSort(target);
+        const label = profileMainLabel(target);
         setStatus(
           REFRESH_STATUS.COMPLETED,
           failures
-            ? `“完成条目数”获取完成，${failures} 人失败`
-            : "“完成条目数”获取完成",
+            ? `“${label}”获取完成，${failures} 人失败`
+            : `“${label}”获取完成`,
           5_000,
         );
       },
-      onProgress: ({ completed, total }) =>
-        showCompletionProgress(completed, total),
-      onQueue: ({ completed, total }) =>
-        showCompletionProgress(completed, total),
-      refresh: (pending, dependencies, onProgress) =>
-        refreshCompletions(pending, {
-          cache: friendCache,
-          domParser: dependencies.domParser,
-          fetchImpl: dependencies.fetchImpl,
-          now,
-          onProgress,
-        }),
+      onProgress: showProfileProgress,
+      onQueue: showProfileProgress,
+      visitorIdentifier,
     });
 
     function selectCriterion(criterion, requestedCompletionScope) {
+      if (criterion === SORT.RELATION) {
+        if (statusKind === LOGIN_STATUS) return;
+        relationMetric = requestedCompletionScope || RELATION_CHOICES[0][0];
+        currentCriterion = criterion;
+        const direction = directionByCriterion.get(criterion);
+        controls.setCurrent(criterion, direction, relationMetric);
+        applyFriendSort({
+          list,
+          friends,
+          criterion,
+          sortData: friendCache,
+          collator,
+          direction,
+          relationMetric,
+          relationVisitorIdentifier: visitorIdentifier,
+        });
+        if (!visitorIdentifier) {
+          setStatus(LOGIN_STATUS, "请登录后使用喜好契合排序", 5_000);
+        } else {
+          void profileRefresh.start({
+            kind: "relation",
+            metric: relationMetric,
+          });
+        }
+        return;
+      }
+
       if (criterion === SORT.COMPLETION) {
-        if (statusKind === ACTIVITY_PROMPT_STATUS) clearStatus();
+        if (
+          statusKind === ACTIVITY_PROMPT_STATUS ||
+          statusKind === LOGIN_STATUS
+        ) {
+          clearStatus();
+        }
         completionScope = requestedCompletionScope || COMPLETION_SCOPE.ALL;
         currentCriterion = criterion;
         const direction = directionByCriterion.get(criterion);
@@ -1472,7 +2009,10 @@
           direction,
           completionScope,
         });
-        void completionRefresh.start();
+        void profileRefresh.start({
+          kind: "completion",
+          scope: completionScope,
+        });
         return;
       }
 
@@ -1515,16 +2055,25 @@
       if (directionByCriterion.get(currentCriterion) === direction) return;
 
       directionByCriterion.set(currentCriterion, direction);
-      controls.setCurrent(currentCriterion, direction, completionScope);
+      controls.setCurrent(
+        currentCriterion,
+        direction,
+        currentCriterion === SORT.RELATION ? relationMetric : completionScope,
+      );
       applyFriendSort({
         list,
         friends,
         criterion: currentCriterion,
         sortData:
-          currentCriterion === SORT.COMPLETION ? friendCache : activityCache,
+          currentCriterion === SORT.COMPLETION ||
+          currentCriterion === SORT.RELATION
+            ? friendCache
+            : activityCache,
         collator,
         direction,
         completionScope,
+        relationMetric,
+        relationVisitorIdentifier: visitorIdentifier,
       });
     }
 
@@ -1538,11 +2087,12 @@
     controls.setCurrent(
       currentCriterion,
       directionByCriterion.get(currentCriterion),
-      completionScope,
+      currentCriterion === SORT.RELATION ? relationMetric : completionScope,
     );
   }
 
   const core = {
+    RELATION_CHOICES,
     COMPLETION_CHOICES,
     COMPLETION_SCOPE,
     createActivityCache,
@@ -1550,17 +2100,22 @@
     createSortBar,
     completionCacheFieldValidators,
     completionFieldFor,
+    currentVisitorIdentifier,
     directionLabelsFor,
     findFriendsNeedingCompletion,
     findFriendsNeedingActivity,
+    findFriendsNeedingRelation,
     fetchProfile,
     initialize,
     isCompletionRecord,
+    isRelationRecord,
     needsLargeRequestConfirmation,
     nextBatchState,
     nextActivitySelectionAction,
     parseProfileDocument,
     parseTimelineDocument,
+    relationFieldFor,
+    refreshProfilePages,
     refreshCompletions,
     refreshActivities,
     runPageFetchTask,
