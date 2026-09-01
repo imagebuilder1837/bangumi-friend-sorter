@@ -1260,6 +1260,13 @@ test("主页解析同步率和共同喜好数，缺失字段不转换为零", ()
     ),
     { kind: "success", relation: { syncRate: 2.25 } },
   );
+  const beyondSafeInteger = Number.MAX_SAFE_INTEGER + 1;
+  assert.deepEqual(
+    sorter.parseProfileDocument(
+      relationProfileDocument({ commonLikes: beyondSafeInteger }),
+    ),
+    { kind: "success", relation: { commonLikes: beyondSafeInteger } },
+  );
 });
 
 test("主页完成统计按完成描述定位六个统计范围", () => {
@@ -1592,6 +1599,80 @@ test("当前访问者标识按 UID、用户名、页头头像依次回退且不�
     ),
     null,
   );
+});
+
+test("初始化按当前访问者隔离喜好契合缓存", () => {
+  const now = 100_000;
+  const visitorA = "visitor-a";
+  const visitorB = "visitor-b";
+  const storage = {
+    getItem(key) {
+      if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
+      return JSON.stringify({
+        version: 3,
+        records: {
+          friend: {
+            [sorter.relationFieldFor(visitorA, "syncRate")]: {
+              value: 90,
+              fetchedAt: now,
+            },
+          },
+        },
+      });
+    },
+    setItem() {},
+    removeItem() {},
+  };
+
+  const pageA = friendPageWith([{ href: "/user/friend", name: "好友" }]);
+  let requestsA = 0;
+  sorter.initialize({
+    document: pageA.document,
+    window: {
+      CHOBITS_USERNAME: visitorA,
+      location: { href: "https://bgm.tv/user/viewed/friends" },
+    },
+    storage,
+    now: () => now,
+    domParser: {
+      parseFromString: () => relationProfileDocument({ syncRate: "50%" }),
+    },
+    fetchImpl: async () => {
+      requestsA += 1;
+      return { ok: true, text: async () => "profile" };
+    },
+  });
+  const sortOptionsA = pageA.list.beforeNodes[0].children[0].children[0];
+  const relationDropdownA = sortOptionsA.children.find(
+    (child) => child.children?.[0]?.textContent === "喜好契合",
+  );
+  relationDropdownA.children[0].click();
+  assert.equal(requestsA, 0);
+
+  const pageB = friendPageWith([{ href: "/user/friend", name: "好友" }]);
+  let requestsB = 0;
+  sorter.initialize({
+    document: pageB.document,
+    window: {
+      CHOBITS_USERNAME: visitorB,
+      location: { href: "https://bgm.tv/user/viewed/friends" },
+    },
+    storage,
+    now: () => now,
+    domParser: {
+      parseFromString: () => relationProfileDocument({ syncRate: "50%" }),
+    },
+    fetchImpl: async () => {
+      requestsB += 1;
+      return { ok: true, text: async () => "profile" };
+    },
+  });
+  const sortOptionsB = pageB.list.beforeNodes[0].children[0].children[0];
+  const relationDropdownB = sortOptionsB.children.find(
+    (child) => child.children?.[0]?.textContent === "喜好契合",
+  );
+  relationDropdownB.children[0].click();
+  assert.equal(requestsB, 1);
 });
 
 test("同一主页响应分别刷新完成统计，失败范围保留旧缓存", async () => {

@@ -103,7 +103,7 @@
       return false;
     }
     if (metric === "commonLikes") {
-      return Number.isSafeInteger(value.value) && value.value >= 0;
+      return Number.isInteger(value.value) && value.value >= 0;
     }
     return metric === "syncRate";
   }
@@ -815,7 +815,7 @@
     );
     if (!match) return null;
     const parsed = Number(match[2].replace(/,/g, ""));
-    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+    return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
   }
 
   function parseRelationValues(document) {
