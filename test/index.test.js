@@ -968,7 +968,7 @@ test("页面初始化可以注入获取任务所需的运行时依赖", async ()
   ]]);
 });
 
-test("页面初始化使用注入时钟判断 v2 活跃记录迁移有效期", async () => {
+test("页面初始化使用注入时钟判断 v2 上次活跃记录迁移有效期", async () => {
   const hour = 60 * 60 * 1_000;
   const now = 100 * hour;
   const records = {
