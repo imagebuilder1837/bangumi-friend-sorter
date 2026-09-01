@@ -22,7 +22,8 @@
 
   const CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
   const SITE_OFFSET_SECONDS = 8 * 60 * 60;
-  const CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v2";
+  const CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v3";
+  const PREVIOUS_CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v2";
   const LEGACY_CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v1";
   const SORT = Object.freeze({
     ACTIVITY: "activity",
@@ -59,7 +60,7 @@
   }
 
   function defaultDirectionFor(criterion) {
-    return criterion === SORT.NAME
+    return criterion === SORT.NAME || criterion === SORT.ADDED
       ? DIRECTION.ASCENDING
       : DIRECTION.DESCENDING;
   }
@@ -75,48 +76,144 @@
     return value.kind === "active" && Number.isInteger(value.activityAtSeconds);
   }
 
-  function createActivityCache(storage) {
+  function createFriendCache(storage, { fieldValidators = {} } = {}) {
     const records = new Map();
+    const validators = new Map([
+      ["activity", isActivityRecord],
+      ...Object.entries(fieldValidators),
+    ]);
 
-    try {
-      const saved = JSON.parse(storage?.getItem(CACHE_STORAGE_KEY) || "null");
-      if (
-        saved?.version === 2 &&
-        saved.records &&
-        typeof saved.records === "object"
-      ) {
-        for (const [userId, record] of Object.entries(saved.records)) {
-          if (isActivityRecord(record)) records.set(userId, record);
-        }
+    function read(key) {
+      try {
+        const value = storage?.getItem?.(key);
+        return JSON.parse(value || "null");
+      } catch {
+        return null;
       }
-    } catch {
-      // The in-memory map remains usable when storage is unavailable or corrupt.
     }
 
-    try {
-      storage?.removeItem?.(LEGACY_CACHE_STORAGE_KEY);
-    } catch {
-      // Removing an obsolete cache is best effort.
+    function remove(key) {
+      try {
+        storage?.removeItem?.(key);
+      } catch {
+        // Removing obsolete data is best effort.
+      }
+    }
+
+    function validateFields(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value))
+        return {};
+
+      const fields = {};
+      for (const [field, fieldValue] of Object.entries(value)) {
+        const validator = validators.get(field);
+        if (typeof validator === "function" && validator(fieldValue)) {
+          fields[field] = fieldValue;
+        }
+      }
+      return fields;
+    }
+
+    function loadFields(saved) {
+      if (
+        saved?.version !== 3 ||
+        !saved.records ||
+        typeof saved.records !== "object" ||
+        Array.isArray(saved.records)
+      ) {
+        return false;
+      }
+
+      for (const [userId, value] of Object.entries(saved.records)) {
+        const fields = validateFields(value);
+        if (Object.keys(fields).length > 0) records.set(userId, fields);
+      }
+      return true;
     }
 
     function persist() {
       try {
-        storage?.setItem(
+        if (!storage?.setItem) return false;
+        storage.setItem(
           CACHE_STORAGE_KEY,
-          JSON.stringify({ version: 2, records: Object.fromEntries(records) }),
+          JSON.stringify({ version: 3, records: Object.fromEntries(records) }),
         );
+        return true;
       } catch {
-        // Keep the newly written record in memory for the current page.
+        // Keep newly written records in memory when persistence is unavailable.
+        return false;
       }
     }
+
+    const hasCurrentCache = loadFields(read(CACHE_STORAGE_KEY));
+    const previous = read(PREVIOUS_CACHE_STORAGE_KEY);
+    if (
+      previous?.version === 2 &&
+      previous.records &&
+      typeof previous.records === "object" &&
+      !Array.isArray(previous.records)
+    ) {
+      let migrated = false;
+      for (const [userId, record] of Object.entries(previous.records)) {
+        if (
+          validators.get("activity")?.(record) &&
+          !records.get(userId)?.activity
+        ) {
+          records.set(userId, { ...records.get(userId), activity: record });
+          migrated = true;
+        }
+      }
+      if (migrated) {
+        if (persist()) remove(PREVIOUS_CACHE_STORAGE_KEY);
+      } else if (hasCurrentCache) {
+        remove(PREVIOUS_CACHE_STORAGE_KEY);
+      }
+    }
+
+    remove(LEGACY_CACHE_STORAGE_KEY);
 
     return {
       entries: () => records.entries(),
       get: (userId) => records.get(userId),
+      getField(userId, field) {
+        return records.get(userId)?.[field];
+      },
       persist,
-      set(userId, record, shouldPersist = true) {
-        records.set(userId, record);
+      setField(userId, field, value, shouldPersist = true) {
+        const validator = validators.get(field);
+        if (typeof validator !== "function" || !validator(value)) {
+          return this;
+        }
+        const fields = records.get(userId) || {};
+        fields[field] = value;
+        records.set(userId, fields);
         if (shouldPersist) persist();
+        return this;
+      },
+      setFields(userId, values, shouldPersist = true) {
+        const fields = validateFields(values);
+        if (Object.keys(fields).length === 0) return this;
+        records.set(userId, { ...records.get(userId), ...fields });
+        if (shouldPersist) persist();
+        return this;
+      },
+    };
+  }
+
+  function createActivityCache(storage) {
+    const cache = createFriendCache(storage);
+    return {
+      entries() {
+        return (function* () {
+          for (const [userId, fields] of cache.entries()) {
+            yield [userId, fields.activity];
+          }
+        })();
+      },
+      get: (userId) => cache.getField(userId, "activity"),
+      persist: () => cache.persist(),
+      set(userId, record, shouldPersist = true) {
+        cache.setField(userId, "activity", record, shouldPersist);
         return this;
       },
     };
@@ -138,15 +235,16 @@
     if (criterion === SORT.ADDED) {
       sorted.sort(
         (left, right) =>
-          (left.originalIndex - right.originalIndex) * (isAscending ? -1 : 1),
+          (left.originalIndex - right.originalIndex) * (isAscending ? 1 : -1),
       );
     }
 
     if (criterion === SORT.NAME) {
       sorted.sort((left, right) => {
-        return (isAscending ? 1 : -1) * (
-          collator.compare(left.displayName, right.displayName) ||
-          collator.compare(left.userId, right.userId)
+        return (
+          (isAscending ? 1 : -1) *
+          (collator.compare(left.displayName, right.displayName) ||
+            collator.compare(left.userId, right.userId))
         );
       });
     }
@@ -161,8 +259,7 @@
         if (leftHasTime && rightHasTime) {
           return (
             (leftActivity.activityAtSeconds - rightActivity.activityAtSeconds) *
-              (isAscending ? 1 : -1) ||
-            left.originalIndex - right.originalIndex
+              (isAscending ? 1 : -1) || left.originalIndex - right.originalIndex
           );
         }
         if (leftHasTime) return -1;
@@ -361,7 +458,52 @@
     return { consecutiveServerFailures: 0, stopped: false };
   }
 
-  function readFriends(list) {
+  async function runPageFetchTask(items, options) {
+    let nextIndex = 0;
+    let completed = 0;
+    let failures = 0;
+    let batchState = { consecutiveServerFailures: 0, stopped: false };
+
+    async function worker() {
+      while (!batchState.stopped) {
+        const index = nextIndex;
+        if (index >= items.length) return;
+        nextIndex += 1;
+
+        let outcome;
+        try {
+          outcome = await options.fetchPage(items[index]);
+        } catch {
+          outcome = { kind: "network-error" };
+        }
+        if (!outcome || typeof outcome !== "object") {
+          outcome = { kind: "network-error" };
+        }
+
+        completed += 1;
+        if (outcome.kind === "success") {
+          options.onSuccess?.(items[index], outcome.record, outcome);
+        } else {
+          failures += 1;
+        }
+        batchState = nextBatchState(batchState, outcome);
+        options.onProgress?.(completed, items.length);
+      }
+    }
+
+    const workerCount = Math.min(4, items.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+    const unattempted = items.length - nextIndex;
+    if (unattempted > 0) {
+      completed += unattempted;
+      failures += unattempted;
+      options.onProgress?.(completed, items.length);
+    }
+    return { failures, stopped: batchState.stopped };
+  }
+
+  function readFriends(list, baseUrl = window.location.href) {
     const elements = [...list.children];
     const friends = elements.map((element, originalIndex) => {
       const anchor = element.querySelector('a.avatar[href*="/user/"]');
@@ -369,10 +511,7 @@
 
       let userId;
       try {
-        const pathname = new URL(
-          anchor.getAttribute("href"),
-          window.location.href,
-        ).pathname;
+        const pathname = new URL(anchor.getAttribute("href"), baseUrl).pathname;
         const match = /^\/user\/([^/]+)\/?$/.exec(pathname);
         userId = match ? decodeURIComponent(match[1]) : null;
       } catch {
@@ -556,76 +695,60 @@
   }
 
   async function refreshActivities(friends, options) {
-    let nextIndex = 0;
-    let completed = 0;
-    let failures = 0;
-    let batchState = { consecutiveServerFailures: 0, stopped: false };
-
-    async function worker() {
-      while (!batchState.stopped) {
-        const index = nextIndex;
-        if (index >= friends.length) return;
-        nextIndex += 1;
-
-        const friend = friends[index];
-        const outcome = await fetchActivity(
+    const result = await runPageFetchTask(friends, {
+      fetchPage: (friend) =>
+        fetchActivity(
           friend,
           options.fetchImpl,
           options.domParser,
           options.now,
-        );
-        completed += 1;
-
-        if (outcome.kind === "success") {
-          options.cache.set(friend.userId, outcome.record, false);
-        } else {
-          failures += 1;
-        }
-        batchState = nextBatchState(batchState, outcome);
-        options.onProgress(completed, friends.length);
-      }
-    }
-
-    const workerCount = Math.min(4, friends.length);
-    await Promise.all(Array.from({ length: workerCount }, () => worker()));
-
-    const unattempted = friends.length - nextIndex;
-    if (unattempted > 0) {
-      completed += unattempted;
-      failures += unattempted;
-      options.onProgress(completed, friends.length);
-    }
+        ),
+      onSuccess(friend, record) {
+        options.cache.set(friend.userId, record, false);
+      },
+      onProgress: options.onProgress,
+    });
     options.cache.persist();
-    return { failures };
+    return { failures: result.failures };
   }
 
-  function browserStorage() {
+  function browserStorage(pageWindow = window) {
     try {
-      return window.localStorage;
+      return pageWindow.localStorage;
     } catch {
       return null;
     }
   }
 
-  function initialize() {
-    const list = document.querySelector("#memberUserList");
+  function initialize(runtime = {}) {
+    const pageDocument = runtime.document ?? document;
+    const pageWindow = runtime.window ?? window;
+    const list = pageDocument.querySelector("#memberUserList");
     if (!list || list.children.length === 0) return;
 
-    const friends = readFriends(list);
+    const friends = readFriends(list, pageWindow.location.href);
     if (friends.length !== list.children.length) return;
 
-    const activityCache = createActivityCache(browserStorage());
+    const activityCache = createActivityCache(
+      runtime.storage ?? browserStorage(pageWindow),
+    );
     const collator = new Intl.Collator(undefined, {
       numeric: true,
       sensitivity: "base",
     });
     let currentCriterion = SORT.ADDED;
     const directionByCriterion = new Map(
-      SORT_CHOICES.map(([criterion]) => [criterion, defaultDirectionFor(criterion)]),
+      SORT_CHOICES.map(([criterion]) => [
+        criterion,
+        defaultDirectionFor(criterion),
+      ]),
     );
     let activityTask = null;
     let statusTimer = null;
     let statusKind = ACTIVITY_STATUS.IDLE;
+    const now = runtime.now ?? Date.now;
+    const confirmRequest =
+      runtime.confirm ?? pageWindow.confirm?.bind(pageWindow) ?? (() => false);
 
     function clearStatus() {
       clearTimeout(statusTimer);
@@ -649,11 +772,11 @@
       const pending =
         mode === "full"
           ? friends
-          : findFriendsNeedingActivity(friends, activityCache, Date.now());
+          : findFriendsNeedingActivity(friends, activityCache, now());
       if (pending.length === 0) return null;
       if (
         needsLargeRequestConfirmation(pending.length) &&
-        !window.confirm(
+        !confirmRequest(
           `需要获取的好友数量过多（${pending.length} 人），是否继续？`,
         )
       ) {
@@ -663,11 +786,12 @@
       setStatus(ACTIVITY_STATUS.FETCHING, `正在获取 0/${pending.length}`);
       activityTask = refreshActivities(pending, {
         cache: activityCache,
-        domParser: new DOMParser(),
-        fetchImpl: window.fetch.bind(window),
-        now: Date.now,
+        domParser: runtime.domParser ?? new DOMParser(),
+        fetchImpl: runtime.fetchImpl ?? pageWindow.fetch.bind(pageWindow),
+        now,
         onProgress(completed, total) {
           setStatus(ACTIVITY_STATUS.FETCHING, `正在获取 ${completed}/${total}`);
+          runtime.onProgress?.(completed, total);
         },
       });
 
@@ -705,7 +829,14 @@
       currentCriterion = criterion;
       const direction = directionByCriterion.get(criterion);
       controls.setCurrent(criterion, direction);
-      applyFriendSort(list, friends, criterion, activityCache, collator, direction);
+      applyFriendSort(
+        list,
+        friends,
+        criterion,
+        activityCache,
+        collator,
+        direction,
+      );
 
       if (action.clearPrompt) clearStatus();
       if (action.kind === "arm") {
@@ -737,8 +868,12 @@
       );
     }
 
-    const controls = createSortBar(document, selectCriterion, selectDirection);
-    installStyles(document);
+    const controls = createSortBar(
+      pageDocument,
+      selectCriterion,
+      selectDirection,
+    );
+    installStyles(pageDocument);
     list.before(controls.bar);
     controls.setCurrent(
       currentCriterion,
@@ -748,6 +883,7 @@
 
   const core = {
     createActivityCache,
+    createFriendCache,
     createSortBar,
     directionLabelsFor,
     findFriendsNeedingActivity,
@@ -757,6 +893,7 @@
     nextActivitySelectionAction,
     parseTimelineDocument,
     refreshActivities,
+    runPageFetchTask,
     sortFriends,
   };
 

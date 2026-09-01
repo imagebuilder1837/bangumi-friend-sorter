@@ -155,7 +155,7 @@ function timelineDocumentFromFixture(filename) {
   };
 }
 
-test("加好友时间默认从新到旧，也支持从旧到新", () => {
+test("加好友时间默认从旧到新，也支持从新到旧", () => {
   const friends = [
     { userId: "third", displayName: "三", originalIndex: 2 },
     { userId: "first", displayName: "一", originalIndex: 0 },
@@ -168,6 +168,12 @@ test("加好友时间默认从新到旧，也支持从旧到新", () => {
   );
   assert.deepEqual(
     sorter.sortFriends(friends, "added", new Map(), undefined, "asc").map(
+      ({ userId }) => userId,
+    ),
+    ["first", "second", "third"],
+  );
+  assert.deepEqual(
+    sorter.sortFriends(friends, "added", new Map(), undefined, "desc").map(
       ({ userId }) => userId,
     ),
     ["third", "second", "first"],
@@ -360,6 +366,18 @@ test("页面交互按排序维度记忆方向并仅重排当前缓存", () => {
   assert.deepEqual(directionButtons.map(({ textContent }) => textContent), [
     "从旧到新",
     "从新到旧",
+  ]);
+  assert.equal(directionButtons[0].getAttribute("aria-current"), "true");
+  assert.deepEqual(page.list.children.map((item) => item.textContent), [
+    "Zed",
+    "Bob",
+    "Ada",
+  ]);
+  directionButtons[1].click();
+  assert.deepEqual(page.list.children.map((item) => item.textContent), [
+    "Ada",
+    "Bob",
+    "Zed",
   ]);
   sortButtons[1].click();
   assert.equal(directionButtons[1].getAttribute("aria-current"), "true");
@@ -600,6 +618,129 @@ test("持久存储不可用时活跃缓存仍在当前页面内工作", () => {
   assert.deepEqual([...cache.entries()], [["sai", record]]);
 });
 
+test("升级缓存版本时迁移有效的 v2 活跃记录到 v3", () => {
+  const writes = [];
+  const removedKeys = [];
+  const record = { kind: "active", activityAtSeconds: 1_000, fetchedAt: 2_000 };
+  const storage = {
+    getItem(key) {
+      if (key === "bangumi-friend-sorter:activity-cache:v2") {
+        return JSON.stringify({ version: 2, records: { sai: record } });
+      }
+      return null;
+    },
+    removeItem(key) {
+      removedKeys.push(key);
+    },
+    setItem(key, value) {
+      writes.push([key, JSON.parse(value)]);
+    },
+  };
+
+  const cache = sorter.createActivityCache(storage);
+
+  assert.deepEqual(cache.get("sai"), record);
+  assert.deepEqual(writes, [[
+    "bangumi-friend-sorter:activity-cache:v3",
+    { version: 3, records: { sai: { activity: record } } },
+  ]]);
+  assert.deepEqual(removedKeys, [
+    "bangumi-friend-sorter:activity-cache:v2",
+    "bangumi-friend-sorter:activity-cache:v1",
+  ]);
+});
+
+test("v3 缓存不完整时仍合并尚未迁移的 v2 活跃记录", () => {
+  const activity = { kind: "active", activityAtSeconds: 1_000, fetchedAt: 2_000 };
+  const writes = [];
+  const storage = {
+    getItem(key) {
+      if (key === "bangumi-friend-sorter:activity-cache:v3") {
+        return JSON.stringify({
+          version: 3,
+          records: { sai: { preference: { value: 87.5, fetchedAt: 3_000 } } },
+        });
+      }
+      if (key === "bangumi-friend-sorter:activity-cache:v2") {
+        return JSON.stringify({ version: 2, records: { sai: activity } });
+      }
+      return null;
+    },
+    removeItem() {},
+    setItem(key, value) {
+      writes.push([key, JSON.parse(value)]);
+    },
+  };
+
+  const cache = sorter.createFriendCache(storage, {
+    fieldValidators: {
+      preference: (value) => Number.isFinite(value?.value),
+    },
+  });
+
+  assert.deepEqual(cache.get("sai"), {
+    activity,
+    preference: { value: 87.5, fetchedAt: 3_000 },
+  });
+  assert.deepEqual(writes, [[
+    "bangumi-friend-sorter:activity-cache:v3",
+    {
+      version: 3,
+      records: {
+        sai: {
+          activity,
+          preference: { value: 87.5, fetchedAt: 3_000 },
+        },
+      },
+    },
+  ]]);
+});
+
+test("v3 缓存独立校验并保存好友的扩展字段", () => {
+  const activity = {
+    kind: "active",
+    activityAtSeconds: 1_000,
+    fetchedAt: 2_000,
+  };
+  const preference = { value: 87.5, fetchedAt: 3_000 };
+  const storage = {
+    getItem(key) {
+      if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
+      return JSON.stringify({
+        version: 3,
+        records: {
+          sai: { activity, preference },
+          broken: {
+            activity,
+            preference: { value: -1, fetchedAt: 3_000 },
+          },
+        },
+      });
+    },
+  };
+
+  const cache = sorter.createFriendCache(storage, {
+    fieldValidators: {
+      activity: (value) =>
+        value?.kind === "active" &&
+        Number.isInteger(value.activityAtSeconds) &&
+        Number.isFinite(value.fetchedAt),
+      preference: (value) =>
+        Number.isFinite(value?.value) &&
+        value.value >= 0 &&
+        Number.isFinite(value.fetchedAt),
+    },
+  });
+
+  assert.deepEqual(cache.get("sai"), { activity, preference });
+  assert.deepEqual(cache.get("broken"), { activity });
+  assert.deepEqual(cache.getField("sai", "preference"), preference);
+  assert.deepEqual([...cache.entries()], [
+    ["sai", { activity, preference }],
+    ["broken", { activity }],
+  ]);
+});
+
 test("升级缓存版本时删除旧版缓存而不迁移分钟级结果", () => {
   const removedKeys = [];
   const storage = {
@@ -624,6 +765,23 @@ test("升级缓存版本时删除旧版缓存而不迁移分钟级结果", () =>
 
   assert.deepEqual([...cache.entries()], []);
   assert.deepEqual(removedKeys, ["bangumi-friend-sorter:activity-cache:v1"]);
+});
+
+test("损坏的缓存 JSON 降级为当前页面内存缓存", () => {
+  const storage = {
+    getItem() {
+      return "{not-json";
+    },
+    setItem() {
+      throw new Error("quota exceeded");
+    },
+  };
+  const cache = sorter.createActivityCache(storage);
+  const record = { kind: "active", activityAtSeconds: 1, fetchedAt: 2_000 };
+
+  cache.set("sai", record);
+
+  assert.equal(cache.get("sai"), record);
 });
 
 test("请求响应头的时间按整秒传给活跃时间解析并写入秒级缓存", async () => {
@@ -678,4 +836,97 @@ test("时间胶囊返回四零四时计入失败且不覆盖缓存", async () =>
   assert.deepEqual(result, { failures: 1 });
   assert.equal(cacheWrites, 0);
   assert.deepEqual(progress, [[1, 1]]);
+});
+
+test("页面获取任务通过请求结果、成功回调和进度回调驱动", async () => {
+  const requested = [];
+  const saved = [];
+  const progress = [];
+
+  const result = await sorter.runPageFetchTask(["sai", "tom"], {
+    fetchPage: async (userId) => {
+      requested.push(userId);
+      return { kind: "success", record: { userId, fetchedAt: 2_000 } };
+    },
+    onSuccess: (userId, record) => saved.push([userId, record]),
+    onProgress: (completed, total) => progress.push([completed, total]),
+  });
+
+  assert.deepEqual(requested.sort(), ["sai", "tom"]);
+  assert.deepEqual(saved.sort(([left], [right]) => left.localeCompare(right)), [
+    ["sai", { userId: "sai", fetchedAt: 2_000 }],
+    ["tom", { userId: "tom", fetchedAt: 2_000 }],
+  ]);
+  assert.deepEqual(result, { failures: 0, stopped: false });
+  assert.deepEqual(
+    progress.sort(([left], [right]) => left - right),
+    [[1, 2], [2, 2]],
+  );
+});
+
+test("页面初始化可以注入获取任务所需的运行时依赖", async () => {
+  const page = friendPageWith([{ href: "/user/sai", name: "Sai" }]);
+  const responseTime = Date.UTC(2026, 7, 26, 9, 43, 36);
+  let requests = 0;
+  let nowCalls = 0;
+  const progress = [];
+  const writes = [];
+  const storage = {
+    getItem() {
+      return null;
+    },
+    removeItem() {},
+    setItem(key, value) {
+      writes.push([key, JSON.parse(value)]);
+    },
+  };
+  const pageWindow = {
+    location: { href: "https://bgm.tv/user/sai/friends" },
+  };
+
+  sorter.initialize({
+    document: page.document,
+    window: pageWindow,
+    storage,
+    domParser: { parseFromString: () => timelineDocumentFromFixture("timeline-active-seconds.html") },
+    fetchImpl: async () => {
+      requests += 1;
+      return {
+        ok: true,
+        headers: { get: () => new Date(responseTime).toUTCString() },
+        text: async () => "fixture",
+      };
+    },
+    now: () => {
+      nowCalls += 1;
+      return responseTime;
+    },
+    onProgress: (completed, total) => progress.push([completed, total]),
+  });
+
+  const filters = page.list.beforeNodes[0].children[0];
+  const sortButtons = filters.children[0].children.filter(
+    (child) => child?.tagName === "button",
+  );
+  sortButtons[2].click();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(requests, 1);
+  assert.equal(nowCalls, 2);
+  assert.deepEqual(progress, [[1, 1]]);
+  assert.deepEqual(writes, [[
+    "bangumi-friend-sorter:activity-cache:v3",
+    {
+      version: 3,
+      records: {
+        sai: {
+          activity: {
+            kind: "active",
+            activityAtSeconds: Date.UTC(2026, 7, 26, 9, 42, 34) / 1_000,
+            fetchedAt: responseTime,
+          },
+        },
+      },
+    },
+  ]]);
 });
