@@ -166,6 +166,15 @@
     );
   }
 
+  function activityRecordFor(source, userIdentifier) {
+    if (typeof source?.getField === "function") {
+      return source.getField(userIdentifier, "activity");
+    }
+
+    const value = source?.get?.(userIdentifier);
+    return value?.activity ?? value;
+  }
+
   const SORT_CONFIG = Object.freeze({
     [SORT.ADDED]: {
       defaultDirection: DIRECTION.ASCENDING,
@@ -200,8 +209,14 @@
         [DIRECTION.DESCENDING]: "从新到旧",
       }),
       compare(left, right, { isAscending, sortData }) {
-        const leftActivity = sortData.get(userIdentifierFor(left));
-        const rightActivity = sortData.get(userIdentifierFor(right));
+        const leftActivity = activityRecordFor(
+          sortData,
+          userIdentifierFor(left),
+        );
+        const rightActivity = activityRecordFor(
+          sortData,
+          userIdentifierFor(right),
+        );
         const leftHasTime = leftActivity?.kind === "active";
         const rightHasTime = rightActivity?.kind === "active";
 
@@ -478,30 +493,6 @@
     };
   }
 
-  // 保留 activity-only 适配边界供渐进迁移中的旧调用方使用；调用方迁移到
-  // createFriendCache 后即可删除该适配器。
-  function createActivityCacheView(cache) {
-    return {
-      entries() {
-        return (function* () {
-          for (const [userIdentifier, fields] of cache.entries()) {
-            yield [userIdentifier, fields.activity];
-          }
-        })();
-      },
-      get: (userIdentifier) => cache.getField(userIdentifier, "activity"),
-      persist: () => cache.persist(),
-      set(userIdentifier, record, shouldPersist = true) {
-        cache.setField(userIdentifier, "activity", record, shouldPersist);
-        return this;
-      },
-    };
-  }
-
-  function createActivityCache(storage, options) {
-    return createActivityCacheView(createFriendCache(storage, options));
-  }
-
   function sortFriends(
     friends,
     {
@@ -539,7 +530,10 @@
 
   function findFriendsNeedingActivity(friends, activityByUser, now) {
     return friends.filter((friend) => {
-      const activity = activityByUser.get(userIdentifierFor(friend));
+      const activity = activityRecordFor(
+        activityByUser,
+        userIdentifierFor(friend),
+      );
       return !activity || now - activity.fetchedAt > CACHE_TTL_MS;
     });
   }
@@ -841,7 +835,11 @@
           results.set(keyFor(item), { item, outcome, record });
           batchState = nextBatchState(batchState, outcome);
           options.onProgress?.({ completed, target, total });
-          if (isRateLimited(outcome)) stopAll();
+          if (isRateLimited(outcome)) {
+            const shouldNotify = !globallyStopped;
+            stopAll();
+            if (shouldNotify) options.onRateLimited?.({ item, target });
+          }
           if (batchState.stopped) task.stop();
           finishIfIdle();
         },
@@ -1225,10 +1223,6 @@
     });
     options.cache.persist();
     return { failures: result.failures };
-  }
-
-  async function refreshCompletions(friends, options) {
-    return refreshProfilePages(friends, options);
   }
 
   function readFriends(list, baseUrl = window.location.href) {
@@ -1624,7 +1618,12 @@
           options.now,
         ),
       onSuccess(friend, record) {
-        options.cache.set(userIdentifierFor(friend), record, false);
+        options.cache.setField(
+          userIdentifierFor(friend),
+          "activity",
+          record,
+          false,
+        );
       },
       onProgress: options.onProgress,
     });
@@ -1656,6 +1655,7 @@
     onFinished,
     onProgress,
     onQueue,
+    onRateLimited,
     onSuccess,
     pending,
     scheduler,
@@ -1679,6 +1679,7 @@
         onFinished,
         onProgress,
         onQueue,
+        onRateLimited,
         target,
         onSuccess,
       },
@@ -1699,6 +1700,7 @@
     onFinished,
     onProgress,
     onQueue,
+    onRateLimited,
     scheduler,
     visitorIdentifier,
   }) {
@@ -1730,6 +1732,7 @@
           },
           onProgress,
           onQueue,
+          onRateLimited,
           onSuccess(friend, record) {
             saveProfileRecord(cache, visitorIdentifier, friend, record);
           },
@@ -1752,6 +1755,7 @@
     onFinished,
     onProgress,
     onQueue,
+    onRateLimited,
     scheduler,
     taskType,
     fetchPage,
@@ -1774,6 +1778,7 @@
           onFinished,
           onProgress: (state) => onProgress?.({ ...state, mode }),
           onQueue: (state) => onQueue?.({ ...state, mode }),
+          onRateLimited,
           onSuccess,
           pending,
           scheduler,
@@ -1830,39 +1835,13 @@
     return domParser && fetchImpl ? { domParser, fetchImpl } : null;
   }
 
-  function initialize(runtime = {}) {
-    const pageDocument = runtime.document ?? document;
-    const pageWindow = runtime.window ?? window;
-    const list = pageDocument.querySelector("#memberUserList");
-    if (!list || list.children.length === 0) return;
-
-    const friends = readFriends(list, pageWindow.location.href);
-    if (friends.length !== list.children.length) return;
-
-    const now = runtime.now ?? Date.now;
-    const friendCache = createFriendCache(
-      runtime.storage ?? browserStorage(pageWindow),
-      { fieldValidators: completionCacheFieldValidators(), now },
-    );
-    const activityCache = createActivityCacheView(friendCache);
-    const visitorIdentifier = currentVisitorIdentifier(
-      pageDocument,
-      pageWindow,
-    );
-    const collator = new Intl.Collator(undefined, {
-      numeric: true,
-      sensitivity: "base",
-    });
-    let currentCriterion = SORT.ADDED;
-    let completionScope = COMPLETION_SCOPE.ALL;
-    let relationMetric = RELATION_CHOICES[0][0];
-    const directionByCriterion = new Map(
-      [
-        ...SORT_CHOICES.map(([criterion]) => criterion),
-        SORT.COMPLETION,
-        SORT.RELATION,
-      ].map((criterion) => [criterion, defaultDirectionFor(criterion)]),
-    );
+  function createStatusController({
+    clearTimeout: clearStatusTimeout = globalThis.clearTimeout,
+    controls,
+    now = Date.now,
+    scheduler,
+    setTimeout: setStatusTimeout = globalThis.setTimeout,
+  }) {
     let statusTimer = null;
     let statusKind = REFRESH_STATUS.IDLE;
     let transientStatus = null;
@@ -1872,11 +1851,6 @@
     const progressStatuses = new Map();
     let progressSequence = 0;
     let rateLimitStatusShown = false;
-    const setStatusTimeout = runtime.setTimeout ?? setTimeout;
-    const clearStatusTimeout = runtime.clearTimeout ?? clearTimeout;
-    const confirmRequest =
-      runtime.confirm ?? pageWindow.confirm?.bind(pageWindow) ?? (() => false);
-    const scheduler = createTaskScheduler({ concurrency: 4 });
 
     function pruneCompletionStatuses(currentTime = now()) {
       while (
@@ -1897,7 +1871,7 @@
         () => {
           completionTimer = null;
           if (completionStatuses[0] === scheduled) completionStatuses.shift();
-          renderStatus();
+          render();
         },
         Math.max(0, next.expiresAt - currentTime),
       );
@@ -1914,7 +1888,7 @@
       )[0];
     }
 
-    function renderStatus(currentTime) {
+    function render(currentTime) {
       if (completionStatuses.length > 0) {
         const statusTime = currentTime ?? now();
         pruneCompletionStatuses(statusTime);
@@ -1954,27 +1928,30 @@
       controls.status.textContent = "";
     }
 
-    function clearStatus() {
+    function clearArmedStatus() {
+      if (transientStatus?.kind !== REFRESH_PROMPT_STATUS) return;
+      clearStatusTimeout(statusTimer);
+      statusTimer = null;
+      transientStatus = null;
+    }
+
+    function clear() {
       clearStatusTimeout(statusTimer);
       statusTimer = null;
       transientStatus = null;
       loginStatus = null;
-      renderStatus();
+      render();
     }
 
-    function setStatus(kind, message, clearAfterMs = 0) {
+    function set(kind, message, clearAfterMs = 0) {
       if (kind === REFRESH_STATUS.COMPLETED) {
-        if (transientStatus?.kind === REFRESH_PROMPT_STATUS) {
-          clearStatusTimeout(statusTimer);
-          statusTimer = null;
-          transientStatus = null;
-        }
+        clearArmedStatus();
         const completedAt = now();
         completionStatuses.push({
           message,
           expiresAt: completedAt + Math.max(0, clearAfterMs),
         });
-        renderStatus(completedAt);
+        render(completedAt);
         return;
       }
 
@@ -1988,45 +1965,142 @@
         loginStatus = null;
         transientStatus = { kind, message };
       }
-      renderStatus();
+      render();
       if (clearAfterMs > 0) {
         statusTimer = setStatusTimeout(() => {
           statusTimer = null;
           transientStatus = null;
           loginStatus = null;
-          renderStatus();
+          render();
         }, clearAfterMs);
       }
     }
 
-    function setProgressStatus(taskType, message) {
-      if (transientStatus?.kind === REFRESH_PROMPT_STATUS) {
-        clearStatusTimeout(statusTimer);
-        statusTimer = null;
-        transientStatus = null;
-      }
+    function setProgress(taskType, message) {
+      clearArmedStatus();
       progressStatuses.set(taskType, {
         message,
         sequence: ++progressSequence,
       });
-      renderStatus();
+      render();
     }
 
-    function clearProgressStatus(taskType) {
+    function clearProgress(taskType) {
       progressStatuses.delete(taskType);
-      renderStatus();
+      render();
     }
 
-    function showRateLimitStatus() {
+    function showRateLimit() {
       if (rateLimitStatusShown) return;
       rateLimitStatusShown = true;
-      setStatus(REFRESH_STATUS.COMPLETED, "请求受限，已停止全部获取", 5_000);
+      set(REFRESH_STATUS.COMPLETED, "请求受限，已停止全部获取", 5_000);
     }
 
-    function showActivityProgress(completed, total) {
-      setProgressStatus("activity", `正在获取“上次活跃” ${completed}/${total}`);
-      runtime.onProgress?.(completed, total);
+    return {
+      clear,
+      clearProgress,
+      getKind: () => statusKind,
+      set,
+      setProgress,
+      showRateLimit,
+    };
+  }
+
+  function createTaskProgressReporter({
+    onProgress,
+    status,
+    taskType,
+    messageFor,
+  }) {
+    return ({ completed, target, total }) => {
+      status.setProgress(taskType, messageFor({ completed, target, total }));
+      onProgress?.(completed, total);
+    };
+  }
+
+  function createFriendSortController({
+    cache,
+    collator,
+    controls,
+    friends,
+    list,
+    now,
+    pageWindow,
+    runtime,
+    visitorIdentifier,
+  }) {
+    const scheduler = createTaskScheduler({ concurrency: 4 });
+    const status = createStatusController({
+      clearTimeout: runtime.clearTimeout ?? globalThis.clearTimeout,
+      controls,
+      now,
+      scheduler,
+      setTimeout: runtime.setTimeout ?? globalThis.setTimeout,
+    });
+    const confirmRequest =
+      runtime.confirm ?? pageWindow.confirm?.bind(pageWindow) ?? (() => false);
+    let currentCriterion = SORT.ADDED;
+    let completionScope = COMPLETION_SCOPE.ALL;
+    let relationMetric = RELATION_CHOICES[0][0];
+    const directionByCriterion = new Map(
+      [
+        ...SORT_CHOICES.map(([criterion]) => criterion),
+        SORT.COMPLETION,
+        SORT.RELATION,
+      ].map((criterion) => [criterion, defaultDirectionFor(criterion)]),
+    );
+
+    function selectionFor(criterion) {
+      if (criterion === SORT.RELATION) return relationMetric;
+      if (criterion === SORT.COMPLETION) return completionScope;
+      return COMPLETION_SCOPE.ALL;
     }
+
+    function applyCurrentSort() {
+      applyFriendSort({
+        list,
+        friends,
+        criterion: currentCriterion,
+        sortData: cache,
+        collator,
+        direction: directionByCriterion.get(currentCriterion),
+        completionScope,
+        relationMetric,
+        relationVisitorIdentifier: visitorIdentifier,
+      });
+    }
+
+    function applySortIfCurrent(criterion) {
+      if (currentCriterion === criterion) applyCurrentSort();
+    }
+
+    function applyProfileSortIfCurrent() {
+      if (
+        currentCriterion === SORT.RELATION ||
+        currentCriterion === SORT.COMPLETION
+      ) {
+        applyCurrentSort();
+      }
+    }
+
+    function profileMainLabel(target) {
+      return target.kind === "relation" ? "喜好契合" : "完成条目数";
+    }
+
+    const showActivityProgress = createTaskProgressReporter({
+      onProgress: runtime.onProgress,
+      status,
+      taskType: "activity",
+      messageFor: ({ completed, total }) =>
+        `正在获取“上次活跃” ${completed}/${total}`,
+    });
+    const showProfileProgress = createTaskProgressReporter({
+      onProgress: runtime.onProgress,
+      status,
+      taskType: "profile",
+      messageFor: ({ completed, target, total }) =>
+        `正在获取“${profileMainLabel(target)}” ${completed}/${total}`,
+    });
 
     const activityRefresh = createPageRefreshCoordinator({
       confirmMessage: (count) =>
@@ -2036,34 +2110,18 @@
       getPending: (mode) =>
         mode === "full"
           ? friends
-          : findFriendsNeedingActivity(friends, activityCache, now()),
+          : findFriendsNeedingActivity(friends, cache, now()),
       keyFor: userIdentifierFor,
-      onSuccess: (friend, record) =>
-        activityCache.set(userIdentifierFor(friend), record, false),
-      onFetching: ({ completed, total }) => {
-        setProgressStatus(
-          "activity",
-          `正在获取“上次活跃” ${completed}/${total}`,
-        );
-      },
+      onFetching: showActivityProgress,
       onFinished: ({ failures, globallyStopped }) => {
-        clearProgressStatus("activity");
-        activityCache.persist();
-        if (currentCriterion === SORT.ACTIVITY) {
-          applyFriendSort({
-            list,
-            friends,
-            criterion: SORT.ACTIVITY,
-            sortData: activityCache,
-            collator,
-            direction: directionByCriterion.get(SORT.ACTIVITY),
-          });
-        }
+        status.clearProgress("activity");
+        cache.persist();
+        applySortIfCurrent(SORT.ACTIVITY);
         if (globallyStopped) {
-          showRateLimitStatus();
+          status.showRateLimit();
           return;
         }
-        setStatus(
+        status.set(
           REFRESH_STATUS.COMPLETED,
           failures
             ? `“上次活跃”获取完成，${failures} 人失败`
@@ -2071,9 +2129,9 @@
           5_000,
         );
       },
-      onProgress: ({ completed, total }) =>
-        showActivityProgress(completed, total),
-      onQueue: ({ completed, total }) => showActivityProgress(completed, total),
+      onProgress: showActivityProgress,
+      onQueue: showActivityProgress,
+      onRateLimited: status.showRateLimit,
       scheduler,
       taskType: "activity",
       fetchPage: (friend, dependencies) =>
@@ -2083,46 +2141,12 @@
           dependencies.domParser,
           now,
         ),
+      onSuccess: (friend, record) =>
+        cache.setField(userIdentifierFor(friend), "activity", record, false),
     });
 
-    function profileMainLabel(target) {
-      return target.kind === "relation" ? "喜好契合" : "完成条目数";
-    }
-
-    function applyCurrentProfileSort() {
-      if (currentCriterion === SORT.RELATION) {
-        applyFriendSort({
-          list,
-          friends,
-          criterion: SORT.RELATION,
-          sortData: friendCache,
-          collator,
-          direction: directionByCriterion.get(SORT.RELATION),
-          relationMetric,
-          relationVisitorIdentifier: visitorIdentifier,
-        });
-        return;
-      }
-      if (currentCriterion !== SORT.COMPLETION) return;
-      applyFriendSort({
-        list,
-        friends,
-        criterion: SORT.COMPLETION,
-        sortData: friendCache,
-        collator,
-        direction: directionByCriterion.get(SORT.COMPLETION),
-        completionScope,
-      });
-    }
-
-    function showProfileProgress({ completed, target, total }) {
-      const label = profileMainLabel(target);
-      setProgressStatus("profile", `正在获取“${label}” ${completed}/${total}`);
-      runtime.onProgress?.(completed, total);
-    }
-
     const profileRefresh = createProfileRefreshCoordinator({
-      cache: friendCache,
+      cache,
       confirmMessage: (count) =>
         `本次新增获取的好友数量过多（${count} 人），是否继续？`,
       confirmRequest,
@@ -2132,28 +2156,23 @@
         target.kind === "relation"
           ? findFriendsNeedingRelation(
               friends,
-              friendCache,
+              cache,
               visitorIdentifier,
               target.metric,
               now(),
             )
-          : findFriendsNeedingCompletion(
-              friends,
-              friendCache,
-              target.scope,
-              now(),
-            ),
+          : findFriendsNeedingCompletion(friends, cache, target.scope, now()),
       now,
       onFetching: showProfileProgress,
       onFinished: ({ failures, globallyStopped, target }) => {
-        clearProgressStatus("profile");
-        applyCurrentProfileSort();
+        status.clearProgress("profile");
+        applyProfileSortIfCurrent();
         if (globallyStopped) {
-          showRateLimitStatus();
+          status.showRateLimit();
           return;
         }
         const label = profileMainLabel(target);
-        setStatus(
+        status.set(
           REFRESH_STATUS.COMPLETED,
           failures
             ? `“${label}”获取完成，${failures} 人失败`
@@ -2163,6 +2182,7 @@
       },
       onProgress: showProfileProgress,
       onQueue: showProfileProgress,
+      onRateLimited: status.showRateLimit,
       scheduler,
       visitorIdentifier,
     });
@@ -2170,14 +2190,14 @@
     function profileSelectionAction(repeatsCurrentTarget) {
       if (!repeatsCurrentTarget) {
         return {
-          clearPrompt: statusKind === REFRESH_PROMPT_STATUS,
+          clearPrompt: status.getKind() === REFRESH_PROMPT_STATUS,
           refreshMode: "incremental",
         };
       }
-      if (statusKind === REFRESH_PROMPT_STATUS) {
+      if (status.getKind() === REFRESH_PROMPT_STATUS) {
         return { clearPrompt: true, refreshMode: "full" };
       }
-      if (statusKind === REFRESH_STATUS.IDLE) return { arm: true };
+      if (status.getKind() === REFRESH_STATUS.IDLE) return { arm: true };
       return { ignore: true };
     }
 
@@ -2194,10 +2214,6 @@
           kind: "relation",
           metric: selection,
         }),
-        sortOptions: (selection) => ({
-          relationMetric: selection,
-          relationVisitorIdentifier: visitorIdentifier,
-        }),
       },
       [SORT.COMPLETION]: {
         choices: COMPLETION_CHOICES,
@@ -2211,14 +2227,15 @@
           kind: "completion",
           scope: selection,
         }),
-        sortOptions: (selection) => ({ completionScope: selection }),
       },
     };
 
     function selectProfileCriterion(criterion, requestedSubcriterion) {
       const configuration = profileTargetConfigurations[criterion];
-      const selection = requestedSubcriterion || configuration.defaultSelection;
-      if (configuration.requiresVisitor && statusKind === LOGIN_STATUS) return;
+      const selection = requestedSubcriterion ?? configuration.defaultSelection;
+      if (configuration.requiresVisitor && status.getKind() === LOGIN_STATUS) {
+        return;
+      }
 
       const repeatsCurrentTarget =
         currentCriterion === criterion &&
@@ -2228,18 +2245,18 @@
         repeatsCurrentTarget &&
         !visitorIdentifier
       ) {
-        setStatus(LOGIN_STATUS, "请登录后使用喜好契合排序", 5_000);
+        status.set(LOGIN_STATUS, "请登录后使用喜好契合排序", 5_000);
         return;
       }
 
       const action = profileSelectionAction(repeatsCurrentTarget);
       if (action.ignore) return;
-      if (action.clearPrompt) clearStatus();
+      if (action.clearPrompt) status.clear();
       if (action.arm) {
         const label =
           configuration.choices.find(([value]) => value === selection)?.[1] ||
           selection;
-        setStatus(
+        status.set(
           REFRESH_PROMPT_STATUS,
           `5 秒内再次点击“${label}”以全量刷新`,
           5_000,
@@ -2249,19 +2266,14 @@
 
       configuration.setSelection(selection);
       currentCriterion = criterion;
-      const direction = directionByCriterion.get(criterion);
-      controls.setCurrent(criterion, direction, selection);
-      applyFriendSort({
-        list,
-        friends,
+      controls.setCurrent(
         criterion,
-        sortData: friendCache,
-        collator,
-        direction,
-        ...configuration.sortOptions(selection),
-      });
+        directionByCriterion.get(criterion),
+        selection,
+      );
+      applyCurrentSort();
       if (configuration.requiresVisitor && !visitorIdentifier) {
-        setStatus(LOGIN_STATUS, "请登录后使用喜好契合排序", 5_000);
+        status.set(LOGIN_STATUS, "请登录后使用喜好契合排序", 5_000);
       } else {
         void profileRefresh.start(
           configuration.createTarget(selection),
@@ -2279,27 +2291,21 @@
       const action = nextActivitySelectionAction(
         currentCriterion,
         criterion,
-        statusKind,
+        status.getKind(),
       );
       if (action.kind === "ignore") return;
 
-      if (criterion !== SORT.ACTIVITY) scheduler.setForeground(null);
       currentCriterion = criterion;
-      const direction = directionByCriterion.get(criterion);
-      controls.setCurrent(criterion, direction, completionScope);
-      applyFriendSort({
-        list,
-        friends,
+      controls.setCurrent(
         criterion,
-        sortData: activityCache,
-        collator,
-        direction,
-        completionScope,
-      });
+        directionByCriterion.get(criterion),
+        selectionFor(criterion),
+      );
+      applyCurrentSort();
 
-      if (action.clearPrompt) clearStatus();
+      if (action.clearPrompt) status.clear();
       if (action.kind === "arm") {
-        setStatus(
+        status.set(
           REFRESH_PROMPT_STATUS,
           "5 秒内再次点击“上次活跃”以全量刷新",
           5_000,
@@ -2307,7 +2313,7 @@
       } else if (action.refresh === "incremental") {
         void activityRefresh.start("incremental");
       } else if (action.kind === "refresh" && action.mode === "full") {
-        clearStatus();
+        status.clear();
         void activityRefresh.start("full");
       }
     }
@@ -2319,44 +2325,72 @@
       controls.setCurrent(
         currentCriterion,
         direction,
-        currentCriterion === SORT.RELATION ? relationMetric : completionScope,
+        selectionFor(currentCriterion),
       );
-      applyFriendSort({
-        list,
-        friends,
-        criterion: currentCriterion,
-        sortData:
-          currentCriterion === SORT.COMPLETION ||
-          currentCriterion === SORT.RELATION
-            ? friendCache
-            : activityCache,
-        collator,
-        direction,
-        completionScope,
-        relationMetric,
-        relationVisitorIdentifier: visitorIdentifier,
-      });
+      applyCurrentSort();
     }
 
-    const controls = createSortBar(
-      pageDocument,
+    return {
       selectCriterion,
       selectDirection,
+      syncControls() {
+        controls.setCurrent(
+          currentCriterion,
+          directionByCriterion.get(currentCriterion),
+          selectionFor(currentCriterion),
+        );
+      },
+    };
+  }
+
+  function initialize(runtime = {}) {
+    const pageDocument = runtime.document ?? document;
+    const pageWindow = runtime.window ?? window;
+    const list = pageDocument.querySelector("#memberUserList");
+    if (!list || list.children.length === 0) return;
+
+    const friends = readFriends(list, pageWindow.location.href);
+    if (friends.length !== list.children.length) return;
+
+    const now = runtime.now ?? Date.now;
+    const cache = createFriendCache(
+      runtime.storage ?? browserStorage(pageWindow),
+      { fieldValidators: completionCacheFieldValidators(), now },
+    );
+    const visitorIdentifier = currentVisitorIdentifier(
+      pageDocument,
+      pageWindow,
+    );
+    const collator = new Intl.Collator(undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+    let controller = null;
+    const controls = createSortBar(
+      pageDocument,
+      (...args) => controller?.selectCriterion(...args),
+      (direction) => controller?.selectDirection(direction),
     );
     if (!mountSortBar(pageDocument, list, controls.bar)) return;
     installStyles(pageDocument);
-    controls.setCurrent(
-      currentCriterion,
-      directionByCriterion.get(currentCriterion),
-      currentCriterion === SORT.RELATION ? relationMetric : completionScope,
-    );
+    controller = createFriendSortController({
+      cache,
+      collator,
+      controls,
+      friends,
+      list,
+      now,
+      pageWindow,
+      runtime,
+      visitorIdentifier,
+    });
+    controller.syncControls();
   }
 
   const core = {
     RELATION_CHOICES,
     COMPLETION_CHOICES,
     COMPLETION_SCOPE,
-    createActivityCache,
     createFriendCache,
     createSortBar,
     completionCacheFieldValidators,
@@ -2378,7 +2412,6 @@
     parseTimelineDocument,
     relationFieldFor,
     refreshProfilePages,
-    refreshCompletions,
     refreshActivities,
     runPageFetchTask,
     sortFriends,

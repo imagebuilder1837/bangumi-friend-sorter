@@ -1220,6 +1220,118 @@ test("页面初始化全局最多四并发且限流会停止两类页面任务",
   await new Promise((resolve) => setImmediate(resolve));
 });
 
+test("同一页面任务收到 429 时立即显示全局限流提示", async () => {
+  const page = friendPageWith(
+    ["a", "b", "c", "d", "e"].map((userIdentifier) => ({
+      href: `/user/${userIdentifier}`,
+      name: userIdentifier.toUpperCase(),
+    })),
+  );
+  const pending = new Map();
+  const started = [];
+
+  sorter.initialize({
+    document: page.document,
+    window: { location: { href: "https://bgm.tv/user/viewed/friends" } },
+    storage: { getItem: () => null, setItem() {}, removeItem() {} },
+    setTimeout: () => 1,
+    clearTimeout() {},
+    domParser: {
+      parseFromString: () => timelineDocumentFromFixture("timeline-active-seconds.html"),
+    },
+    fetchImpl: (url) => {
+      started.push(url);
+      return new Promise((resolve) => pending.set(url, resolve));
+    },
+  });
+
+  mainSortControl(page, "上次活跃").click();
+  assert.equal(started.length, 4);
+
+  const firstRequest = pending.get(started[0]);
+  pending.delete(started[0]);
+  firstRequest({ ok: false, status: 429 });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(statusFor(page).textContent, "请求受限，已停止全部获取");
+  assert.equal(started.length, 4);
+
+  for (const [url, resolve] of [...pending]) {
+    pending.delete(url);
+    resolve({
+      ok: true,
+      headers: { get: () => null },
+      text: async () => "timeline",
+    });
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
+test("本地排序不改变当前远程任务的前台优先级", async () => {
+  const page = friendPageWith(
+    ["a", "b", "c", "d", "e"].map((userIdentifier) => ({
+      href: `/user/${userIdentifier}`,
+      name: userIdentifier.toUpperCase(),
+    })),
+  );
+  const pending = new Map();
+  const started = [];
+  const responseFor = (url) => ({
+    ok: true,
+    headers: { get: () => null },
+    text: async () => (url.endsWith("/timeline") ? "timeline" : "profile"),
+  });
+  const release = (url) => {
+    const resolve = pending.get(url);
+    assert.ok(resolve, `expected a pending request for ${url}`);
+    pending.delete(url);
+    resolve(responseFor(url));
+  };
+
+  sorter.initialize({
+    document: page.document,
+    window: {
+      CHOBITS_USERNAME: "visitor",
+      location: { href: "https://bgm.tv/user/viewed/friends" },
+    },
+    storage: { getItem: () => null, setItem() {}, removeItem() {} },
+    setTimeout: () => 1,
+    clearTimeout() {},
+    domParser: {
+      parseFromString: (html) =>
+        html === "timeline"
+          ? timelineDocumentFromFixture("timeline-active-seconds.html")
+          : profileStatsDocument(),
+    },
+    fetchImpl: (url) => {
+      started.push(url);
+      return new Promise((resolve) => pending.set(url, resolve));
+    },
+  });
+
+  mainSortControl(page, "上次活跃").click();
+  dropdownButtonFor(page, "完成条目数").click();
+  release("/user/a/timeline");
+  for (let attempt = 0; attempt < 20 && !started.includes("/user/a"); attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(started.at(-1), "/user/a");
+
+  mainSortControl(page, "名称").click();
+  release("/user/b/timeline");
+  for (let attempt = 0; attempt < 20 && started.length < 6; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(started[5], "/user/b");
+
+  for (let attempt = 0; attempt < 20 && pending.size > 0; attempt += 1) {
+    for (const url of [...pending.keys()]) release(url);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(pending.size, 0);
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
 test("主页连续五次服务端错误后停止并恢复暂停的时间胶囊任务", async () => {
   const identifiers = ["a", "b", "c", "d", "e"];
   const page = friendPageWith(
@@ -1299,13 +1411,13 @@ test("持久存储不可用时活跃缓存仍在当前页面内工作", () => {
       throw new Error("storage unavailable");
     },
   };
-  const cache = sorter.createActivityCache(unavailableStorage);
+  const cache = sorter.createFriendCache(unavailableStorage);
   const record = { kind: "active", activityAtSeconds: 1, fetchedAt: 2_000 };
 
-  cache.set("sai", record);
+  cache.setField("sai", "activity", record);
 
-  assert.equal(cache.get("sai"), record);
-  assert.deepEqual([...cache.entries()], [["sai", record]]);
+  assert.equal(cache.getField("sai", "activity"), record);
+  assert.deepEqual([...cache.entries()], [["sai", { activity: record }]]);
 });
 
 test("升级缓存版本时迁移有效的 v2 活跃记录到 v3", () => {
@@ -1327,9 +1439,9 @@ test("升级缓存版本时迁移有效的 v2 活跃记录到 v3", () => {
     },
   };
 
-  const cache = sorter.createActivityCache(storage, { now: () => 3_000 });
+  const cache = sorter.createFriendCache(storage, { now: () => 3_000 });
 
-  assert.deepEqual(cache.get("sai"), record);
+  assert.deepEqual(cache.getField("sai", "activity"), record);
   assert.deepEqual(writes, [[
     "bangumi-friend-sorter:activity-cache:v3",
     { version: 3, records: { sai: { activity: record } } },
@@ -1365,11 +1477,11 @@ test("v2 活跃记录迁移遵守二十四小时有效期边界", () => {
     setItem() {},
   };
 
-  const cache = sorter.createActivityCache(storage, { now: () => now });
+  const cache = sorter.createFriendCache(storage, { now: () => now });
 
   assert.deepEqual([...cache.entries()], [
-    ["fresh", records.fresh],
-    ["boundary", records.boundary],
+    ["fresh", { activity: records.fresh }],
+    ["boundary", { activity: records.boundary }],
   ]);
 });
 
@@ -1485,7 +1597,7 @@ test("升级缓存版本时删除旧版缓存而不迁移分钟级结果", () =>
     setItem() {},
   };
 
-  const cache = sorter.createActivityCache(storage);
+  const cache = sorter.createFriendCache(storage);
 
   assert.deepEqual([...cache.entries()], []);
   assert.deepEqual(removedKeys, ["bangumi-friend-sorter:activity-cache:v1"]);
@@ -1500,12 +1612,12 @@ test("损坏的缓存 JSON 降级为当前页面内存缓存", () => {
       throw new Error("quota exceeded");
     },
   };
-  const cache = sorter.createActivityCache(storage);
+  const cache = sorter.createFriendCache(storage);
   const record = { kind: "active", activityAtSeconds: 1, fetchedAt: 2_000 };
 
-  cache.set("sai", record);
+  cache.setField("sai", "activity", record);
 
-  assert.equal(cache.get("sai"), record);
+  assert.equal(cache.getField("sai", "activity"), record);
 });
 
 test("请求响应头的时间按整秒传给活跃时间解析并写入秒级缓存", async () => {
@@ -1516,7 +1628,8 @@ test("请求响应头的时间按整秒传给活跃时间解析并写入秒级�
   await sorter.refreshActivities([{ userIdentifier: "sai" }], {
     cache: {
       persist() {},
-      set(userIdentifier, record) {
+      setField(userIdentifier, field, record) {
+        assert.equal(field, "activity");
         records.push([userIdentifier, record]);
       },
     },
@@ -1640,7 +1753,7 @@ test("页面初始化可以注入获取任务所需的运行时依赖", async ()
 
   assert.equal(requests, 1);
   assert.equal(nowCalls, 3);
-  assert.deepEqual(progress, [[1, 1]]);
+  assert.deepEqual(progress, [[0, 1], [1, 1]]);
   assert.deepEqual(writes, [[
     "bangumi-friend-sorter:activity-cache:v3",
     {
@@ -2414,7 +2527,7 @@ test("同一主页响应分别刷新完成统计，失败范围保留旧缓存",
     fieldValidators: sorter.completionCacheFieldValidators(),
   });
 
-  await sorter.refreshCompletions([{ userIdentifier: "sai" }], {
+  await sorter.refreshProfilePages([{ userIdentifier: "sai" }], {
     cache,
     domParser: { parseFromString: () => profileStatsDocument({ includeBooks: true, malformedBooks: true }) },
     fetchImpl: async () => ({ ok: true, text: async () => "profile" }),
