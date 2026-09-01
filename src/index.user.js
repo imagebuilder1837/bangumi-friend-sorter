@@ -860,9 +860,6 @@
             options.confirmRequest &&
             !options.confirmRequest(confirmMessage(newItems.length, nextTarget))
           ) {
-            if (started) {
-              options.onQueue?.({ added: 0, completed, target, total });
-            }
             return { added: 0, accepted: false };
           }
           for (const item of newItems) {
@@ -1646,6 +1643,48 @@
     );
   }
 
+  function enqueueRefreshTask({
+    confirmMessage,
+    confirmRequest,
+    fetchItem,
+    getDependencies,
+    isSuccess,
+    keyFor,
+    onFetching,
+    onFinished,
+    onProgress,
+    onQueue,
+    onSuccess,
+    pending,
+    scheduler,
+    target,
+    taskType,
+  }) {
+    const { task } = scheduler.enqueue(
+      taskType,
+      pending,
+      {
+        confirmMessage,
+        confirmRequest,
+        fetch: (item) => {
+          const dependencies = getDependencies();
+          if (!dependencies) return { kind: "network-error" };
+          return fetchItem(item, dependencies);
+        },
+        isSuccess,
+        keyFor,
+        onFetching,
+        onFinished,
+        onProgress,
+        onQueue,
+        target,
+        onSuccess,
+      },
+      { foreground: true },
+    );
+    return task;
+  }
+
   function createProfileRefreshCoordinator({
     cache,
     confirmMessage,
@@ -1667,42 +1706,36 @@
 
         const pending = mode === "full" ? friends : getPending(target);
         if (pending.length === 0 && !scheduler.getTask("profile")) return null;
-        const { task } = scheduler.enqueue(
-          "profile",
-          pending,
-          {
-            confirmMessage: (count, nextTarget) =>
-              confirmMessage(count, nextTarget),
-            confirmRequest,
-            fetch: (friend) => {
-              const dependencies = getDependencies();
-              if (!dependencies) return { kind: "network-error" };
-              return fetchProfile(
-                friend,
-                dependencies.fetchImpl,
-                dependencies.domParser,
-                now,
-              );
-            },
-            isSuccess: (record, outcome, nextTarget) =>
-              outcome.kind === "success" &&
-              profileRecordHasTarget(record, nextTarget),
-            keyFor: userIdentifierFor,
-            onFetching,
-            onFinished(result) {
-              cache.persist();
-              onFinished?.(result);
-            },
-            onProgress,
-            onQueue,
-            target,
-            onSuccess(friend, record) {
-              saveProfileRecord(cache, visitorIdentifier, friend, record);
-            },
+        return enqueueRefreshTask({
+          confirmMessage,
+          confirmRequest,
+          fetchItem: (friend, dependencies) =>
+            fetchProfile(
+              friend,
+              dependencies.fetchImpl,
+              dependencies.domParser,
+              now,
+            ),
+          getDependencies,
+          isSuccess: (record, outcome, nextTarget) =>
+            outcome.kind === "success" &&
+            profileRecordHasTarget(record, nextTarget),
+          keyFor: userIdentifierFor,
+          onFetching,
+          onFinished(result) {
+            cache.persist();
+            onFinished?.(result);
           },
-          { foreground: true },
-        );
-        return task;
+          onProgress,
+          onQueue,
+          onSuccess(friend, record) {
+            saveProfileRecord(cache, visitorIdentifier, friend, record);
+          },
+          pending,
+          scheduler,
+          target,
+          taskType: "profile",
+        });
       },
     };
   }
@@ -1728,30 +1761,23 @@
 
         const pending = getPending(mode);
         if (pending.length === 0 && !scheduler.getTask(taskType)) return null;
-        const { task } = scheduler.enqueue(
-          taskType,
+        return enqueueRefreshTask({
+          confirmMessage,
+          confirmRequest,
+          fetchItem: fetchPage,
+          getDependencies,
+          isSuccess: (record, outcome) => outcome.kind === "success",
+          keyFor,
+          onFetching: (state) => onFetching?.({ ...state, mode }),
+          onFinished,
+          onProgress: (state) => onProgress?.({ ...state, mode }),
+          onQueue: (state) => onQueue?.({ ...state, mode }),
+          onSuccess,
           pending,
-          {
-            confirmMessage: (count, nextMode) =>
-              confirmMessage(count, nextMode),
-            confirmRequest,
-            fetch: (item) => {
-              const dependencies = getDependencies();
-              if (!dependencies) return { kind: "network-error" };
-              return fetchPage(item, dependencies);
-            },
-            isSuccess: (record, outcome) => outcome.kind === "success",
-            keyFor,
-            onFetching: (state) => onFetching?.({ ...state, mode }),
-            onFinished,
-            onProgress: (state) => onProgress?.({ ...state, mode }),
-            onQueue: (state) => onQueue?.({ ...state, mode }),
-            target: mode,
-            onSuccess,
-          },
-          { foreground: true },
-        );
-        return task;
+          scheduler,
+          target: mode,
+          taskType,
+        });
       },
     };
   }
