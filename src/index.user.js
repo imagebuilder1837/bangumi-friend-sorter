@@ -22,6 +22,7 @@
 
   const CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
   const COMPLETION_CACHE_TTL_MS = 72 * 60 * 60 * 1_000;
+  const PAGE_REQUEST_TIMEOUT_MS = 15_000;
   const SITE_OFFSET_SECONDS = 8 * 60 * 60;
   const CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v3";
   const PREVIOUS_CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v2";
@@ -780,6 +781,7 @@
       const confirmMessage = options.confirmMessage ?? (() => "");
       const isSuccess =
         options.isSuccess ?? ((record, outcome) => outcome.kind === "success");
+      const lifecycle = options.lifecycle ?? options;
       const queue = [];
       const queuedKeys = new Set();
       const results = new Map();
@@ -801,7 +803,7 @@
           }
         }
         if (tasks.get(type) === task) tasks.delete(type);
-        options.onFinished?.({
+        lifecycle.onFinished?.({
           completed,
           failures,
           globallyStopped,
@@ -816,7 +818,7 @@
           inFlightForTask += 1;
           if (!started) {
             started = true;
-            options.onFetching?.({ completed, target, total });
+            lifecycle.onFetching?.({ completed, target, total });
           }
         },
         canSchedule() {
@@ -830,15 +832,15 @@
           completed += 1;
           const record = outcome.kind === "success" ? outcome.record : null;
           if (outcome.kind === "success") {
-            options.onSuccess?.(item, outcome.record, outcome);
+            lifecycle.onSuccess?.(item, outcome.record, outcome);
           }
           results.set(keyFor(item), { item, outcome, record });
           batchState = nextBatchState(batchState, outcome);
-          options.onProgress?.({ completed, target, total });
+          lifecycle.onProgress?.({ completed, target, total });
           if (isRateLimited(outcome)) {
             const shouldNotify = !globallyStopped;
             stopAll();
-            if (shouldNotify) options.onRateLimited?.({ item, target });
+            if (shouldNotify) lifecycle.onRateLimited?.({ item, target });
           }
           if (batchState.stopped) task.stop();
           finishIfIdle();
@@ -866,7 +868,7 @@
           }
           total += newItems.length;
           if (started) {
-            options.onQueue?.({
+            lifecycle.onQueue?.({
               added: newItems.length,
               completed,
               target,
@@ -892,7 +894,7 @@
               });
             }
             completed += unattempted.length;
-            options.onProgress?.({ completed, target, total });
+            lifecycle.onProgress?.({ completed, target, total });
           }
           finishIfIdle();
         },
@@ -954,11 +956,13 @@
         fetch: ({ item }) => options.fetchPage(item),
         isSuccess: (record, outcome) => outcome.kind === "success",
         keyFor: ({ index }) => index,
-        onFinished: ({ failures, stopped }) => resolve({ failures, stopped }),
-        onProgress: ({ completed, total }) =>
-          options.onProgress?.(completed, total),
-        onSuccess: ({ item }, record, outcome) =>
-          options.onSuccess?.(item, record, outcome),
+        lifecycle: {
+          onFinished: ({ failures, stopped }) => resolve({ failures, stopped }),
+          onProgress: ({ completed, total }) =>
+            options.onProgress?.(completed, total),
+          onSuccess: ({ item }, record, outcome) =>
+            options.onSuccess?.(item, record, outcome),
+        },
       });
     });
   }
@@ -1156,34 +1160,44 @@
     return null;
   }
 
-  async function fetchProfile(friend, fetchImpl, domParser, now) {
+  async function fetchPageWithTimeout(url, fetchImpl, parseResponse) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15_000);
+    const timeout = setTimeout(
+      () => controller.abort(),
+      PAGE_REQUEST_TIMEOUT_MS,
+    );
 
     try {
-      const response = await fetchImpl(
-        `/user/${encodeURIComponent(userIdentifierFor(friend))}`,
-        {
-          credentials: "same-origin",
-          signal: controller.signal,
-        },
-      );
+      const response = await fetchImpl(url, {
+        credentials: "same-origin",
+        signal: controller.signal,
+      });
       if (!response.ok) return { kind: "http-error", status: response.status };
 
-      const html = await response.text();
-      const fetchedAt = now();
-      const document = domParser.parseFromString(html, "text/html");
-      const parsed = parseProfileDocument(document);
-      if (parsed.kind === "invalid") return { kind: "parse-error" };
-      const record = { fetchedAt };
-      if (parsed.values) record.values = parsed.values;
-      if (parsed.relation) record.relation = parsed.relation;
-      return { kind: "success", record };
+      return await parseResponse(response);
     } catch {
       return { kind: "network-error" };
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  async function fetchProfile(friend, fetchImpl, domParser, now) {
+    return fetchPageWithTimeout(
+      `/user/${encodeURIComponent(userIdentifierFor(friend))}`,
+      fetchImpl,
+      async (response) => {
+        const html = await response.text();
+        const fetchedAt = now();
+        const document = domParser.parseFromString(html, "text/html");
+        const parsed = parseProfileDocument(document);
+        if (parsed.kind === "invalid") return { kind: "parse-error" };
+        const record = { fetchedAt };
+        if (parsed.values) record.values = parsed.values;
+        if (parsed.relation) record.relation = parsed.relation;
+        return { kind: "success", record };
+      },
+    );
   }
 
   function saveProfileRecord(cache, visitorIdentifier, friend, record) {
@@ -1576,36 +1590,24 @@
   }
 
   async function fetchActivity(friend, fetchImpl, domParser, now) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15_000);
-
-    try {
-      const response = await fetchImpl(
-        `/user/${encodeURIComponent(userIdentifierFor(friend))}/timeline`,
-        {
-          credentials: "same-origin",
-          signal: controller.signal,
-        },
-      );
-      if (!response.ok) return { kind: "http-error", status: response.status };
-
-      const html = await response.text();
-      const fetchedAt = now();
-      const responseAt = Date.parse(response.headers?.get("date") || "");
-      const document = domParser.parseFromString(html, "text/html");
-      const parsed = parseTimelineDocument(
-        document,
-        Math.trunc(
-          (Number.isFinite(responseAt) ? responseAt : fetchedAt) / 1_000,
-        ),
-      );
-      if (parsed.kind === "invalid") return { kind: "parse-error" };
-      return { kind: "success", record: { ...parsed, fetchedAt } };
-    } catch {
-      return { kind: "network-error" };
-    } finally {
-      clearTimeout(timeout);
-    }
+    return fetchPageWithTimeout(
+      `/user/${encodeURIComponent(userIdentifierFor(friend))}/timeline`,
+      fetchImpl,
+      async (response) => {
+        const html = await response.text();
+        const fetchedAt = now();
+        const responseAt = Date.parse(response.headers?.get("date") || "");
+        const document = domParser.parseFromString(html, "text/html");
+        const parsed = parseTimelineDocument(
+          document,
+          Math.trunc(
+            (Number.isFinite(responseAt) ? responseAt : fetchedAt) / 1_000,
+          ),
+        );
+        if (parsed.kind === "invalid") return { kind: "parse-error" };
+        return { kind: "success", record: { ...parsed, fetchedAt } };
+      },
+    );
   }
 
   async function refreshActivities(friends, options) {
@@ -1651,12 +1653,7 @@
     getDependencies,
     isSuccess,
     keyFor,
-    onFetching,
-    onFinished,
-    onProgress,
-    onQueue,
-    onRateLimited,
-    onSuccess,
+    lifecycle = {},
     pending,
     scheduler,
     target,
@@ -1675,17 +1672,21 @@
         },
         isSuccess,
         keyFor,
-        onFetching,
-        onFinished,
-        onProgress,
-        onQueue,
-        onRateLimited,
+        lifecycle,
         target,
-        onSuccess,
       },
       { foreground: true },
     );
     return task;
+  }
+
+  function lifecycleWithMode(lifecycle, mode) {
+    return {
+      ...lifecycle,
+      onFetching: (state) => lifecycle.onFetching?.({ ...state, mode }),
+      onProgress: (state) => lifecycle.onProgress?.({ ...state, mode }),
+      onQueue: (state) => lifecycle.onQueue?.({ ...state, mode }),
+    };
   }
 
   function createProfileRefreshCoordinator({
@@ -1696,14 +1697,21 @@
     friends,
     getPending,
     now,
-    onFetching,
-    onFinished,
-    onProgress,
-    onQueue,
-    onRateLimited,
+    lifecycle = {},
     scheduler,
     visitorIdentifier,
   }) {
+    const profileLifecycle = {
+      ...lifecycle,
+      onFinished(result) {
+        cache.persist();
+        lifecycle.onFinished?.(result);
+      },
+      onSuccess(friend, record) {
+        saveProfileRecord(cache, visitorIdentifier, friend, record);
+      },
+    };
+
     return {
       start(target, mode = "incremental") {
         if (scheduler.isGloballyStopped() || !getDependencies()) return null;
@@ -1725,17 +1733,7 @@
             outcome.kind === "success" &&
             profileRecordHasTarget(record, nextTarget),
           keyFor: userIdentifierFor,
-          onFetching,
-          onFinished(result) {
-            cache.persist();
-            onFinished?.(result);
-          },
-          onProgress,
-          onQueue,
-          onRateLimited,
-          onSuccess(friend, record) {
-            saveProfileRecord(cache, visitorIdentifier, friend, record);
-          },
+          lifecycle: profileLifecycle,
           pending,
           scheduler,
           target,
@@ -1751,15 +1749,10 @@
     getDependencies,
     getPending,
     keyFor,
-    onFetching,
-    onFinished,
-    onProgress,
-    onQueue,
-    onRateLimited,
+    lifecycle = {},
     scheduler,
     taskType,
     fetchPage,
-    onSuccess,
   }) {
     return {
       start(mode) {
@@ -1774,12 +1767,7 @@
           getDependencies,
           isSuccess: (record, outcome) => outcome.kind === "success",
           keyFor,
-          onFetching: (state) => onFetching?.({ ...state, mode }),
-          onFinished,
-          onProgress: (state) => onProgress?.({ ...state, mode }),
-          onQueue: (state) => onQueue?.({ ...state, mode }),
-          onRateLimited,
-          onSuccess,
+          lifecycle: lifecycleWithMode(lifecycle, mode),
           pending,
           scheduler,
           target: mode,
@@ -1853,10 +1841,12 @@
     let rateLimitStatusShown = false;
 
     function pruneCompletionStatuses(currentTime = now()) {
-      while (
-        completionStatuses.length > 0 &&
-        completionStatuses[0].expiresAt <= currentTime
-      ) {
+      while (completionStatuses.length > 0) {
+        const next = completionStatuses[0];
+        if (next.expiresAt === null) {
+          next.expiresAt = currentTime + next.durationMs;
+        }
+        if (next.expiresAt > currentTime) break;
         completionStatuses.shift();
       }
     }
@@ -1948,8 +1938,9 @@
         clearArmedStatus();
         const completedAt = now();
         completionStatuses.push({
+          durationMs: Math.max(0, clearAfterMs),
+          expiresAt: null,
           message,
-          expiresAt: completedAt + Math.max(0, clearAfterMs),
         });
         render(completedAt);
         return;
@@ -2102,16 +2093,7 @@
         `正在获取“${profileMainLabel(target)}” ${completed}/${total}`,
     });
 
-    const activityRefresh = createPageRefreshCoordinator({
-      confirmMessage: (count) =>
-        `本次新增获取的好友数量过多（${count} 人），是否继续？`,
-      confirmRequest,
-      getDependencies: () => pageFetchDependencies(runtime, pageWindow),
-      getPending: (mode) =>
-        mode === "full"
-          ? friends
-          : findFriendsNeedingActivity(friends, cache, now()),
-      keyFor: userIdentifierFor,
+    const activityLifecycle = {
       onFetching: showActivityProgress,
       onFinished: ({ failures, globallyStopped }) => {
         status.clearProgress("activity");
@@ -2132,37 +2114,11 @@
       onProgress: showActivityProgress,
       onQueue: showActivityProgress,
       onRateLimited: status.showRateLimit,
-      scheduler,
-      taskType: "activity",
-      fetchPage: (friend, dependencies) =>
-        fetchActivity(
-          friend,
-          dependencies.fetchImpl,
-          dependencies.domParser,
-          now,
-        ),
       onSuccess: (friend, record) =>
         cache.setField(userIdentifierFor(friend), "activity", record, false),
-    });
+    };
 
-    const profileRefresh = createProfileRefreshCoordinator({
-      cache,
-      confirmMessage: (count) =>
-        `本次新增获取的好友数量过多（${count} 人），是否继续？`,
-      confirmRequest,
-      friends,
-      getDependencies: () => pageFetchDependencies(runtime, pageWindow),
-      getPending: (target) =>
-        target.kind === "relation"
-          ? findFriendsNeedingRelation(
-              friends,
-              cache,
-              visitorIdentifier,
-              target.metric,
-              now(),
-            )
-          : findFriendsNeedingCompletion(friends, cache, target.scope, now()),
-      now,
+    const profileLifecycle = {
       onFetching: showProfileProgress,
       onFinished: ({ failures, globallyStopped, target }) => {
         status.clearProgress("profile");
@@ -2183,6 +2139,49 @@
       onProgress: showProfileProgress,
       onQueue: showProfileProgress,
       onRateLimited: status.showRateLimit,
+    };
+
+    const activityRefresh = createPageRefreshCoordinator({
+      confirmMessage: (count) =>
+        `本次新增获取的好友数量过多（${count} 人），是否继续？`,
+      confirmRequest,
+      getDependencies: () => pageFetchDependencies(runtime, pageWindow),
+      getPending: (mode) =>
+        mode === "full"
+          ? friends
+          : findFriendsNeedingActivity(friends, cache, now()),
+      keyFor: userIdentifierFor,
+      lifecycle: activityLifecycle,
+      scheduler,
+      taskType: "activity",
+      fetchPage: (friend, dependencies) =>
+        fetchActivity(
+          friend,
+          dependencies.fetchImpl,
+          dependencies.domParser,
+          now,
+        ),
+    });
+
+    const profileRefresh = createProfileRefreshCoordinator({
+      cache,
+      confirmMessage: (count) =>
+        `本次新增获取的好友数量过多（${count} 人），是否继续？`,
+      confirmRequest,
+      friends,
+      getDependencies: () => pageFetchDependencies(runtime, pageWindow),
+      getPending: (target) =>
+        target.kind === "relation"
+          ? findFriendsNeedingRelation(
+              friends,
+              cache,
+              visitorIdentifier,
+              target.metric,
+              now(),
+            )
+          : findFriendsNeedingCompletion(friends, cache, target.scope, now()),
+      now,
+      lifecycle: profileLifecycle,
       scheduler,
       visitorIdentifier,
     });

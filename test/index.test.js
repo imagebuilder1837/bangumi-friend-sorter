@@ -2764,7 +2764,7 @@ test("登录提示不会被完成任务完成状态覆盖", async () => {
   assert.equal(status.textContent, "");
 });
 
-test("不同页面类型的完成提示按实际完成时间排队并依次出队", async () => {
+test("不同页面类型的完成提示按队头出现时间各保持五秒", async () => {
   const page = friendPageWith([{ href: "/user/a", name: "A" }]);
   let now = 0;
   let nextTimerId = 0;
@@ -2851,7 +2851,9 @@ test("不同页面类型的完成提示按实际完成时间排队并依次出�
   assert.equal(status.textContent, "“上次活跃”获取完成");
   await advance(1);
   assert.equal(status.textContent, "“完成条目数”获取完成");
-  await advance(1_000);
+  await advance(4_999);
+  assert.equal(status.textContent, "“完成条目数”获取完成");
+  await advance(1);
   assert.equal(status.textContent, "");
 });
 
