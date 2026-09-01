@@ -2018,9 +2018,6 @@
     function showRateLimitStatus() {
       if (rateLimitStatusShown) return;
       rateLimitStatusShown = true;
-      clearStatusTimeout(completionTimer);
-      completionTimer = null;
-      completionStatuses.splice(0);
       setStatus(REFRESH_STATUS.COMPLETED, "请求受限，已停止全部获取", 5_000);
     }
 
@@ -2168,20 +2165,34 @@
       visitorIdentifier,
     });
 
-    function selectCriterion(criterion, requestedCompletionScope) {
+    function profileSelectionAction(repeatsCurrentTarget) {
+      if (!repeatsCurrentTarget) {
+        return {
+          clearPrompt: statusKind === REFRESH_PROMPT_STATUS,
+          refreshMode: "incremental",
+        };
+      }
+      if (statusKind === REFRESH_PROMPT_STATUS) {
+        return { clearPrompt: true, refreshMode: "full" };
+      }
+      if (statusKind === REFRESH_STATUS.IDLE) return { arm: true };
+      return { ignore: true };
+    }
+
+    function selectCriterion(criterion, requestedSubcriterion) {
       if (criterion === SORT.RELATION) {
         if (statusKind === LOGIN_STATUS) return;
-        const requestedMetric =
-          requestedCompletionScope || RELATION_CHOICES[0][0];
+        const requestedMetric = requestedSubcriterion || RELATION_CHOICES[0][0];
         const repeatsCurrentTarget =
           currentCriterion === criterion && relationMetric === requestedMetric;
         if (repeatsCurrentTarget && !visitorIdentifier) {
           setStatus(LOGIN_STATUS, "请登录后使用喜好契合排序", 5_000);
           return;
         }
-        if (repeatsCurrentTarget && statusKind === REFRESH_PROMPT_STATUS) {
-          clearStatus();
-        } else if (repeatsCurrentTarget && statusKind === REFRESH_STATUS.IDLE) {
+        const action = profileSelectionAction(repeatsCurrentTarget);
+        if (action.ignore) return;
+        if (action.clearPrompt) clearStatus();
+        if (action.arm) {
           const label =
             RELATION_CHOICES.find(
               ([metric]) => metric === requestedMetric,
@@ -2192,10 +2203,6 @@
             5_000,
           );
           return;
-        } else if (repeatsCurrentTarget) {
-          return;
-        } else if (statusKind === REFRESH_PROMPT_STATUS) {
-          clearStatus();
         }
         relationMetric = requestedMetric;
         currentCriterion = criterion;
@@ -2219,19 +2226,20 @@
               kind: "relation",
               metric: relationMetric,
             },
-            repeatsCurrentTarget ? "full" : "incremental",
+            action.refreshMode,
           );
         }
         return;
       }
 
       if (criterion === SORT.COMPLETION) {
-        const requestedScope = requestedCompletionScope || COMPLETION_SCOPE.ALL;
+        const requestedScope = requestedSubcriterion || COMPLETION_SCOPE.ALL;
         const repeatsCurrentTarget =
           currentCriterion === criterion && completionScope === requestedScope;
-        if (repeatsCurrentTarget && statusKind === REFRESH_PROMPT_STATUS) {
-          clearStatus();
-        } else if (repeatsCurrentTarget && statusKind === REFRESH_STATUS.IDLE) {
+        const action = profileSelectionAction(repeatsCurrentTarget);
+        if (action.ignore) return;
+        if (action.clearPrompt) clearStatus();
+        if (action.arm) {
           const label =
             COMPLETION_CHOICES.find(
               ([scope]) => scope === requestedScope,
@@ -2242,10 +2250,6 @@
             5_000,
           );
           return;
-        } else if (repeatsCurrentTarget) {
-          return;
-        } else if (statusKind === REFRESH_PROMPT_STATUS) {
-          clearStatus();
         }
         completionScope = requestedScope;
         currentCriterion = criterion;
@@ -2265,7 +2269,7 @@
             kind: "completion",
             scope: completionScope,
           },
-          repeatsCurrentTarget ? "full" : "incremental",
+          action.refreshMode,
         );
         return;
       }

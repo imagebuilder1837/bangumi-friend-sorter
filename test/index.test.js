@@ -2854,7 +2854,10 @@ test("完成统计范围在刷新期间切换后补取新增缺失好友", async
 });
 
 test("完成条目数两击全量刷新使用实际范围名称并忽略有效缓存", async () => {
-  const page = friendPageWith([{ href: "/user/a", name: "A" }]);
+  const page = friendPageWith([
+    { href: "/user/a", name: "A" },
+    { href: "/user/b", name: "B" },
+  ]);
   const now = 100_000;
   const requests = [];
   sorter.initialize({
@@ -2867,6 +2870,7 @@ test("完成条目数两击全量刷新使用实际范围名称并忽略有效�
           version: 3,
           records: {
             a: { completion_all: { value: 1, fetchedAt: now } },
+            b: { completion_all: { value: 2, fetchedAt: now } },
           },
         });
       },
@@ -2874,10 +2878,19 @@ test("完成条目数两击全量刷新使用实际范围名称并忽略有效�
       removeItem() {},
     },
     now: () => now,
-    domParser: { parseFromString: () => profileStatsDocument() },
+    setTimeout: () => 1,
+    clearTimeout() {},
+    domParser: {
+      parseFromString: (url) =>
+        profileStatsDocument({
+          counts: url.endsWith("/a")
+            ? { all: 10, "1": 10, "2": 10, "3": 10, "4": 10, "6": 10 }
+            : { all: 1, "1": 1, "2": 1, "3": 1, "4": 1, "6": 1 },
+        }),
+    },
     fetchImpl: (url) => {
       requests.push(url);
-      return Promise.resolve({ ok: true, text: async () => "profile" });
+      return Promise.resolve({ ok: true, text: async () => url });
     },
   });
 
@@ -2890,11 +2903,62 @@ test("完成条目数两击全量刷新使用实际范围名称并忽略有效�
 
   completionButton.click();
   assert.deepEqual(requests, []);
+  assert.deepEqual(page.list.children.map(({ textContent }) => textContent), [
+    "B",
+    "A",
+  ]);
   completionButton.click();
   assert.equal(status.textContent, "5 秒内再次点击“全部”以全量刷新");
   completionButton.click();
-  assert.deepEqual(requests, ["/user/a"]);
-  await new Promise((resolve) => setImmediate(resolve));
+  for (let attempt = 0; attempt < 20 && !status.textContent.includes("获取完成"); attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.deepEqual(requests, ["/user/a", "/user/b"]);
+  assert.equal(status.textContent, "“完成条目数”获取完成");
+  assert.deepEqual(page.list.children.map(({ textContent }) => textContent), [
+    "A",
+    "B",
+  ]);
+});
+
+test("页面增量刷新恰好新增四百个请求时不确认", async () => {
+  const page = friendPageWith(
+    Array.from({ length: 400 }, (_, index) => ({
+      href: `/user/friend-${index}`,
+      name: `好友${index}`,
+    })),
+  );
+  const requests = [];
+  const confirmations = [];
+  sorter.initialize({
+    document: page.document,
+    window: { location: { href: "https://bgm.tv/user/sai/friends" } },
+    storage: { getItem: () => null, setItem() {}, removeItem() {} },
+    now: () => 100_000,
+    setTimeout: () => 1,
+    clearTimeout() {},
+    confirm: (message) => {
+      confirmations.push(message);
+      return true;
+    },
+    domParser: { parseFromString: () => profileStatsDocument() },
+    fetchImpl: (url) => {
+      requests.push(url);
+      return Promise.resolve({ ok: true, text: async () => "profile" });
+    },
+  });
+
+  const sortOptions = page.list.beforeNodes[0].children[0].children[0];
+  const completionDropdown = sortOptions.children.find(
+    (child) => child.children?.[0]?.textContent === "完成条目数",
+  );
+  completionDropdown.children[0].click();
+  for (let attempt = 0; attempt < 500 && requests.length < 400; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  assert.equal(requests.length, 400);
+  assert.deepEqual(confirmations, []);
 });
 
 test("完成条目数菜单按钮与菜单项之间保持连续悬停区域", () => {
