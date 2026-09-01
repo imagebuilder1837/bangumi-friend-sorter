@@ -659,6 +659,263 @@ test("连续五个禁止或服务端响应才停止批次且成功响应会重�
   assert.deepEqual(state, { consecutiveServerFailures: 5, stopped: true });
 });
 
+test("页面任务调度器在全局四槽位内优先前台任务且不取消在途请求", async () => {
+  const scheduler = sorter.createTaskScheduler({ concurrency: 4 });
+  const started = [];
+  const pending = new Map();
+  const fetchPage = (type) => (item) =>
+    new Promise((resolve) => {
+      started.push(`${type}:${item}`);
+      pending.set(`${type}:${item}`, resolve);
+    });
+  const taskOptions = (type) => ({
+    fetch: fetchPage(type),
+    isSuccess: () => true,
+  });
+
+  scheduler.setForeground("activity");
+  scheduler.enqueue("activity", ["a1", "a2", "a3", "a4", "a5"], taskOptions("activity"));
+  scheduler.setForeground("profile");
+  scheduler.enqueue("profile", ["p1", "p2"], taskOptions("profile"));
+
+  assert.deepEqual(started, [
+    "activity:a1",
+    "activity:a2",
+    "activity:a3",
+    "activity:a4",
+  ]);
+
+  pending.get("activity:a1")({ kind: "success" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(started, [
+    "activity:a1",
+    "activity:a2",
+    "activity:a3",
+    "activity:a4",
+    "profile:p1",
+  ]);
+
+  pending.get("profile:p1")({ kind: "success" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(started, [
+    "activity:a1",
+    "activity:a2",
+    "activity:a3",
+    "activity:a4",
+    "profile:p1",
+    "profile:p2",
+  ]);
+
+  for (const key of ["activity:a2", "activity:a3", "activity:a4", "profile:p2"]) {
+    pending.get(key)({ kind: "success" });
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+  pending.get("activity:a5")?.({ kind: "success" });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(scheduler.getInFlightCount(), 0);
+  assert.equal(scheduler.getTask("activity"), null);
+  assert.equal(scheduler.getTask("profile"), null);
+});
+
+test("页面任务调度器收到 429 时停止所有任务并统计未尝试好友", async () => {
+  const scheduler = sorter.createTaskScheduler({ concurrency: 4 });
+  const pending = new Map();
+  const finished = [];
+  const fetchPage = (type) => (item) =>
+    new Promise((resolve) => pending.set(`${type}:${item}`, resolve));
+  const options = (type) => ({
+    fetch: fetchPage(type),
+    isSuccess: (record, outcome) => outcome.kind === "success" && record,
+    onFinished: (result) => finished.push([type, result]),
+  });
+
+  scheduler.setForeground("activity");
+  scheduler.enqueue("activity", ["a1", "a2", "a3", "a4", "a5"], options("activity"));
+  scheduler.enqueue("profile", ["p1", "p2"], options("profile"));
+  pending.get("activity:a1")({ kind: "http-error", status: 429 });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(scheduler.getInFlightCount(), 3);
+  assert.deepEqual(
+    finished.map(([type, result]) => [type, result.failures, result.stopped]),
+    [["profile", 2, true]],
+  );
+
+  for (const key of ["activity:a2", "activity:a3", "activity:a4"]) {
+    pending.get(key)({ kind: "success", record: key });
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(
+    finished
+      .map(([type, result]) => [type, result.failures, result.stopped])
+      .sort(([left], [right]) => left.localeCompare(right)),
+    [
+      ["activity", 2, true],
+      ["profile", 2, true],
+    ],
+  );
+  assert.equal(scheduler.getInFlightCount(), 0);
+  assert.equal(scheduler.isGloballyStopped(), true);
+});
+
+test("页面任务连续五次服务端失败后停止自身并恢复另一页面任务", async () => {
+  const scheduler = sorter.createTaskScheduler({ concurrency: 1 });
+  const pending = new Map();
+  const started = [];
+  const finished = [];
+  const options = (type) => ({
+    fetch: (item) =>
+      new Promise((resolve) => {
+        started.push(`${type}:${item}`);
+        pending.set(`${type}:${item}`, resolve);
+      }),
+    isSuccess: (record, outcome) => outcome.kind === "success" && record,
+    onFinished: (result) => finished.push([type, result]),
+  });
+
+  scheduler.setForeground("activity");
+  scheduler.enqueue("activity", ["a1", "a2", "a3", "a4", "a5", "a6"], options("activity"));
+  scheduler.enqueue("profile", ["p1"], options("profile"));
+  for (const item of ["a1", "a2", "a3", "a4", "a5"]) {
+    pending.get(`activity:${item}`)({ kind: "http-error", status: 500 });
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  assert.deepEqual(started, [
+    "activity:a1",
+    "activity:a2",
+    "activity:a3",
+    "activity:a4",
+    "activity:a5",
+    "profile:p1",
+  ]);
+  assert.equal(finished[0][0], "activity");
+  assert.equal(finished[0][1].failures, 6);
+  assert.equal(finished[0][1].stopped, true);
+
+  pending.get("profile:p1")({ kind: "success", record: "p1" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(finished[1][0], "profile");
+  assert.equal(finished[1][1].failures, 0);
+});
+
+test("未产生请求的前台页面类型不会让暂停任务偷跑", async () => {
+  const scheduler = sorter.createTaskScheduler({ concurrency: 1 });
+  const pending = new Map();
+  const started = [];
+  const options = (type) => ({
+    fetch: (item) =>
+      new Promise((resolve) => {
+        started.push(`${type}:${item}`);
+        pending.set(`${type}:${item}`, resolve);
+      }),
+    isSuccess: () => true,
+  });
+
+  scheduler.setForeground("activity");
+  scheduler.enqueue("activity", ["a1", "a2"], options("activity"));
+  scheduler.setForeground("profile");
+  scheduler.enqueue("profile", [], options("profile"));
+  pending.get("activity:a1")({ kind: "success" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(started, ["activity:a1"]);
+
+  scheduler.setForeground(null);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(started, ["activity:a1", "activity:a2"]);
+  pending.get("activity:a2")({ kind: "success" });
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
+test("初始化在时间胶囊和用户主页任务之间切换并恢复暂停队列", async () => {
+  const page = friendPageWith(
+    ["a", "b", "c", "d", "e"].map((userIdentifier) => ({
+      href: `/user/${userIdentifier}`,
+      name: userIdentifier.toUpperCase(),
+    })),
+  );
+  const started = [];
+  const pending = new Map();
+  const responseFor = (url) => ({
+    ok: true,
+    headers: { get: () => null },
+    text: async () => (url.endsWith("/timeline") ? "timeline" : "profile"),
+  });
+  const release = (url) => {
+    const resolve = pending.get(url);
+    assert.ok(resolve, `expected a pending request for ${url}`);
+    pending.delete(url);
+    resolve(responseFor(url));
+  };
+  const waitFor = async (predicate) => {
+    for (let attempt = 0; attempt < 20 && !predicate(); attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(predicate(), true);
+  };
+
+  sorter.initialize({
+    document: page.document,
+    window: {
+      CHOBITS_USERNAME: "visitor",
+      location: { href: "https://bgm.tv/user/viewed/friends" },
+    },
+    storage: { getItem: () => null, setItem() {}, removeItem() {} },
+    domParser: {
+      parseFromString: (html) =>
+        html === "timeline"
+          ? timelineDocumentFromFixture("timeline-active-seconds.html")
+          : profileStatsDocument(),
+    },
+    fetchImpl: (url) => {
+      started.push(url);
+      return new Promise((resolve) => pending.set(url, resolve));
+    },
+  });
+
+  const filters = page.list.beforeNodes[0].children[0];
+  const sortOptions = filters.children[0];
+  const sortButtons = sortOptions.children.filter(
+    (child) => child?.tagName === "button",
+  );
+  const completionDropdown = sortOptions.children.find(
+    (child) => child?.children?.[0]?.textContent === "完成条目数",
+  );
+
+  sortButtons[2].click();
+  assert.equal(started.filter((url) => url.endsWith("/timeline")).length, 4);
+  completionDropdown.children[0].click();
+  assert.equal(started.filter((url) => !url.endsWith("/timeline")).length, 0);
+
+  release("/user/a/timeline");
+  await waitFor(
+    () => started.filter((url) => !url.endsWith("/timeline")).length === 1,
+  );
+  release("/user/a");
+  await waitFor(
+    () => started.filter((url) => !url.endsWith("/timeline")).length === 2,
+  );
+  assert.equal(started.includes("/user/e/timeline"), false);
+
+  for (const userIdentifier of ["b", "c", "d"]) {
+    release(`/user/${userIdentifier}`);
+    await waitFor(
+      () =>
+        started.filter((url) => !url.endsWith("/timeline")).length ===
+        ["b", "c", "d"].indexOf(userIdentifier) + 3,
+    );
+  }
+  release("/user/e");
+  await waitFor(() => started.includes("/user/e/timeline"));
+
+  for (const userIdentifier of ["b", "c", "d", "e"]) {
+    release(`/user/${userIdentifier}/timeline`);
+  }
+  await waitFor(() => pending.size === 0);
+});
+
 test("持久存储不可用时活跃缓存仍在当前页面内工作", () => {
   const unavailableStorage = {
     getItem() {
@@ -2089,7 +2346,7 @@ test("同步率切换到完成条目数时复用同一主页任务", async () =>
   relationDropdown.children[0].click();
   assert.deepEqual(requests, ["a"]);
   completionDropdown.children[0].click();
-  assert.deepEqual(requests, ["a"]);
+  assert.deepEqual(requests, ["a", "b"]);
   releaseA({ ok: true, text: async () => "a" });
 
   for (let attempt = 0; attempt < 20 && requests.length < 2; attempt += 1) {
@@ -2337,6 +2594,9 @@ test("完成统计范围在刷新期间切换后补取新增缺失好友", async
   releaseA(responseFor("a"));
 
   for (let attempt = 0; attempt < 10 && requests.length < 2; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  for (let attempt = 0; attempt < 10 && writes.length === 0; attempt += 1) {
     await new Promise((resolve) => setImmediate(resolve));
   }
 

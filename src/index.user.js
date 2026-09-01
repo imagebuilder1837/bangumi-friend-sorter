@@ -724,6 +724,220 @@
     return { consecutiveServerFailures: 0, stopped: false };
   }
 
+  function createTaskScheduler({ concurrency = 4 } = {}) {
+    const maxConcurrency = Math.max(1, Math.floor(concurrency));
+    const tasks = new Map();
+    let foregroundType = null;
+    let foregroundTaskSeen = false;
+    let inFlight = 0;
+    let globallyStopped = false;
+
+    function isRateLimited(outcome) {
+      return outcome?.kind === "http-error" && outcome.status === 429;
+    }
+
+    function normalizedOutcome(outcome) {
+      return outcome && typeof outcome === "object"
+        ? outcome
+        : { kind: "network-error" };
+    }
+
+    function runnableTask() {
+      const foreground = foregroundType && tasks.get(foregroundType);
+      if (foreground?.canSchedule()) return foreground;
+      if (foregroundType && !foreground && !foregroundTaskSeen) return null;
+      return [...tasks.values()].find((task) => task.canSchedule()) || null;
+    }
+
+    function pump() {
+      while (!globallyStopped && inFlight < maxConcurrency) {
+        const task = runnableTask();
+        if (!task) return;
+
+        const item = task.take();
+        if (!item) continue;
+        inFlight += 1;
+        task.begin(item);
+        let request;
+        try {
+          request = task.fetch(item);
+        } catch {
+          request = { kind: "network-error" };
+        }
+        Promise.resolve(request)
+          .catch(() => ({ kind: "network-error" }))
+          .then((outcome) => {
+            inFlight -= 1;
+            task.complete(item, normalizedOutcome(outcome));
+            pump();
+          });
+      }
+    }
+
+    function stopAll() {
+      if (globallyStopped) return;
+      globallyStopped = true;
+      for (const task of [...tasks.values()]) task.stop();
+    }
+
+    function createTask(type, options) {
+      const keyFor = options.keyFor ?? ((item) => item);
+      const confirmMessage = options.confirmMessage ?? (() => "");
+      const isSuccess =
+        options.isSuccess ?? ((record, outcome) => outcome.kind === "success");
+      const queue = [];
+      const queuedKeys = new Set();
+      const results = new Map();
+      let completed = 0;
+      let total = 0;
+      let inFlightForTask = 0;
+      let target = options.target ?? null;
+      let batchState = { consecutiveServerFailures: 0, stopped: false };
+      let started = false;
+      let finished = false;
+
+      function finishIfIdle() {
+        if (finished || inFlightForTask > 0 || queue.length > 0) return;
+        finished = true;
+        let failures = 0;
+        for (const result of results.values()) {
+          if (!isSuccess(result.record, result.outcome, target)) {
+            failures += 1;
+          }
+        }
+        if (tasks.get(type) === task) tasks.delete(type);
+        options.onFinished?.({
+          completed,
+          failures,
+          globallyStopped,
+          stopped: batchState.stopped || globallyStopped,
+          target,
+          total,
+        });
+      }
+
+      const task = {
+        begin(item) {
+          inFlightForTask += 1;
+          if (!started) {
+            started = true;
+            options.onFetching?.({ completed, target, total });
+          }
+        },
+        canSchedule() {
+          return !finished && !batchState.stopped && queue.length > 0;
+        },
+        complete(item, outcome) {
+          inFlightForTask -= 1;
+          completed += 1;
+          const record = outcome.kind === "success" ? outcome.record : null;
+          if (outcome.kind === "success") {
+            options.onSuccess?.(item, outcome.record, outcome);
+          }
+          results.set(keyFor(item), { item, outcome, record });
+          batchState = nextBatchState(batchState, outcome);
+          options.onProgress?.({ completed, target, total });
+          if (isRateLimited(outcome)) stopAll();
+          if (batchState.stopped) task.stop();
+          finishIfIdle();
+        },
+        enqueue(items, nextTarget) {
+          target = nextTarget;
+          const candidateKeys = new Set(queuedKeys);
+          const newItems = [];
+          for (const item of items) {
+            const key = keyFor(item);
+            if (candidateKeys.has(key)) continue;
+            candidateKeys.add(key);
+            newItems.push(item);
+          }
+          if (
+            newItems.length > 400 &&
+            !options.confirmRequest?.(
+              confirmMessage(newItems.length, nextTarget),
+            )
+          ) {
+            if (started) {
+              options.onQueue?.({ added: 0, completed, target, total });
+            }
+            return 0;
+          }
+          for (const item of newItems) {
+            queuedKeys.add(keyFor(item));
+            queue.push(item);
+          }
+          total += newItems.length;
+          if (started) {
+            options.onQueue?.({
+              added: newItems.length,
+              completed,
+              target,
+              total,
+            });
+          }
+          return newItems.length;
+        },
+        fetch: options.fetch,
+        getState() {
+          return { completed, target, total };
+        },
+        stop() {
+          if (finished) return;
+          batchState = { ...batchState, stopped: true };
+          const unattempted = queue.splice(0);
+          if (unattempted.length > 0) {
+            for (const item of unattempted) {
+              results.set(keyFor(item), {
+                item,
+                outcome: { kind: "unattempted" },
+                record: null,
+              });
+            }
+            completed += unattempted.length;
+            options.onProgress?.({ completed, target, total });
+          }
+          finishIfIdle();
+        },
+        take() {
+          return queue.shift() || null;
+        },
+      };
+      return task;
+    }
+
+    function enqueue(type, items, options) {
+      if (globallyStopped) return { added: 0, task: null };
+      let task = tasks.get(type);
+      if (!task) {
+        task = createTask(type, options);
+        tasks.set(type, task);
+      }
+      const added = task.enqueue(items, options.target);
+      if (added > 0 && type === foregroundType) foregroundTaskSeen = true;
+      if (added === 0 && task.getState().total === 0) {
+        if (tasks.get(type) === task) tasks.delete(type);
+        return { added: 0, task: null };
+      }
+      pump();
+      return { added, task };
+    }
+
+    return {
+      enqueue,
+      getInFlightCount: () => inFlight,
+      getTask: (type) => tasks.get(type) || null,
+      isGloballyStopped: () => globallyStopped,
+      setForeground(type) {
+        foregroundType = type || null;
+        foregroundTaskSeen = Boolean(
+          foregroundType && tasks.has(foregroundType),
+        );
+        pump();
+      },
+      stopAll,
+    };
+  }
+
   async function runPageFetchTask(items, options) {
     let nextIndex = 0;
     let completed = 0;
@@ -1507,140 +1721,46 @@
     onFinished,
     onProgress,
     onQueue,
+    scheduler,
     visitorIdentifier,
   }) {
-    let activeTask = null;
+    return {
+      start(target) {
+        scheduler.setForeground("profile");
+        if (scheduler.isGloballyStopped() || !getDependencies()) return null;
 
-    function createTask() {
-      const queue = [];
-      const queuedKeys = new Set();
-      const results = new Map();
-      let completed = 0;
-      let total = 0;
-      let target = null;
-      let batchState = { consecutiveServerFailures: 0, stopped: false };
-      let running = false;
-      let promise = null;
-
-      function enqueue(nextTarget) {
-        target = nextTarget;
-        const pending = getPending(nextTarget);
-        const candidateKeys = new Set(queuedKeys);
-        const items = pending.filter((friend) => {
-          const key = userIdentifierFor(friend);
-          if (candidateKeys.has(key)) return false;
-          candidateKeys.add(key);
-          return true;
-        });
-        if (
-          items.length > 400 &&
-          !confirmRequest(confirmMessage(items.length, nextTarget))
-        ) {
-          if (running) onQueue?.({ added: 0, completed, target, total });
-          return 0;
-        }
-
-        for (const friend of items) {
-          const key = userIdentifierFor(friend);
-          queuedKeys.add(key);
-          queue.push(friend);
-          total += 1;
-        }
-        const added = items.length;
-        if (running) onQueue?.({ added, completed, target, total });
-        return added;
-      }
-
-      async function worker(dependencies) {
-        while (!batchState.stopped) {
-          const friend = queue.shift();
-          if (!friend) return;
-
-          let outcome;
-          try {
-            outcome = await fetchProfile(
+        const pending = getPending(target);
+        const { task } = scheduler.enqueue("profile", pending, {
+          confirmMessage: (count, nextTarget) =>
+            confirmMessage(count, nextTarget),
+          confirmRequest,
+          fetch: (friend) => {
+            const dependencies = getDependencies();
+            if (!dependencies) return { kind: "network-error" };
+            return fetchProfile(
               friend,
               dependencies.fetchImpl,
               dependencies.domParser,
               now,
             );
-          } catch {
-            outcome = { kind: "network-error" };
-          }
-          if (!outcome || typeof outcome !== "object") {
-            outcome = { kind: "network-error" };
-          }
-
-          completed += 1;
-          if (outcome.kind === "success") {
-            saveProfileRecord(cache, visitorIdentifier, friend, outcome.record);
-          }
-          results.set(userIdentifierFor(friend), {
-            outcome,
-            record: outcome.kind === "success" ? outcome.record : null,
-          });
-          batchState = nextBatchState(batchState, outcome);
-          onProgress?.({ completed, target, total });
-        }
-      }
-
-      async function process() {
-        const dependencies = getDependencies();
-        if (!dependencies) return;
-        running = true;
-        onFetching?.({ completed, target, total });
-        const workerCount = Math.min(4, queue.length);
-        await Promise.all(
-          Array.from({ length: workerCount }, () => worker(dependencies)),
-        );
-
-        if (queue.length > 0) {
-          for (const friend of queue.splice(0)) {
-            results.set(userIdentifierFor(friend), {
-              outcome: { kind: "unattempted" },
-              record: null,
-            });
-          }
-          completed = total;
-          onProgress?.({ completed, target, total });
-        }
-
-        cache.persist();
-        let failures = 0;
-        for (const result of results.values()) {
-          if (!profileRecordHasTarget(result.record, target)) failures += 1;
-        }
-        onFinished?.({ completed, failures, target, total });
-      }
-
-      return {
-        enqueue,
-        get promise() {
-          return promise;
-        },
-        start() {
-          promise = process();
-          return promise;
-        },
-      };
-    }
-
-    return {
-      start(target) {
-        if (activeTask) {
-          activeTask.enqueue(target);
-          return activeTask.promise;
-        }
-        if (!getDependencies()) return null;
-
-        const task = createTask();
-        if (task.enqueue(target) === 0) return null;
-        activeTask = task;
-        const promise = task.start();
-        void promise.finally(() => {
-          if (activeTask === task) activeTask = null;
+          },
+          isSuccess: (record, outcome, nextTarget) =>
+            outcome.kind === "success" &&
+            profileRecordHasTarget(record, nextTarget),
+          keyFor: userIdentifierFor,
+          onFetching,
+          onFinished(result) {
+            cache.persist();
+            onFinished?.(result);
+          },
+          onProgress,
+          onQueue,
+          target,
+          onSuccess(friend, record) {
+            saveProfileRecord(cache, visitorIdentifier, friend, record);
+          },
         });
-        return promise;
+        return task;
       },
     };
   }
@@ -1655,95 +1775,34 @@
     onFinished,
     onProgress,
     onQueue,
-    refresh,
+    scheduler,
+    taskType,
+    fetchPage,
+    onSuccess,
   }) {
-    let task = null;
-    let batches = [];
-    let queuedKeys = new Set();
-    let completed = 0;
-    let total = 0;
-
-    function enqueue(mode) {
-      const pending = getPending(mode);
-      const items = pending.filter((item) => {
-        const key = keyFor(item);
-        if (queuedKeys.has(key)) return false;
-        queuedKeys.add(key);
-        return true;
-      });
-      if (items.length === 0) return false;
-
-      batches.push({ items, mode });
-      total += items.length;
-      if (task) onQueue?.({ completed, total, mode });
-      return true;
-    }
-
-    async function processQueue() {
-      let failures = 0;
-      let started = false;
-
-      try {
-        while (batches.length > 0) {
-          const { items, mode } = batches.shift();
-          if (
-            needsLargeRequestConfirmation(items.length) &&
-            !confirmRequest(confirmMessage(items.length, mode))
-          ) {
-            total -= items.length;
-            break;
-          }
-
-          const dependencies = getDependencies();
-          if (!dependencies) {
-            total -= items.length;
-            break;
-          }
-
-          started = true;
-          onFetching?.({ completed, total, mode });
-          const result = await refresh(
-            items,
-            dependencies,
-            (batchCompleted, batchTotal) => {
-              onProgress?.({
-                completed: completed + batchCompleted,
-                total,
-                mode,
-                batchTotal,
-              });
-            },
-          );
-          completed += items.length;
-          failures += result.failures;
-          if (result.stopped) {
-            batches = [];
-            break;
-          }
-        }
-
-        if (started) onFinished?.({ completed, failures, total });
-      } finally {
-        task = null;
-        batches = [];
-        queuedKeys = new Set();
-        completed = 0;
-        total = 0;
-      }
-    }
-
     return {
       start(mode) {
-        if (!task) {
-          batches = [];
-          queuedKeys = new Set();
-          completed = 0;
-          total = 0;
-        }
-        enqueue(mode);
-        if (task) return task;
-        if (batches.length === 0) return null;
-        task = processQueue();
+        scheduler.setForeground(taskType);
+        if (scheduler.isGloballyStopped() || !getDependencies()) return null;
+
+        const pending = getPending(mode);
+        const { task } = scheduler.enqueue(taskType, pending, {
+          confirmMessage: (count, nextMode) => confirmMessage(count, nextMode),
+          confirmRequest,
+          fetch: (item) => {
+            const dependencies = getDependencies();
+            if (!dependencies) return { kind: "network-error" };
+            return fetchPage(item, dependencies);
+          },
+          isSuccess: (record, outcome) => outcome.kind === "success",
+          keyFor,
+          onFetching: (state) => onFetching?.({ ...state, mode }),
+          onFinished,
+          onProgress: (state) => onProgress?.({ ...state, mode }),
+          onQueue: (state) => onQueue?.({ ...state, mode }),
+          target: mode,
+          onSuccess,
+        });
         return task;
       },
     };
@@ -1832,6 +1891,7 @@
     let statusKind = REFRESH_STATUS.IDLE;
     const confirmRequest =
       runtime.confirm ?? pageWindow.confirm?.bind(pageWindow) ?? (() => false);
+    const scheduler = createTaskScheduler({ concurrency: 4 });
 
     function clearStatus() {
       clearTimeout(statusTimer);
@@ -1865,10 +1925,13 @@
           ? friends
           : findFriendsNeedingActivity(friends, activityCache, now()),
       keyFor: userIdentifierFor,
+      onSuccess: (friend, record) =>
+        activityCache.set(userIdentifierFor(friend), record, false),
       onFetching: ({ completed, total }) => {
         setStatus(REFRESH_STATUS.FETCHING, `正在获取 ${completed}/${total}`);
       },
-      onFinished: ({ failures }) => {
+      onFinished: ({ failures, globallyStopped }) => {
+        activityCache.persist();
         if (currentCriterion === SORT.ACTIVITY) {
           applyFriendSort({
             list,
@@ -1879,6 +1942,14 @@
             direction: directionByCriterion.get(SORT.ACTIVITY),
           });
         }
+        if (globallyStopped) {
+          setStatus(
+            REFRESH_STATUS.COMPLETED,
+            "请求受限，已停止全部获取",
+            5_000,
+          );
+          return;
+        }
         setStatus(
           REFRESH_STATUS.COMPLETED,
           failures ? `获取完成，${failures} 人失败` : "获取完成",
@@ -1888,14 +1959,15 @@
       onProgress: ({ completed, total }) =>
         showActivityProgress(completed, total),
       onQueue: ({ completed, total }) => showActivityProgress(completed, total),
-      refresh: (pending, dependencies, onProgress) =>
-        refreshActivities(pending, {
-          cache: activityCache,
-          domParser: dependencies.domParser,
-          fetchImpl: dependencies.fetchImpl,
+      scheduler,
+      taskType: "activity",
+      fetchPage: (friend, dependencies) =>
+        fetchActivity(
+          friend,
+          dependencies.fetchImpl,
+          dependencies.domParser,
           now,
-          onProgress,
-        }),
+        ),
     });
 
     function profileMainLabel(target) {
@@ -1962,8 +2034,16 @@
             ),
       now,
       onFetching: showProfileProgress,
-      onFinished: ({ failures, target }) => {
+      onFinished: ({ failures, globallyStopped, target }) => {
         applyProfileSort(target);
+        if (globallyStopped) {
+          setStatus(
+            REFRESH_STATUS.COMPLETED,
+            "请求受限，已停止全部获取",
+            5_000,
+          );
+          return;
+        }
         const label = profileMainLabel(target);
         setStatus(
           REFRESH_STATUS.COMPLETED,
@@ -1975,6 +2055,7 @@
       },
       onProgress: showProfileProgress,
       onQueue: showProfileProgress,
+      scheduler,
       visitorIdentifier,
     });
 
@@ -2038,6 +2119,7 @@
       );
       if (action.kind === "ignore") return;
 
+      scheduler.setForeground(criterion === SORT.ACTIVITY ? "activity" : null);
       currentCriterion = criterion;
       const direction = directionByCriterion.get(criterion);
       controls.setCurrent(criterion, direction, completionScope);
@@ -2127,6 +2209,7 @@
     needsLargeRequestConfirmation,
     nextBatchState,
     nextActivitySelectionAction,
+    createTaskScheduler,
     parseProfileDocument,
     parseTimelineDocument,
     relationFieldFor,
