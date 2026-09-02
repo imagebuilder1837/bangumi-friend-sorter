@@ -239,6 +239,40 @@ function dropdownButtonFor(page, label) {
   return mainSortControl(page, label).children[0];
 }
 
+// Fake timer wheel shared by status-timing tests: advance fires due timers in
+// due order and yields to the microtask queue afterwards.
+function fakeTimers(startTime = 0) {
+  let now = startTime;
+  let nextTimerId = 0;
+  const timers = new Map();
+  return {
+    timers,
+    setTimer(callback, delay) {
+      const id = ++nextTimerId;
+      timers.set(id, { callback, due: now + delay });
+      return id;
+    },
+    clearTimer: (id) => timers.delete(id),
+    async advance(milliseconds) {
+      now += milliseconds;
+      while (true) {
+        const next = [...timers.entries()]
+          .filter(([, timer]) => timer.due <= now)
+          .sort(([, left], [, right]) => left.due - right.due)[0];
+        if (!next) break;
+        const [id, timer] = next;
+        timers.delete(id);
+        timer.callback();
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+    },
+    now: () => now,
+    setNow(value) {
+      now = value;
+    },
+  };
+}
+
 test("纯空白展示名称不会阻止排序栏初始化", () => {
   const page = friendPageWith([
     { href: "/user/normal", name: "正常好友" },
@@ -740,15 +774,15 @@ test("远程排序目标点击使用统一的待命和刷新动作", () => {
   );
   assert.deepEqual(
     sorter.nextRemoteSelectionAction(
-      { kind: "completion", selection: "all" },
-      { kind: "relation", selection: "syncRate" },
+      { kind: "completion", scope: "all" },
+      { kind: "relation", metric: "syncRate" },
       "fetching",
     ),
     { kind: "select", clearPrompt: false, refreshMode: "incremental" },
   );
   assert.deepEqual(
     sorter.nextRemoteSelectionAction(
-      { kind: "completion", selection: "all" },
+      { kind: "completion", scope: "all" },
       null,
       "armed",
     ),
@@ -757,15 +791,15 @@ test("远程排序目标点击使用统一的待命和刷新动作", () => {
   assert.deepEqual(
     sorter.nextRemoteSelectionAction(
       null,
-      { kind: "relation", selection: "syncRate" },
+      { kind: "relation", metric: "syncRate" },
       "completed",
     ),
     { kind: "select", clearPrompt: false, refreshMode: "incremental" },
   );
   assert.deepEqual(
     sorter.nextRemoteSelectionAction(
-      { kind: "relation", selection: "syncRate" },
-      { kind: "relation", selection: "commonLikes" },
+      { kind: "relation", metric: "syncRate" },
+      { kind: "relation", metric: "commonLikes" },
       "idle",
     ),
     { kind: "select", clearPrompt: false, refreshMode: "incremental" },
@@ -1642,6 +1676,7 @@ test("v3 缓存不完整时仍合并尚未迁移的 v2 上次活跃记录", () =
       if (key === "bangumi-friend-sorter:activity-cache:v3") {
         return JSON.stringify({
           version: 3,
+          // 无法识别的字段在加载时被丢弃，因此 sai 缺少上次活跃记录。
           records: { sai: { preference: { value: 87.5, fetchedAt: 3_000 } } },
         });
       }
@@ -1656,72 +1691,46 @@ test("v3 缓存不完整时仍合并尚未迁移的 v2 上次活跃记录", () =
     },
   };
 
-  const cache = sorter.createFriendCache(storage, {
-    fieldValidators: {
-      preference: (value) => Number.isFinite(value?.value),
-    },
-    now: () => 3_000,
-  });
+  const cache = sorter.createFriendCache(storage, { now: () => 3_000 });
 
-  assert.deepEqual(cache.get("sai"), {
-    activity,
-    preference: { value: 87.5, fetchedAt: 3_000 },
-  });
+  assert.deepEqual(cache.get("sai"), { activity });
   assert.deepEqual(writes, [[
     "bangumi-friend-sorter:activity-cache:v3",
-    {
-      version: 3,
-      records: {
-        sai: {
-          activity,
-          preference: { value: 87.5, fetchedAt: 3_000 },
-        },
-      },
-    },
+    { version: 3, records: { sai: { activity } } },
   ]]);
 });
 
-test("v3 缓存独立校验并保存好友的扩展字段", () => {
+test("v3 缓存独立校验每个好友的完成字段", () => {
   const activity = {
     kind: "active",
     activityAtSeconds: 1_000,
     fetchedAt: 2_000,
   };
-  const preference = { value: 87.5, fetchedAt: 3_000 };
+  const completion = { value: 87, fetchedAt: 3_000 };
+  const completionField = sorter.completionFieldFor("all");
   const storage = {
     getItem(key) {
       if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
       return JSON.stringify({
         version: 3,
         records: {
-          sai: { activity, preference },
+          sai: { activity, [completionField]: completion },
           broken: {
             activity,
-            preference: { value: -1, fetchedAt: 3_000 },
+            [completionField]: { value: -1, fetchedAt: 3_000 },
           },
         },
       });
     },
   };
 
-  const cache = sorter.createFriendCache(storage, {
-    fieldValidators: {
-      activity: (value) =>
-        value?.kind === "active" &&
-        Number.isInteger(value.activityAtSeconds) &&
-        Number.isFinite(value.fetchedAt),
-      preference: (value) =>
-        Number.isFinite(value?.value) &&
-        value.value >= 0 &&
-        Number.isFinite(value.fetchedAt),
-    },
-  });
+  const cache = sorter.createFriendCache(storage);
 
-  assert.deepEqual(cache.get("sai"), { activity, preference });
+  assert.deepEqual(cache.get("sai"), { activity, [completionField]: completion });
   assert.deepEqual(cache.get("broken"), { activity });
-  assert.deepEqual(cache.getField("sai", "preference"), preference);
+  assert.deepEqual(cache.getField("sai", completionField), completion);
   assert.deepEqual([...cache.entries()], [
-    ["sai", { activity, preference }],
+    ["sai", { activity, [completionField]: completion }],
     ["broken", { activity }],
   ]);
 });
@@ -1735,9 +1744,7 @@ test("v3 缓存把喜好契合记录按访问者嵌套保存", () => {
     },
     removeItem() {},
   };
-  const cache = sorter.createFriendCache(storage, {
-    fieldValidators: sorter.completionCacheFieldValidators(),
-  });
+  const cache = sorter.createFriendCache(storage);
   const syncRecord = { value: 42.5, fetchedAt: 1_000 };
   const likesRecord = { value: 3, fetchedAt: 2_000 };
 
@@ -1882,7 +1889,6 @@ test("用户主页返回四零四时计入失败且保留旧缓存", async () =>
   };
   const cache = sorter.createFriendCache(
     friendCacheStorage({ friend: oldRecord }),
-    { fieldValidators: sorter.completionCacheFieldValidators() },
   );
   const progress = [];
   const { finished, refresh, statusElement } = createRefreshHarness({
@@ -1896,7 +1902,7 @@ test("用户主页返回四零四时计入失败且保留旧缓存", async () =>
     },
   });
 
-  refresh.startProfile({ kind: "completion", selection: "all" });
+  refresh.startProfile({ kind: "completion", scope: "all" });
   await finished;
 
   assert.equal(statusElement.textContent, "“完成条目数”获取完成，1 人失败");
@@ -1915,7 +1921,6 @@ test("无效用户主页计入失败且保留旧缓存", async () => {
   };
   const cache = sorter.createFriendCache(
     friendCacheStorage({ friend: oldRecord }),
-    { fieldValidators: sorter.completionCacheFieldValidators() },
   );
   const { finished, refresh, statusElement } = createRefreshHarness({
     cache,
@@ -1927,7 +1932,7 @@ test("无效用户主页计入失败且保留旧缓存", async () => {
     },
   });
 
-  refresh.startProfile({ kind: "completion", selection: "all" });
+  refresh.startProfile({ kind: "completion", scope: "all" });
   await finished;
 
   assert.equal(statusElement.textContent, "“完成条目数”获取完成，1 人失败");
@@ -1942,7 +1947,6 @@ test("用户主页请求超过十五秒时计入失败且保留旧缓存", async
   };
   const cache = sorter.createFriendCache(
     friendCacheStorage({ friend: oldRecord }),
-    { fieldValidators: sorter.completionCacheFieldValidators() },
   );
   const scheduled = [];
   const originalSetTimeout = globalThis.setTimeout;
@@ -1981,7 +1985,7 @@ test("用户主页请求超过十五秒时计入失败且保留旧缓存", async
       },
     });
 
-    refresh.startProfile({ kind: "completion", selection: "all" });
+    refresh.startProfile({ kind: "completion", scope: "all" });
 
     assert.equal(scheduled.length, 1);
     assert.equal(scheduled[0].delay, 15_000);
@@ -2405,30 +2409,30 @@ test("主页解析同步率和共同喜好数，缺失字段不转换为零", ()
     sorter.parseProfileDocument(
       relationProfileDocument({ syncRate: "-3.5%", commonLikes: 0 }),
     ),
-    { kind: "success", relation: { syncRate: -3.5, commonLikes: 0 } },
+    { kind: "success", parsedRelation: { syncRate: -3.5, commonLikes: 0 } },
   );
   assert.deepEqual(
     sorter.parseProfileDocument(relationProfileDocument({ syncRate: "2.25%" })),
-    { kind: "success", relation: { syncRate: 2.25 } },
+    { kind: "success", parsedRelation: { syncRate: 2.25 } },
   );
   assert.deepEqual(
     sorter.parseProfileDocument(
       relationProfileDocument({ syncRate: "2.25%", commonLikes: "-3" }),
     ),
-    { kind: "success", relation: { syncRate: 2.25 } },
+    { kind: "success", parsedRelation: { syncRate: 2.25 } },
   );
   assert.deepEqual(
     sorter.parseProfileDocument(
       relationProfileDocument({ syncRate: "2.25%", commonLikes: "1.5" }),
     ),
-    { kind: "success", relation: { syncRate: 2.25 } },
+    { kind: "success", parsedRelation: { syncRate: 2.25 } },
   );
   const beyondSafeInteger = Number.MAX_SAFE_INTEGER + 1;
   assert.deepEqual(
     sorter.parseProfileDocument(
       relationProfileDocument({ commonLikes: beyondSafeInteger }),
     ),
-    { kind: "success", relation: { commonLikes: beyondSafeInteger } },
+    { kind: "success", parsedRelation: { commonLikes: beyondSafeInteger } },
   );
 });
 
@@ -2569,9 +2573,7 @@ test("完成条目数按当前范围从高到低或从低到高稳定排序", ()
     { userIdentifier: "zero", originalIndex: 3 },
     { userIdentifier: "same-a", originalIndex: 4 },
   ];
-  const values = sorter.createFriendCache(null, {
-    fieldValidators: sorter.completionCacheFieldValidators(),
-  });
+  const values = sorter.createFriendCache(null);
   for (const [userIdentifier, value] of [
     ["same-b", 5],
     ["high", 10],
@@ -2771,9 +2773,7 @@ test("完成统计缓存的七十二小时边界只请求缺失或过期范围",
     { userIdentifier: "stale" },
     { userIdentifier: "missing" },
   ];
-  const values = sorter.createFriendCache(null, {
-    fieldValidators: sorter.completionCacheFieldValidators(),
-  });
+  const values = sorter.createFriendCache(null);
   for (const [userIdentifier, value] of [
     ["fresh", 1],
     ["boundary", 2],
@@ -2978,9 +2978,7 @@ test("同一主页响应分别刷新完成统计，失败范围保留旧缓存",
       writes.push([key, JSON.parse(value)]);
     },
   };
-  const cache = sorter.createFriendCache(storage, {
-    fieldValidators: sorter.completionCacheFieldValidators(),
-  });
+  const cache = sorter.createFriendCache(storage);
 
   const { finished, refresh } = createRefreshHarness({
     cache,
@@ -2992,7 +2990,7 @@ test("同一主页响应分别刷新完成统计，失败范围保留旧缓存",
     },
   });
 
-  refresh.startProfile({ kind: "completion", selection: "all" });
+  refresh.startProfile({ kind: "completion", scope: "all" });
   await finished;
 
   assert.deepEqual(cache.get("sai"), {
@@ -3098,24 +3096,16 @@ test("喜好契合菜单的焦点状态只控制自身菜单", () => {
 test("未登录时选择喜好契合不请求且登录提示不会因重复选择续时并允许切换子项", () => {
   const page = friendPageWith([{ href: "/user/friend", name: "好友" }]);
   let requests = 0;
-  let now = 0;
-  let nextTimerId = 0;
-  const timers = new Map();
-  const setTimer = (callback, delay) => {
-    const id = ++nextTimerId;
-    timers.set(id, { callback, due: now + delay });
-    return id;
-  };
-  const clearTimer = (id) => timers.delete(id);
+  const clock = fakeTimers();
   sorter.initialize({
     document: page.document,
     window: {
       location: { href: "https://bgm.tv/user/viewed/friends" },
     },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },
-    now: () => now,
-    setTimeout: setTimer,
-    clearTimeout: clearTimer,
+    now: clock.now,
+    setTimeout: clock.setTimer,
+    clearTimeout: clock.clearTimer,
     fetchImpl: async () => {
       requests += 1;
       return { ok: false, status: 500 };
@@ -3135,7 +3125,7 @@ test("未登录时选择喜好契合不请求且登录提示不会因重复选�
   assert.equal(status.textContent, "请登录后使用喜好契合排序");
   assert.equal(relationButton.getAttribute("aria-current"), "true");
   assert.equal(relationMenu.children[0].getAttribute("aria-current"), "true");
-  assert.deepEqual([...timers.values()].map(({ due }) => due), [5_000]);
+  assert.deepEqual([...clock.timers.values()].map(({ due }) => due), [5_000]);
   const completionDropdown = sortOptions.children.find(
     (child) => child.children?.[0]?.textContent === "完成条目数",
   );
@@ -3147,9 +3137,9 @@ test("未登录时选择喜好契合不请求且登录提示不会因重复选�
   assert.equal(relationButton.getAttribute("aria-current"), "true");
   assert.equal(relationMenu.children[0].getAttribute("aria-current"), null);
   assert.equal(relationMenu.children[1].getAttribute("aria-current"), "true");
-  assert.deepEqual([...timers.values()].map(({ due }) => due), [5_000]);
+  assert.deepEqual([...clock.timers.values()].map(({ due }) => due), [5_000]);
   relationMenu.children[1].click();
-  assert.deepEqual([...timers.values()].map(({ due }) => due), [5_000]);
+  assert.deepEqual([...clock.timers.values()].map(({ due }) => due), [5_000]);
 });
 
 test("选择喜好契合会清除已激活的上次活跃全量刷新提示", () => {
@@ -3181,28 +3171,7 @@ test("选择喜好契合会清除已激活的上次活跃全量刷新提示", ()
 
 test("登录提示不会被完成任务完成状态覆盖", async () => {
   const page = friendPageWith([{ href: "/user/a", name: "A" }]);
-  let now = 0;
-  let nextTimerId = 0;
-  const timers = new Map();
-  const setTimer = (callback, delay) => {
-    const id = ++nextTimerId;
-    timers.set(id, { callback, due: now + delay });
-    return id;
-  };
-  const clearTimer = (id) => timers.delete(id);
-  const advance = async (milliseconds) => {
-    now += milliseconds;
-    while (true) {
-      const next = [...timers.entries()]
-        .filter(([, timer]) => timer.due <= now)
-        .sort(([, left], [, right]) => left.due - right.due)[0];
-      if (!next) break;
-      const [id, timer] = next;
-      timers.delete(id);
-      timer.callback();
-    }
-    await new Promise((resolve) => setImmediate(resolve));
-  };
+  const clock = fakeTimers();
   let releaseProfile;
   const pendingProfile = new Promise((resolve) => {
     releaseProfile = resolve;
@@ -3213,9 +3182,9 @@ test("登录提示不会被完成任务完成状态覆盖", async () => {
       location: { href: "https://bgm.tv/user/viewed/friends" },
     },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },
-    now: () => now,
-    setTimeout: setTimer,
-    clearTimeout: clearTimer,
+    now: clock.now,
+    setTimeout: clock.setTimer,
+    clearTimeout: clock.clearTimer,
     domParser: { parseFromString: () => profileStatsDocument() },
     fetchImpl: () => pendingProfile,
   });
@@ -3233,42 +3202,21 @@ test("登录提示不会被完成任务完成状态覆盖", async () => {
   relationDropdown.children[0].click();
   assert.equal(status.textContent, "请登录后使用喜好契合排序");
 
-  now = 1_000;
+  clock.setNow(1_000);
   releaseProfile({ ok: true, text: async () => "profile" });
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(status.textContent, "请登录后使用喜好契合排序");
 
-  await advance(4_000);
+  await clock.advance(4_000);
   assert.equal(status.textContent, "“完成条目数”获取完成");
-  await advance(1_000);
+  await clock.advance(1_000);
   assert.equal(status.textContent, "");
 });
 
 test("不同页面类型的完成提示按队头出现时间各保持五秒", async () => {
   const page = friendPageWith([{ href: "/user/a", name: "A" }]);
-  let now = 0;
-  let nextTimerId = 0;
-  const timers = new Map();
-  const setTimer = (callback, delay) => {
-    const id = ++nextTimerId;
-    timers.set(id, { callback, due: now + delay });
-    return id;
-  };
-  const clearTimer = (id) => timers.delete(id);
-  const advance = async (milliseconds) => {
-    now += milliseconds;
-    while (true) {
-      const next = [...timers.entries()]
-        .filter(([, timer]) => timer.due <= now)
-        .sort(([, left], [, right]) => left.due - right.due)[0];
-      if (!next) break;
-      const [id, timer] = next;
-      timers.delete(id);
-      timer.callback();
-    }
-    await new Promise((resolve) => setImmediate(resolve));
-  };
+  const clock = fakeTimers();
   let releaseActivity;
   let releaseProfile;
   const activityResponse = new Promise((resolve) => {
@@ -3285,9 +3233,9 @@ test("不同页面类型的完成提示按队头出现时间各保持五秒", as
       location: { href: "https://bgm.tv/user/viewed/friends" },
     },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },
-    now: () => now,
-    setTimeout: setTimer,
-    clearTimeout: clearTimer,
+    now: clock.now,
+    setTimeout: clock.setTimer,
+    clearTimeout: clock.clearTimer,
     domParser: {
       parseFromString: (html) =>
         html === "timeline"
@@ -3318,7 +3266,7 @@ test("不同页面类型的完成提示按队头出现时间各保持五秒", as
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(status.textContent, "“上次活跃”获取完成");
 
-  now = 1_000;
+  clock.setNow(1_000);
   releaseProfile({
     ok: true,
     headers: { get: () => null },
@@ -3328,13 +3276,13 @@ test("不同页面类型的完成提示按队头出现时间各保持五秒", as
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(status.textContent, "“上次活跃”获取完成");
 
-  await advance(3_999);
+  await clock.advance(3_999);
   assert.equal(status.textContent, "“上次活跃”获取完成");
-  await advance(1);
+  await clock.advance(1);
   assert.equal(status.textContent, "“完成条目数”获取完成");
-  await advance(4_999);
+  await clock.advance(4_999);
   assert.equal(status.textContent, "“完成条目数”获取完成");
-  await advance(1);
+  await clock.advance(1);
   assert.equal(status.textContent, "");
 });
 

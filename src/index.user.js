@@ -127,6 +127,9 @@
     return metric === "syncRate";
   }
 
+  // The fields this cache persists are fixed (activity, visitor-nested
+  // relation, per-scope completion), so the validators are built in rather
+  // than taken from callers.
   function completionCacheFieldValidators() {
     return Object.fromEntries(
       COMPLETION_CHOICES.map(([scope]) => [
@@ -242,16 +245,10 @@
       ),
     },
   });
-  const DEFAULT_SORT_CONFIG = Object.freeze({
-    defaultDirection: DIRECTION.DESCENDING,
-    directionLabels: Object.freeze({
-      [DIRECTION.ASCENDING]: "从旧到新",
-      [DIRECTION.DESCENDING]: "从新到旧",
-    }),
-  });
-
+  // SORT is a closed enum: every criterion above declares a config, so no
+  // fallback exists and an unknown criterion fails fast.
   function sortConfigFor(criterion) {
-    return SORT_CONFIG[criterion] || DEFAULT_SORT_CONFIG;
+    return SORT_CONFIG[criterion];
   }
 
   function directionLabelsFor(criterion) {
@@ -267,15 +264,12 @@
     return effectiveDirection === DIRECTION.ASCENDING;
   }
 
-  function createFriendCache(
-    storage,
-    { fieldValidators = {}, now = Date.now } = {},
-  ) {
+  function createFriendCache(storage, { now = Date.now } = {}) {
     const records = new Map();
     const validators = new Map([
       ["activity", isActivityRecord],
       ["relation", isRelationMap],
-      ...Object.entries(fieldValidators),
+      ...Object.entries(completionCacheFieldValidators()),
     ]);
 
     function read(key) {
@@ -438,7 +432,9 @@
     friends,
     {
       criterion,
-      sortData = new Map(),
+      // Required for the remote sorts (activity/completion/relation read the
+      // friend cache); local sorts (added/name) never touch it.
+      sortData,
       collator = new Intl.Collator(undefined, {
         numeric: true,
         sensitivity: "base",
@@ -486,10 +482,17 @@
     );
   }
 
+  // Remote refresh targets carry the per-criterion selection under a policy
+  // specific name: completion targets hold a 统计范围 `scope`, relation
+  // targets hold a 契合指标 `metric`. PROFILE_TARGET_POLICIES below reads
+  // the matching name for each kind.
   function remoteTargetFor(criterion, selection) {
     if (criterion === SORT.ACTIVITY) return { kind: SORT.ACTIVITY };
-    if (criterion === SORT.RELATION || criterion === SORT.COMPLETION) {
-      return { kind: criterion, selection };
+    if (criterion === SORT.COMPLETION) {
+      return { kind: criterion, scope: selection };
+    }
+    if (criterion === SORT.RELATION) {
+      return { kind: criterion, metric: selection };
     }
     return null;
   }
@@ -497,7 +500,10 @@
   function sameRemoteTarget(left, right) {
     if (left === right) return true;
     if (!left || !right || left.kind !== right.kind) return false;
-    return left.kind === SORT.ACTIVITY || left.selection === right.selection;
+    if (left.kind === SORT.ACTIVITY) return true;
+    return left.kind === SORT.COMPLETION
+      ? left.scope === right.scope
+      : left.metric === right.metric;
   }
 
   function nextRemoteSelectionAction(
@@ -695,7 +701,12 @@
     const maxConcurrency = Math.max(1, Math.floor(concurrency));
     const tasks = new Map();
     let foregroundType = null;
-    let foregroundTaskSeen = false;
+    // True once the currently designated foreground task has actually taken
+    // work. A designated foreground task that has not enqueued anything yet
+    // (foregroundEverActive is false, including right after setForeground
+    // re-designates one) keeps background tasks idle so they cannot start
+    // before the foreground task does.
+    let foregroundEverActive = false;
     let inFlight = 0;
     let globallyStopped = false;
 
@@ -713,7 +724,9 @@
       const foreground = foregroundType && tasks.get(foregroundType);
       if (foreground?.canSchedule()) return foreground;
       if (foreground?.hasInFlight()) return null;
-      if (foregroundType && !foreground && !foregroundTaskSeen) return null;
+      // Foreground task ended or not yet created, and the designated
+      // foreground task has not taken work yet: hold background tasks back.
+      if (foregroundType && !foreground && !foregroundEverActive) return null;
       return [...tasks.values()].find((task) => task.canSchedule()) || null;
     }
 
@@ -765,6 +778,12 @@
       let started = false;
       let finished = false;
 
+      // One progress snapshot shape shared by onFetching/onProgress/onQueue:
+      // the task's counters and its reported target travel together.
+      function progress() {
+        return { completed, target, total };
+      }
+
       function finishIfIdle() {
         if (finished || inFlightForTask > 0 || queue.length > 0) return;
         finished = true;
@@ -790,7 +809,7 @@
           inFlightForTask += 1;
           if (!started) {
             started = true;
-            lifecycle.onFetching?.({ completed, target, total });
+            lifecycle.onFetching?.(progress());
           }
         },
         canSchedule() {
@@ -808,7 +827,7 @@
           }
           results.set(keyFor(item), { item, outcome, record });
           batchState = nextBatchState(batchState, outcome);
-          lifecycle.onProgress?.({ completed, target, total });
+          lifecycle.onProgress?.(progress());
           if (isRateLimited(outcome)) {
             const shouldNotify = !globallyStopped;
             stopAll();
@@ -842,18 +861,13 @@
           }
           total += newItems.length;
           if (started) {
-            lifecycle.onQueue?.({
-              added: newItems.length,
-              completed,
-              target,
-              total,
-            });
+            lifecycle.onQueue?.({ added: newItems.length, ...progress() });
           }
           return { added: newItems.length, accepted: true };
         },
         fetch: options.fetch,
         getState() {
-          return { completed, target, total };
+          return progress();
         },
         isStopped() {
           return batchState.stopped;
@@ -871,7 +885,7 @@
               });
             }
             completed += unattempted.length;
-            lifecycle.onProgress?.({ completed, target, total });
+            lifecycle.onProgress?.(progress());
           }
           finishIfIdle();
         },
@@ -898,9 +912,9 @@
       }
       if (foreground && accepted) {
         foregroundType = type;
-        foregroundTaskSeen = true;
+        foregroundEverActive = true;
       } else if (added > 0 && type === foregroundType) {
-        foregroundTaskSeen = true;
+        foregroundEverActive = true;
       }
       pump();
       return { added, task };
@@ -915,7 +929,7 @@
       isGloballyStopped: () => globallyStopped,
       setForeground(type) {
         foregroundType = type || null;
-        foregroundTaskSeen = Boolean(
+        foregroundEverActive = Boolean(
           foregroundType && tasks.has(foregroundType),
         );
         pump();
@@ -1032,7 +1046,7 @@
 
     const parsed = { kind: "success" };
     if (completionValues) parsed.completion = completionValues;
-    if (relation !== null) parsed.relation = relation;
+    if (relation !== null) parsed.parsedRelation = relation;
     return parsed;
   }
 
@@ -1071,26 +1085,26 @@
     [SORT.COMPLETION]: Object.freeze({
       label: "完成条目数",
       hasTarget: (record, target) => {
-        const value = record?.completion?.[target.selection];
+        const value = record?.completion?.[target.scope];
         return Number.isSafeInteger(value) && value >= 0;
       },
       findPending: ({ cache, friends, now, target }) =>
-        findFriendsNeedingCompletion(friends, cache, target.selection, now),
+        findFriendsNeedingCompletion(friends, cache, target.scope, now),
     }),
     [SORT.RELATION]: Object.freeze({
       label: "喜好契合",
       hasTarget: (record, target) => {
-        const value = record?.relation?.[target.selection];
+        const value = record?.parsedRelation?.[target.metric];
         return isRelationRecord(
           { value, fetchedAt: record?.fetchedAt },
-          target.selection,
+          target.metric,
         );
       },
       findPending: ({ cache, friends, now, target, visitorIdentifier }) =>
         findFriendsNeedingRelation(
           friends,
           cache,
-          { metric: target.selection, visitorIdentifier },
+          { metric: target.metric, visitorIdentifier },
           now,
         ),
     }),
@@ -1183,12 +1197,17 @@
         if (parsed.kind === "invalid") return { kind: "parse-error" };
         const record = { fetchedAt };
         if (parsed.completion) record.completion = parsed.completion;
-        if (parsed.relation) record.relation = parsed.relation;
+        if (parsed.parsedRelation) {
+          record.parsedRelation = parsed.parsedRelation;
+        }
         return { kind: "success", record };
       },
     );
   }
 
+  // The parsed profile record's relation part is flat ({metric: value}); the
+  // cache's relation field is nested by visitor. `parsedRelation` keeps the
+  // two shapes apart.
   function saveProfileRecord(cache, visitorIdentifier, friend, record) {
     for (const [scope, value] of Object.entries(record.completion || {})) {
       cache.setField(
@@ -1199,7 +1218,7 @@
       );
     }
     if (!visitorIdentifier) return;
-    for (const [metric, value] of Object.entries(record.relation || {})) {
+    for (const [metric, value] of Object.entries(record.parsedRelation || {})) {
       cache.setRelationField(
         userIdentifierFor(friend),
         visitorIdentifier,
@@ -2231,7 +2250,7 @@
     const now = runtime.now ?? Date.now;
     const cache = createFriendCache(
       runtime.storage ?? browserStorage(pageWindow),
-      { fieldValidators: completionCacheFieldValidators(), now },
+      { now },
     );
     const visitorIdentifier = currentVisitorIdentifier(
       pageDocument,
@@ -2269,7 +2288,6 @@
     COMPLETION_SCOPE,
     createFriendCache,
     createSortBar,
-    completionCacheFieldValidators,
     completionFieldFor,
     currentVisitorIdentifier,
     directionLabelsFor,
