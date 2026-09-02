@@ -1477,12 +1477,26 @@
         return Boolean(dropdown.contains?.(node));
       }
 
+      // Input modality of whichever pointer/keyboard interaction last took
+      // focus inside the dropdown; null means programmatic or unknown focus.
+      // Mouse-created focus is transient: it is released when the pointer
+      // leaves, while touch/keyboard focus intentionally persists (see ADR 0001).
+      let focusModality = null;
+
+      dropdown.addEventListener("pointerdown", (event) => {
+        focusModality = event.pointerType || "pointer";
+      });
+
       function keepMenuOpenOnFocus(button) {
         button.addEventListener("focus", () => setMenuOpen(true));
         button.addEventListener("focusout", (event) => {
-          if (!isInsideDropdown(event.relatedTarget)) setMenuOpen(false);
+          if (!isInsideDropdown(event.relatedTarget)) {
+            focusModality = null;
+            setMenuOpen(false);
+          }
         });
         button.addEventListener("keydown", (event) => {
+          focusModality = "keyboard";
           if (event.key !== "Enter" && event.key !== " ") return;
           event.preventDefault?.();
           button.click();
@@ -1490,7 +1504,19 @@
       }
 
       dropdown.addEventListener("pointerenter", () => setMenuOpen(true));
-      dropdown.addEventListener("pointerleave", () => {
+      dropdown.addEventListener("pointerleave", (event) => {
+        // A desktop mouse click focuses the toggle; when that focus itself
+        // came from the mouse, leaving the dropdown releases it so the menu
+        // closes instead of lingering.
+        if (
+          event.pointerType === "mouse" &&
+          focusModality === "mouse" &&
+          isInsideDropdown(document.activeElement)
+        ) {
+          document.activeElement.blur?.();
+          setMenuOpen(false);
+          return;
+        }
         if (!isInsideDropdown(document.activeElement)) setMenuOpen(false);
       });
       keepMenuOpenOnFocus(toggle);

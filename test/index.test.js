@@ -239,6 +239,13 @@ function dropdownButtonFor(page, label) {
   return mainSortControl(page, label).children[0];
 }
 
+function dropdownForBar(controls, label) {
+  const sortOptions = controls.bar.children[0].children[0];
+  return sortOptions.children.find(
+    (child) => child?.children?.[0]?.textContent === label,
+  );
+}
+
 // Fake timer wheel shared by status-timing tests: advance fires due timers in
 // due order and yields to the microtask queue afterwards.
 function fakeTimers(startTime = 0) {
@@ -4157,33 +4164,41 @@ test("页面增量刷新恰好新增四百个请求时不确认", async () => {
   assert.deepEqual(confirmations, []);
 });
 
-test("完成条目数菜单支持悬停、焦点、键盘和触屏点击", () => {
+test("完成条目数菜单悬停时打开、移开时关闭", () => {
+  const page = friendPageWith([]);
+  const controls = sorter.createSortBar(page.document, () => {});
+  const dropdown = dropdownForBar(controls, "完成条目数");
+  const toggle = dropdown.children[0];
+
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  dropdown.dispatchEvent({ type: "pointerenter", pointerType: "mouse" });
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  assert.equal(dropdown.dataset.open, "true");
+
+  dropdown.dispatchEvent({ type: "pointerleave", pointerType: "mouse" });
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+});
+
+test("完成条目数菜单的键盘焦点不因鼠标移出而关闭", () => {
   const selected = [];
   const page = friendPageWith([]);
   const controls = sorter.createSortBar(
     page.document,
     (criterion, scope) => selected.push([criterion, scope]),
   );
-  const filters = controls.bar.children[0];
-  const sortOptions = filters.children[0];
-  const dropdown = sortOptions.children.find(
-    (child) => child?.children?.[0]?.textContent === "完成条目数",
-  );
+  const dropdown = dropdownForBar(controls, "完成条目数");
   const toggle = dropdown.children[0];
   const menu = dropdown.children[1];
   const bookButton = menu.children[2];
-
-  assert.equal(toggle.getAttribute("aria-expanded"), "false");
-  dropdown.dispatchEvent({ type: "pointerenter" });
-  assert.equal(toggle.getAttribute("aria-expanded"), "true");
-  assert.equal(dropdown.dataset.open, "true");
-
-  dropdown.dispatchEvent({ type: "pointerleave" });
-  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  const musicButton = menu.children[3];
 
   toggle.focus();
   assert.equal(page.document.activeElement, toggle);
   assert.equal(toggle.getAttribute("aria-expanded"), "true");
+
+  dropdown.dispatchEvent({ type: "pointerleave", pointerType: "mouse" });
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+
   bookButton.focus();
   const keyboardEvent = { type: "keydown", key: "Enter" };
   bookButton.dispatchEvent(keyboardEvent);
@@ -4191,7 +4206,6 @@ test("完成条目数菜单支持悬停、焦点、键盘和触屏点击", () =>
   assert.deepEqual(selected, [["completion", "1"]]);
   assert.equal(toggle.getAttribute("aria-expanded"), "true");
 
-  const musicButton = menu.children[3];
   musicButton.focus();
   const spaceEvent = { type: "keydown", key: " " };
   musicButton.dispatchEvent(spaceEvent);
@@ -4203,15 +4217,58 @@ test("完成条目数菜单支持悬停、焦点、键盘和触屏点击", () =>
 
   page.document.createElement("div").focus();
   assert.equal(toggle.getAttribute("aria-expanded"), "false");
+});
 
+test("完成条目数菜单支持触屏点击后保留菜单", () => {
+  const selected = [];
+  const page = friendPageWith([]);
+  const controls = sorter.createSortBar(
+    page.document,
+    (criterion, scope) => selected.push([criterion, scope]),
+  );
+  const dropdown = dropdownForBar(controls, "完成条目数");
+  const toggle = dropdown.children[0];
+  const menu = dropdown.children[1];
+  const musicButton = menu.children[3];
+
+  dropdown.dispatchEvent({ type: "pointerdown", pointerType: "touch" });
   toggle.click();
-  assert.deepEqual(selected, [
-    ["completion", "1"],
-    ["completion", "3"],
-    ["completion", "all"],
-  ]);
+  assert.deepEqual(selected, [["completion", "all"]]);
   assert.equal(page.document.activeElement, toggle);
   assert.equal(toggle.getAttribute("aria-expanded"), "true");
+
+  dropdown.dispatchEvent({ type: "pointerleave", pointerType: "touch" });
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+
+  musicButton.focus();
+  musicButton.click();
+  assert.deepEqual(selected, [
+    ["completion", "all"],
+    ["completion", "3"],
+  ]);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+});
+
+test("完成条目数菜单在鼠标点击后移开指针时释放焦点并收起", () => {
+  const selected = [];
+  const page = friendPageWith([]);
+  const controls = sorter.createSortBar(
+    page.document,
+    (criterion, scope) => selected.push([criterion, scope]),
+  );
+  const dropdown = dropdownForBar(controls, "完成条目数");
+  const toggle = dropdown.children[0];
+
+  dropdown.dispatchEvent({ type: "pointerenter", pointerType: "mouse" });
+  dropdown.dispatchEvent({ type: "pointerdown", pointerType: "mouse" });
+  toggle.click();
+  assert.deepEqual(selected, [["completion", "all"]]);
+  assert.equal(page.document.activeElement, toggle);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+
+  dropdown.dispatchEvent({ type: "pointerleave", pointerType: "mouse" });
+  assert.equal(page.document.activeElement, null);
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
 });
 
 test("缺少主内容布局时不修改好友页面", () => {
