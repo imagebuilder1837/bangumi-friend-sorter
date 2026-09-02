@@ -754,7 +754,7 @@
         const item = task.take();
         if (!item) continue;
         inFlight += 1;
-        task.begin(item);
+        task.begin();
         let request;
         try {
           request = task.fetch(item);
@@ -781,7 +781,8 @@
       const keyFor = options.keyFor ?? ((item) => item);
       const confirmMessage = options.confirmMessage ?? (() => "");
       const isSuccess =
-        options.isSuccess ?? ((record, outcome) => outcome.kind === "success");
+        options.isSuccess ??
+        ((_record, outcome) => outcome.kind === "success");
       const lifecycle = options.lifecycle;
       const queue = [];
       const queuedKeys = new Set();
@@ -821,7 +822,7 @@
       }
 
       const task = {
-        begin(item) {
+        begin() {
           inFlightForTask += 1;
           if (!started) {
             started = true;
@@ -839,7 +840,7 @@
           completed += 1;
           const record = outcome.kind === "success" ? outcome.record : null;
           if (outcome.kind === "success") {
-            lifecycle.onSuccess?.(item, outcome.record, outcome);
+            lifecycle.onSuccess?.(item, outcome.record);
           }
           results.set(keyFor(item), { item, outcome, record });
           batchState = nextBatchState(batchState, outcome);
@@ -847,7 +848,7 @@
           if (isRateLimited(outcome)) {
             const shouldNotify = !globallyStopped;
             stopAll();
-            if (shouldNotify) lifecycle.onRateLimited?.({ item, target });
+            if (shouldNotify) lifecycle.onRateLimited?.();
           }
           if (batchState.stopped) task.stop();
           finishIfIdle();
@@ -866,7 +867,7 @@
           if (
             needsLargeRequestConfirmation(newItems.length) &&
             options.confirmRequest &&
-            !options.confirmRequest(confirmMessage(newItems.length, nextTarget))
+            !options.confirmRequest(confirmMessage(newItems.length))
           ) {
             return { added: 0, accepted: false };
           }
@@ -877,7 +878,7 @@
           }
           total += newItems.length;
           if (started) {
-            lifecycle.onQueue?.({ added: newItems.length, ...progress() });
+            lifecycle.onQueue?.(progress());
           }
           return { added: newItems.length, accepted: true };
         },
@@ -1245,7 +1246,11 @@
     }
   }
 
-  function readFriends(list, baseUrl = window.location.href) {
+  function readFriends(
+    list,
+    baseUrl = window.location.href,
+    pageDocument = window.document,
+  ) {
     const elements = [...list.children];
     const friends = elements.map((element, originalIndex) => {
       const anchor = element.querySelector('a.avatar[href*="/user/"]');
@@ -1258,16 +1263,35 @@
       if (!userIdentifier) return null;
 
       const displayName = anchor.textContent.trim();
-      return { displayName, element, originalIndex, userIdentifier };
+
+      // The gray rule inside a friend item is the site's own border-bottom
+      // on ul.usersMedium div.userContainer strong; the 名次 badge anchors
+      // to that block. Initial rank follows 网页默认顺序 until a re-sort.
+      const rankHost = element.querySelector(".userContainer strong");
+      if (!rankHost) return null;
+
+      const rankElement = pageDocument.createElement("span");
+      rankElement.className = "bangumi-friend-sorter-rank";
+      rankElement.textContent = `#${originalIndex + 1}`;
+      rankHost.append(rankElement);
+
+      return {
+        displayName,
+        element,
+        originalIndex,
+        rankElement,
+        userIdentifier,
+      };
     });
 
     return friends.every(Boolean) ? friends : [];
   }
 
   function applyFriendSort({ list, friends, ...sortOptions }) {
-    for (const friend of sortFriends(friends, sortOptions)) {
+    [...sortFriends(friends, sortOptions)].forEach((friend, index) => {
       list.append(friend.element);
-    }
+      friend.rankElement.textContent = `#${index + 1}`;
+    });
   }
 
   function installStyles(document) {
@@ -1389,6 +1413,23 @@
       #bangumi-friend-sorter-status {
         color: #999;
         margin-left: .6em;
+      }
+      /* 名次 badge: the host strong is the site's name block whose bottom
+         border is the gray rule; the badge hangs just below that line,
+         flush with its right end. */
+      #memberUserList div.userContainer > strong {
+        position: relative;
+      }
+      #memberUserList .bangumi-friend-sorter-rank {
+        color: #000;
+        font-weight: bold;
+        position: absolute;
+        right: 0;
+        top: 100%;
+      }
+      html[data-theme="dark"] #memberUserList
+        .bangumi-friend-sorter-rank {
+        color: #ddd;
       }
     `;
     document.head.append(style);
@@ -2000,7 +2041,7 @@
     function startRefresh({
       fetchItem,
       getPending,
-      isSuccess = (record, outcome) => outcome.kind === "success",
+      isSuccess = (_record, outcome) => outcome.kind === "success",
       keyFor,
       lifecycle = {},
       target,
@@ -2297,7 +2338,7 @@
     const list = pageDocument.querySelector("#memberUserList");
     if (!list || list.children.length === 0) return;
 
-    const friends = readFriends(list, pageWindow.location.href);
+    const friends = readFriends(list, pageWindow.location.href, pageDocument);
     if (friends.length !== list.children.length) return;
 
     const now = runtime.now ?? Date.now;

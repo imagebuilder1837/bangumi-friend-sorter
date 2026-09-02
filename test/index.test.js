@@ -96,11 +96,17 @@ function friendPageWith(entries) {
     const anchor = new Element("a");
     anchor.setAttribute("href", href);
     anchor.textContent = name;
+    const strong = new Element("strong");
+    strong.append(anchor);
+    const container = new Element("div");
+    container.className = "userContainer";
+    container.append(strong);
     const item = new Element("li");
     item.textContent = name;
     item.querySelector = (selector) => {
-      assert.equal(selector, 'a.avatar[href*="/user/"]');
-      return anchor;
+      if (selector === 'a.avatar[href*="/user/"]') return anchor;
+      if (selector === ".userContainer strong") return strong;
+      assert.fail(`unexpected selector: ${selector}`);
     };
     return item;
   });
@@ -124,6 +130,11 @@ function friendPageWith(entries) {
 
 function filtersFor(page) {
   return page.list.beforeNodes[0].children[0];
+}
+
+function rankFor(item) {
+  const strong = item.querySelector(".userContainer strong");
+  return strong.children.at(-1).textContent;
 }
 
 function sortOptionsFor(page) {
@@ -444,6 +455,92 @@ test("上次活跃支持从新到旧和从旧到新，未知活跃时间始终�
     ),
     ["older", "newer-a", "newer-b", "unknown", "empty"],
   );
+});
+
+test("初始化后每个好友项显示网页默认顺序名次", () => {
+  const page = friendPageWith([
+    { href: "/user/c", name: "Cara" },
+    { href: "/user/a", name: "Ann" },
+    { href: "/user/b", name: "Ben" },
+  ]);
+  const previousDocument = global.document;
+  const previousWindow = global.window;
+  global.document = page.document;
+  global.window = {
+    localStorage: {
+      getItem: () => null,
+      removeItem() {},
+      setItem() {},
+    },
+    location: { href: "https://bgm.tv/user/sai/friends" },
+  };
+
+  try {
+    sorter.initialize();
+  } finally {
+    global.document = previousDocument;
+    global.window = previousWindow;
+  }
+
+  assert.deepEqual(page.list.children.map(rankFor), ["#1", "#2", "#3"]);
+});
+
+test("名次随每次重排更新，#1 始终是当前展示顺序的第一位", () => {
+  const page = friendPageWith([
+    { href: "/user/z", name: "Zed" },
+    { href: "/user/b", name: "Bob" },
+    { href: "/user/a", name: "Ada" },
+  ]);
+  const previousDocument = global.document;
+  const previousWindow = global.window;
+  global.document = page.document;
+  global.window = {
+    localStorage: {
+      getItem: () => null,
+      removeItem() {},
+      setItem() {},
+    },
+    location: { href: "https://bgm.tv/user/sai/friends" },
+  };
+
+  try {
+    sorter.initialize();
+  } finally {
+    global.document = previousDocument;
+    global.window = previousWindow;
+  }
+
+  const pairs = () =>
+    page.list.children.map((item) => [item.textContent, rankFor(item)]);
+  const sortOptions = sortOptionsFor(page);
+  const directionOptions = directionOptionsFor(page);
+  const sortButtons = sortOptions.children.filter(
+    (child) => child?.tagName === "button",
+  );
+  const directionButtons = directionOptions.children.filter(
+    (child) => child?.tagName === "button",
+  );
+
+  sortButtons[1].click();
+  assert.deepEqual(pairs(), [
+    ["Ada", "#1"],
+    ["Bob", "#2"],
+    ["Zed", "#3"],
+  ]);
+
+  directionButtons[1].click();
+  assert.deepEqual(pairs(), [
+    ["Zed", "#1"],
+    ["Bob", "#2"],
+    ["Ada", "#3"],
+  ]);
+
+  sortButtons[0].click();
+  assert.deepEqual(pairs(), [
+    ["Zed", "#1"],
+    ["Bob", "#2"],
+    ["Ada", "#3"],
+  ]);
 });
 
 test("方向文案随排序维度切换", () => {
