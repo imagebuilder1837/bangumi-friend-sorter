@@ -1337,8 +1337,8 @@
         box-sizing: border-box;
         font-size: 12px;
         line-height: 100%;
-        margin: 0;
-        padding: 7px 10px;
+        margin: 5px;
+        padding: 5px 15px;
         text-align: left;
         transition: all .2s ease-in-out;
       }
