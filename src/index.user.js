@@ -81,10 +81,6 @@
     return typeof identifier === "string" && identifier ? identifier : null;
   }
 
-  // RELATION_FIELD_PATTERN and relationFieldFor both encode the legacy flat
-  // relation field format; keep them in sync or migration silently drops
-  // fields.
-  const RELATION_FIELD_PATTERN = /^relation_(.+)_(syncRate|commonLikes)$/;
   const RELATION_METRICS = new Set(["syncRate", "commonLikes"]);
 
   function isRelationMap(value) {
@@ -130,76 +126,12 @@
     return metric === "syncRate";
   }
 
-  function relationFieldFor(visitorIdentifier, metric) {
-    return `relation_${encodeURIComponent(String(visitorIdentifier))}_${metric}`;
-  }
-
-  function migratedRelationFields(savedValue, fields) {
-    const relation = { ...fields.relation };
-    let migrated = false;
-    for (const [field, value] of Object.entries(savedValue || {})) {
-      const match = RELATION_FIELD_PATTERN.exec(field);
-      if (!match || !isRelationRecord(value, match[2])) continue;
-      let visitorIdentifier;
-      try {
-        visitorIdentifier = decodeURIComponent(match[1]);
-      } catch {
-        continue;
-      }
-      relation[visitorIdentifier] = {
-        ...relation[visitorIdentifier],
-        [match[2]]: value,
-      };
-      migrated = true;
-    }
-    return migrated ? { ...fields, relation } : fields;
-  }
-
   function completionCacheFieldValidators() {
     return Object.fromEntries(
       COMPLETION_CHOICES.map(([scope]) => [
         completionFieldFor(scope),
         isCompletionRecord,
       ]),
-    );
-  }
-
-  // All cache reads funnel through one view over createFriendCache so sort
-  // and refresh logic share a single field-accessor protocol.
-  function cacheViewFor(source, userIdentifier) {
-    return {
-      activity: () => source.getField(userIdentifier, "activity"),
-      completion: (field) => source.getField(userIdentifier, field),
-      relation(visitorIdentifier, metric) {
-        return source.getRelationField(
-          userIdentifier,
-          visitorIdentifier,
-          metric,
-        );
-      },
-    };
-  }
-
-  function activityRecordFor(source, userIdentifier) {
-    return cacheViewFor(source, userIdentifier).activity();
-  }
-
-  function completionRecordFor(source, userIdentifier, scope) {
-    return cacheViewFor(source, userIdentifier).completion(
-      completionFieldFor(scope),
-    );
-  }
-
-  function relationRecordFor(
-    source,
-    userIdentifier,
-    visitorIdentifier,
-    metric,
-  ) {
-    if (!visitorIdentifier) return null;
-    return cacheViewFor(source, userIdentifier).relation(
-      visitorIdentifier,
-      metric,
     );
   }
 
@@ -269,7 +201,10 @@
         [DIRECTION.DESCENDING]: "从新到旧",
       }),
       compare: numericValueCompare((friend, { sortData }) => {
-        const activity = activityRecordFor(sortData, userIdentifierFor(friend));
+        const activity = sortData.getField(
+          userIdentifierFor(friend),
+          "activity",
+        );
         return activity?.kind === "active" ? activity.activityAtSeconds : null;
       }),
     },
@@ -280,10 +215,9 @@
         [DIRECTION.DESCENDING]: "从高到低",
       }),
       compare: numericValueCompare((friend, { completionScope, sortData }) => {
-        const completion = completionRecordFor(
-          sortData,
+        const completion = sortData.getField(
           userIdentifierFor(friend),
-          completionScope,
+          completionFieldFor(completionScope),
         );
         return isCompletionRecord(completion) ? completion.value : null;
       }),
@@ -296,8 +230,7 @@
       }),
       compare: numericValueCompare(
         (friend, { relationSelection, sortData }) => {
-          const relation = relationRecordFor(
-            sortData,
+          const relation = sortData.getRelationField(
             userIdentifierFor(friend),
             relationSelection.visitorIdentifier,
             relationSelection.metric,
@@ -391,7 +324,7 @@
       }
 
       for (const [userIdentifier, value] of Object.entries(saved.records)) {
-        const fields = migratedRelationFields(value, validateFields(value));
+        const fields = validateFields(value);
         if (Object.keys(fields).length > 0) records.set(userIdentifier, fields);
       }
       return true;
@@ -453,9 +386,9 @@
         return records.get(userIdentifier)?.[field];
       },
       getRelationField(userIdentifier, visitorIdentifier, metric) {
-        return records.get(userIdentifier)?.relation?.[
-          visitorIdentifier
-        ]?.[metric];
+        return records.get(userIdentifier)?.relation?.[visitorIdentifier]?.[
+          metric
+        ];
       },
       persist,
       setField(userIdentifier, field, value, shouldPersist = true) {
@@ -543,9 +476,9 @@
 
   function findFriendsNeedingActivity(friends, activityByUser, now) {
     return friends.filter((friend) => {
-      const activity = activityRecordFor(
-        activityByUser,
+      const activity = activityByUser.getField(
         userIdentifierFor(friend),
+        "activity",
       );
       return !activity || now - activity.fetchedAt > CACHE_TTL_MS;
     });
@@ -818,7 +751,7 @@
       const confirmMessage = options.confirmMessage ?? (() => "");
       const isSuccess =
         options.isSuccess ?? ((record, outcome) => outcome.kind === "success");
-      const lifecycle = options.lifecycle ?? options;
+      const lifecycle = options.lifecycle;
       const queue = [];
       const queuedKeys = new Set();
       const results = new Map();
@@ -1108,10 +1041,9 @@
     now = Date.now(),
   ) {
     return friends.filter((friend) => {
-      const completion = completionRecordFor(
-        completionByUser,
+      const completion = completionByUser.getField(
         userIdentifierFor(friend),
-        scope,
+        completionFieldFor(scope),
       );
       return !completion || now - completion.fetchedAt > PROFILE_CACHE_TTL_MS;
     });
@@ -1125,8 +1057,7 @@
   ) {
     const { metric = "syncRate", visitorIdentifier } = relationSelection ?? {};
     return friends.filter((friend) => {
-      const relation = relationRecordFor(
-        relationCache,
+      const relation = relationCache.getRelationField(
         userIdentifierFor(friend),
         visitorIdentifier,
         metric,
@@ -1535,9 +1466,6 @@
       onSelect: (scope) => onSelect(SORT.COMPLETION, scope),
     });
     const completionDropdown = completionControl.dropdown;
-    const completionButton = completionControl.button;
-    const completionMenu = completionControl.menu;
-    const completionButtons = completionControl.buttons;
 
     const relationControl = createDropdown({
       id: "bangumi-friend-sorter-relation-menu",
@@ -1547,9 +1475,6 @@
       onSelect: (metric) => onSelect(SORT.RELATION, metric),
     });
     const relationDropdown = relationControl.dropdown;
-    const relationButton = relationControl.button;
-    const relationMenu = relationControl.menu;
-    const relationButtons = relationControl.buttons;
 
     sortOptions.append(relationDropdown);
     sortOptions.append(completionDropdown);
@@ -1587,15 +1512,15 @@
         for (const [value, button] of buttons) {
           setAriaCurrent(button, value === criterion);
         }
-        setAriaCurrent(completionButton, criterion === SORT.COMPLETION);
-        setAriaCurrent(relationButton, criterion === SORT.RELATION);
-        for (const [scope, button] of completionButtons) {
+        setAriaCurrent(completionControl.button, criterion === SORT.COMPLETION);
+        setAriaCurrent(relationControl.button, criterion === SORT.RELATION);
+        for (const [scope, button] of completionControl.buttons) {
           setAriaCurrent(
             button,
             criterion === SORT.COMPLETION && scope === selection,
           );
         }
-        for (const [metric, button] of relationButtons) {
+        for (const [metric, button] of relationControl.buttons) {
           setAriaCurrent(
             button,
             criterion === SORT.RELATION && metric === selection,
@@ -1608,12 +1533,6 @@
         }
       },
       status,
-      relationButton,
-      relationMenu,
-      relationButtons,
-      completionButton,
-      completionMenu,
-      completionButtons,
     };
   }
 
@@ -2246,12 +2165,9 @@
     }
 
     function selectLocalCriterion(criterion) {
-      const action = nextRemoteSelectionAction(
-        remoteTargetFor(currentCriterion, selectionFor(currentCriterion)),
-        remoteTargetFor(criterion, selectionFor(criterion)),
-        status.getKind(),
-      );
-      if (action.kind === "ignore") return;
+      // 本地标准（加好友时间/名称）没有远程目标，不走刷新状态机；
+      // 切换时只需清掉可能挂起的全量刷新提示。
+      if (status.getKind() === REFRESH_PROMPT_STATUS) status.clear();
 
       currentCriterion = criterion;
       controls.setCurrent(
@@ -2260,8 +2176,6 @@
         selectionFor(criterion),
       );
       applyCurrentSort();
-
-      if (action.clearPrompt) status.clear();
     }
 
     function selectCriterion(criterion, requestedSubcriterion) {
@@ -2366,7 +2280,6 @@
     createFriendRefreshTasks,
     parseProfileDocument,
     parseTimelineDocument,
-    relationFieldFor,
     sortFriends,
   };
 

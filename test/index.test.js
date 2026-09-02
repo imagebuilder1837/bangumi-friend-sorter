@@ -887,6 +887,7 @@ test("页面任务调度器在全局四槽位内优先前台任务且不取消�
   const taskOptions = (type) => ({
     fetch: fetchPage(type),
     isSuccess: () => true,
+    lifecycle: {},
   });
 
   scheduler.setForeground("activity");
@@ -945,6 +946,7 @@ test("前台队列耗尽但仍有在途请求时不会恢复后台任务", async
         pending.set(`${type}:${item}`, resolve);
       }),
     isSuccess: () => true,
+    lifecycle: {},
   });
 
   scheduler.setForeground("activity");
@@ -996,7 +998,9 @@ test("页面任务调度器收到 429 时停止所有任务并统计未尝试好
   const options = (type) => ({
     fetch: fetchPage(type),
     isSuccess: (record, outcome) => outcome.kind === "success" && record,
-    onFinished: (result) => finished.push([type, result]),
+    lifecycle: {
+      onFinished: (result) => finished.push([type, result]),
+    },
   });
 
   scheduler.setForeground("activity");
@@ -1041,7 +1045,9 @@ test("页面任务连续五次服务端失败后停止自身并恢复另一页�
         pending.set(`${type}:${item}`, resolve);
       }),
     isSuccess: (record, outcome) => outcome.kind === "success" && record,
-    onFinished: (result) => finished.push([type, result]),
+    lifecycle: {
+      onFinished: (result) => finished.push([type, result]),
+    },
   });
 
   scheduler.setForeground("activity");
@@ -1082,7 +1088,9 @@ test("停止任务在残余请求完成前重新入队不会留下不可调度�
         pending.set(item, resolve);
       }),
     isSuccess: () => false,
-    onFinished: (result) => finished.push(result),
+    lifecycle: {
+      onFinished: (result) => finished.push(result),
+    },
   };
 
   scheduler.setForeground("profile");
@@ -1755,84 +1763,6 @@ test("v3 缓存把喜好契合记录按访问者嵌套保存", () => {
     syncRecord,
   );
   assert.equal(cache.getRelationField("sai", "other", "syncRate"), undefined);
-});
-
-test("加载 v3 缓存时把扁平的喜好契合字段迁移为按访问者嵌套", () => {
-  const stale = { value: 55, fetchedAt: 1_000 };
-  const fresh = { value: 90, fetchedAt: 2_000 };
-  const storage = {
-    getItem(key) {
-      if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
-      return JSON.stringify({
-        version: 3,
-        records: {
-          sai: {
-            [sorter.completionFieldFor("all")]: { value: 7, fetchedAt: 1_000 },
-            [sorter.relationFieldFor("visitor-a", "syncRate")]: stale,
-            [sorter.relationFieldFor("visitor-b", "syncRate")]: fresh,
-            [sorter.relationFieldFor("visitor-b", "commonLikes")]: {
-              value: -1,
-              fetchedAt: 2_000,
-            },
-          },
-          broken: {
-            [sorter.relationFieldFor("visitor", "syncRate")]: "bad",
-          },
-        },
-      });
-    },
-    setItem() {},
-    removeItem() {},
-  };
-
-  const cache = sorter.createFriendCache(storage, {
-    fieldValidators: sorter.completionCacheFieldValidators(),
-  });
-
-  assert.deepEqual(cache.get("sai"), {
-    completion_all: { value: 7, fetchedAt: 1_000 },
-    relation: {
-      "visitor-a": { syncRate: stale },
-      "visitor-b": { syncRate: fresh },
-    },
-  });
-  assert.equal(cache.get("broken"), undefined);
-  assert.deepEqual(cache.getRelationField("sai", "visitor-a", "syncRate"), stale);
-  assert.equal(
-    cache.getRelationField("sai", "visitor-b", "commonLikes"),
-    undefined,
-  );
-});
-
-test("加载包含无法解码的扁平字段时丢弃该字段并保留其余缓存", () => {
-  const storage = {
-    getItem(key) {
-      if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
-      return JSON.stringify({
-        version: 3,
-        records: {
-          sai: {
-            "relation_%_syncRate": { value: 1, fetchedAt: 1_000 },
-            [sorter.relationFieldFor("visitor", "syncRate")]: {
-              value: 2,
-              fetchedAt: 2_000,
-            },
-          },
-        },
-      });
-    },
-    setItem() {},
-    removeItem() {},
-  };
-
-  const cache = sorter.createFriendCache(storage, {
-    fieldValidators: sorter.completionCacheFieldValidators(),
-  });
-
-  assert.deepEqual(cache.getRelationField("sai", "visitor", "syncRate"), {
-      value: 2,
-      fetchedAt: 2_000,
-  });
 });
 
 test("升级缓存版本时删除旧版缓存而不迁移分钟级结果", () => {
