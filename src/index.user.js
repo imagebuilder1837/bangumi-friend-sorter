@@ -1310,7 +1310,7 @@
         flex-direction: column;
         left: -5px;
         opacity: 0;
-        padding: 0;
+        padding: 4px 0;
         pointer-events: none;
         position: absolute;
         top: 100%;
@@ -1337,8 +1337,8 @@
         box-sizing: border-box;
         font-size: 12px;
         line-height: 100%;
-        margin: 5px;
-        padding: 5px 15px;
+        margin: 2px 5px;
+        padding: 7px 15px;
         text-align: left;
         transition: all .2s ease-in-out;
       }
