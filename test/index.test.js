@@ -4188,6 +4188,56 @@ test("完成条目数菜单按钮与菜单项之间保持连续悬停区域", ()
   assert.doesNotMatch(styleText, /top: calc\(100% \+ 3px\)/);
 });
 
+test("下拉菜单竖向堆叠并以蓝色药丸呈现悬停与键盘焦点", () => {
+  const page = friendPageWith([{ href: "/user/a", name: "A" }]);
+  const columns = { children: [] };
+  const wrapper = {
+    children: [columns],
+    querySelector: (selector) => (selector === ".columns" ? columns : null),
+    insertBefore(node, before) {
+      this.children.splice(this.children.indexOf(before), 0, node);
+    },
+  };
+  page.list.closest = (selector) =>
+    selector === ".mainWrapper" ? wrapper : null;
+
+  sorter.initialize({
+    document: page.document,
+    window: { location: { href: "https://bgm.tv/user/sai/friends" } },
+    storage: { getItem: () => null, setItem() {}, removeItem() {} },
+  });
+
+  const styleText = page.document.head.children[0].textContent;
+  // 菜单容器镜像原站 #navMenuNeue li ul：竖向堆叠、固定宽度、无边框。
+  const menuRule = styleText.match(
+    /#bangumi-friend-sorter \.bangumi-friend-sorter-dropdown-menu \{([^}]*)\}/,
+  );
+  assert.ok(menuRule);
+  assert.match(menuRule[1], /width: 200px;/);
+  assert.match(menuRule[1], /border-radius: 15px;/);
+  assert.doesNotMatch(menuRule[1], /flex-wrap/);
+  assert.doesNotMatch(menuRule[1], /border:\s*1px solid/);
+  // 菜单项是竖向堆叠的药丸：圆角 100px、外边距 5px，无左右分隔线。
+  const itemRule = styleText.match(
+    /#bangumi-friend-sorter \.bangumi-friend-sorter-dropdown-menu button\.l \{([^}]*)\}/,
+  );
+  assert.ok(itemRule);
+  assert.match(itemRule[1], /border-radius: 100px;/);
+  assert.match(itemRule[1], /margin: 5px;/);
+  assert.match(itemRule[1], /display: block;/);
+  assert.doesNotMatch(itemRule[1], /border-left/);
+  assert.doesNotMatch(itemRule[1], /border-right/);
+  // 悬停与键盘焦点共用蓝色药丸，不再有粉色 outline。
+  const hoverRule = styleText.match(
+    /#bangumi-friend-sorter \.bangumi-friend-sorter-dropdown-menu button\.l:hover,\s*#bangumi-friend-sorter\s*\.bangumi-friend-sorter-dropdown-menu button\.l:focus-visible \{([^}]*)\}/,
+  );
+  assert.ok(hoverRule);
+  assert.match(hoverRule[1], /background: #369cf8;/);
+  assert.match(hoverRule[1], /color: #fff;/);
+  assert.doesNotMatch(hoverRule[1], /outline/);
+  assert.doesNotMatch(styleText, /\.bangumi-friend-sorter-dropdown-menu button\.l[^\n]*\{[^}]*outline/);
+});
+
 test("完成条目数菜单支持悬停、焦点、键盘和触屏点击", () => {
   const selected = [];
   const page = friendPageWith([]);

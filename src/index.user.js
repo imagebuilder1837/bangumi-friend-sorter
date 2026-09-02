@@ -1302,13 +1302,11 @@
         -webkit-backdrop-filter: blur(5px);
         backdrop-filter: blur(5px);
         background-color: rgba(254, 254, 254, .9);
-        border: 1px solid #ddd;
-        border-radius: 5px;
-        box-shadow: 2px 2px 5px #eee;
-        display: flex;
-        flex-wrap: wrap;
+        border-radius: 15px;
+        box-shadow: inset 0 1px 1px hsla(0, 100%, 100%, .3),
+          inset 0 -1px 0 hsla(0, 100%, 100%, .1),
+          0 3px 15px hsla(214, 100%, 0%, .2);
         left: -5px;
-        min-width: 230px;
         opacity: 0;
         padding: 0;
         pointer-events: none;
@@ -1317,6 +1315,7 @@
         transform: translateY(-4px);
         transition: opacity .15s ease, transform .15s ease, visibility .15s;
         visibility: hidden;
+        width: 200px;
         z-index: 10;
       }
       #bangumi-friend-sorter .bangumi-friend-sorter-dropdown[data-open="true"]
@@ -1331,38 +1330,28 @@
         visibility: visible;
       }
       #bangumi-friend-sorter .bangumi-friend-sorter-dropdown-menu button.l {
-        border-left: 1px solid #eee;
-        border-right: 1px solid #fff;
-        border-radius: 0;
-        padding: 5px 10px;
+        border-radius: 100px;
+        box-sizing: border-box;
+        display: block;
+        margin: 5px;
+        padding: 5px 15px;
+        text-align: left;
+        transition: all .2s ease-in-out;
         width: auto;
-      }
-      #bangumi-friend-sorter
-        .bangumi-friend-sorter-dropdown-menu button.l:first-child {
-        border-left: 0;
-      }
-      #bangumi-friend-sorter
-        .bangumi-friend-sorter-dropdown-menu button.l:last-child {
-        border-right: 0;
       }
       #bangumi-friend-sorter .bangumi-friend-sorter-dropdown-menu button.l:hover,
       #bangumi-friend-sorter
         .bangumi-friend-sorter-dropdown-menu button.l:focus-visible {
         background: #369cf8;
         color: #fff;
-        outline: 2px solid var(--primary-color, #f09199);
-        outline-offset: -2px;
       }
       html[data-theme="dark"] #bangumi-friend-sorter
         .bangumi-friend-sorter-dropdown-menu {
         background-color: rgba(80, 80, 80, .7);
-        border-color: #6e6e6e;
-        box-shadow: 2px 2px 5px #444;
       }
       html[data-theme="dark"] #bangumi-friend-sorter
         .bangumi-friend-sorter-dropdown-menu button.l {
-        border-left-color: #444;
-        border-right-color: #333;
+        color: #fff;
       }
       /* CSS has no // comments: one would be absorbed into the next
          selector, silently dropping the whole rule. */
