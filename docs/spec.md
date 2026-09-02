@@ -19,7 +19,7 @@
 - 以 2026-09-01 的 [Bangumi `r771` 公开 CSS](https://bgm.tv/css/dist/bangumi.min.css?r771) 为核对基线。
 - 原站 `#browserTools` 提供排序栏的上下边线、内边距和文字颜色；脚本保留该 ID 以复用这些外框样式。
 - 原站的 `#browserTools .filters a` 规则为链接提供圆角和内边距，`.focus` 与 `:hover` 规则提供主题色背景和白色文字。脚本使用语义上更合适的 `<button>`，原站的链接规则不会直接生效，因此脚本需自行镜像相同的按钮交互样式。
-- 下拉菜单的圆角、宽度、间距、颜色、半透明背景、阴影、暗色主题和显隐动效镜像原站顶部导航下拉菜单（`#navMenuNeue li ul`，对照 2026-09-01 的 `bangumi.min.css?r771`）：菜单竖向堆叠、宽度收紧到最宽子项（不固定定宽）、圆角 15px、无边框；子项为占满菜单宽度的药丸（`border-radius:100px`、`margin:5px`、`padding:5px 15px`），悬停与键盘焦点共用蓝色药丸（`#369cf8` 白字），不使用原站排序栏的粉色主色或 outline。选项使用按钮语义，并补齐对应的键盘焦点样式。
+- 下拉菜单的圆角、宽度、间距、颜色、半透明背景、阴影、暗色主题和显隐动效镜像原站下拉菜单（对照 2026-09-01 的 `bangumi.min.css?r771`）：容器样式取顶部导航下拉（`#navMenuNeue li ul`）——竖向堆叠、圆角 15px、无边框；宽度收紧到最宽子项并保底时间线下拉（`ul.timelineTabs li ul`）的 `118px` 最小宽；子项行距与字号取 timelineTabs 下拉——`font-size:12px`、`line-height:100%`、`margin:0`、`padding:7px 10px`（原站右侧内边距为 0，此处对称化以保留药丸右侧留白），药丸占满菜单宽度（`border-radius:100px`），悬停与键盘焦点共用蓝色药丸（`#369cf8` 白字），不使用原站排序栏的粉色主色或 outline。选项使用按钮语义，并补齐对应的键盘焦点样式。
 - 原站 CSS 没有 `[aria-current]` 规则。脚本的 `aria-current="true"` 只表达当前排序选项的无障碍语义，不产生可见选中态。
 - 下拉菜单中的当前子项同样只设置 `aria-current="true"`，不增加常驻可见选中样式。
 

@@ -1318,6 +1318,7 @@
         transition: opacity .15s ease, transform .15s ease, visibility .15s;
         visibility: hidden;
         width: max-content;
+        min-width: 118px;
         z-index: 10;
       }
       #bangumi-friend-sorter .bangumi-friend-sorter-dropdown[data-open="true"]
@@ -1334,8 +1335,10 @@
       #bangumi-friend-sorter .bangumi-friend-sorter-dropdown-menu button.l {
         border-radius: 100px;
         box-sizing: border-box;
-        margin: 5px;
-        padding: 5px 15px;
+        font-size: 12px;
+        line-height: 100%;
+        margin: 0;
+        padding: 7px 10px;
         text-align: left;
         transition: all .2s ease-in-out;
       }

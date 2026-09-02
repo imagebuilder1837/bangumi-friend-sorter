@@ -4213,20 +4213,25 @@ test("下拉菜单竖向堆叠并以蓝色药丸呈现悬停与键盘焦点", ()
     /#bangumi-friend-sorter \.bangumi-friend-sorter-dropdown-menu \{([^}]*)\}/,
   );
   assert.ok(menuRule);
-  // 菜单宽度收紧到最宽子项，不留固定定宽。
+  // 菜单宽度收紧到最宽子项，但保底原站 timelineTabs 下拉的 118px。
   assert.match(menuRule[1], /width: max-content;/);
-  assert.doesNotMatch(menuRule[1], /width: \d+px;/);
+  assert.match(menuRule[1], /min-width: 118px;/);
+  assert.doesNotMatch(menuRule[1], /(^|[^-])width: \d+px;/);
   assert.match(menuRule[1], /flex-direction: column;/);
   assert.match(menuRule[1], /border-radius: 15px;/);
   assert.doesNotMatch(menuRule[1], /flex-wrap/);
   assert.doesNotMatch(menuRule[1], /border:\s*1px solid/);
-  // 菜单项是竖向堆叠的药丸：圆角 100px、外边距 5px，不设宽度以拉伸占满菜单，无左右分隔线。
+  // 菜单项行距对齐原站 timelineTabs 下拉：字号 12px、行高 100%、
+  // margin 0、padding 7px 10px，药丸拉伸占满菜单宽度。
   const itemRule = styleText.match(
     /#bangumi-friend-sorter \.bangumi-friend-sorter-dropdown-menu button\.l \{([^}]*)\}/,
   );
   assert.ok(itemRule);
   assert.match(itemRule[1], /border-radius: 100px;/);
-  assert.match(itemRule[1], /margin: 5px;/);
+  assert.match(itemRule[1], /margin: 0;/);
+  assert.match(itemRule[1], /padding: 7px 10px;/);
+  assert.match(itemRule[1], /font-size: 12px;/);
+  assert.match(itemRule[1], /line-height: 100%;/);
   assert.doesNotMatch(itemRule[1], /width/);
   assert.doesNotMatch(itemRule[1], /border-left/);
   assert.doesNotMatch(itemRule[1], /border-right/);
