@@ -552,6 +552,20 @@
     });
   }
 
+  function remoteTargetFor(criterion, selection) {
+    if (criterion === SORT.ACTIVITY) return { kind: SORT.ACTIVITY };
+    if (criterion === SORT.RELATION || criterion === SORT.COMPLETION) {
+      return { kind: criterion, selection };
+    }
+    return null;
+  }
+
+  function sameRemoteTarget(left, right) {
+    if (left === right) return true;
+    if (!left || !right || left.kind !== right.kind) return false;
+    return left.kind === SORT.ACTIVITY || left.selection === right.selection;
+  }
+
   function nextRemoteSelectionAction(
     currentTarget,
     requestedTarget,
@@ -565,7 +579,7 @@
     });
 
     if (requestedTarget === null) return selectAction();
-    if (currentTarget !== requestedTarget) {
+    if (!sameRemoteTarget(currentTarget, requestedTarget)) {
       return selectAction("incremental");
     }
     if (statusKind === REFRESH_STATUS.IDLE) {
@@ -1142,19 +1156,19 @@
     [SORT.COMPLETION]: Object.freeze({
       label: "完成条目数",
       hasTarget: (record, target) => {
-        const value = record?.values?.[target.scope];
+        const value = record?.values?.[target.selection];
         return Number.isSafeInteger(value) && value >= 0;
       },
       findPending: ({ cache, friends, now, target }) =>
-        findFriendsNeedingCompletion(friends, cache, target.scope, now),
+        findFriendsNeedingCompletion(friends, cache, target.selection, now),
     }),
     [SORT.RELATION]: Object.freeze({
       label: "喜好契合",
       hasTarget: (record, target) => {
-        const value = record?.relation?.[target.metric];
+        const value = record?.relation?.[target.selection];
         return isRelationRecord(
           { value, fetchedAt: record?.fetchedAt },
-          target.metric,
+          target.selection,
         );
       },
       findPending: ({ cache, friends, now, target, visitorIdentifier }) =>
@@ -1162,7 +1176,7 @@
           friends,
           cache,
           visitorIdentifier,
-          target.metric,
+          target.selection,
           now,
         ),
     }),
@@ -2132,6 +2146,11 @@
       return profileTargetPolicyFor(target).label;
     }
 
+    function showLoginRequiredStatus() {
+      if (status.getKind() === LOGIN_STATUS) return;
+      status.set(LOGIN_STATUS, "请登录后使用喜好契合排序", 5_000);
+    }
+
     const showActivityProgress = createTaskProgressReporter({
       onProgress: runtime.onProgress,
       status,
@@ -2246,10 +2265,6 @@
         setSelection: (selection) => {
           relationMetric = selection;
         },
-        createTarget: (selection) => ({
-          kind: "relation",
-          metric: selection,
-        }),
       },
       [SORT.COMPLETION]: {
         choices: COMPLETION_CHOICES,
@@ -2258,38 +2273,28 @@
         setSelection: (selection) => {
           completionScope = selection;
         },
-        createTarget: (selection) => ({
-          kind: "completion",
-          scope: selection,
-        }),
       },
     };
-
-    function remoteTargetFor(criterion, selection) {
-      if (criterion === SORT.ACTIVITY) return SORT.ACTIVITY;
-      if (!profileTargetConfigurations[criterion]) return null;
-      return `${criterion}:${selection}`;
-    }
 
     function selectProfileCriterion(criterion, requestedSubcriterion) {
       const configuration = profileTargetConfigurations[criterion];
       const selection = requestedSubcriterion ?? configuration.defaultSelection;
-      if (configuration.requiresVisitor && status.getKind() === LOGIN_STATUS) {
-        return;
-      }
 
       const currentTarget = remoteTargetFor(
         currentCriterion,
         selectionFor(currentCriterion),
       );
       const requestedTarget = remoteTargetFor(criterion, selection);
-      const repeatsCurrentTarget = currentTarget === requestedTarget;
+      const repeatsCurrentTarget = sameRemoteTarget(
+        currentTarget,
+        requestedTarget,
+      );
       if (
         configuration.requiresVisitor &&
         repeatsCurrentTarget &&
         !visitorIdentifier
       ) {
-        status.set(LOGIN_STATUS, "请登录后使用喜好契合排序", 5_000);
+        showLoginRequiredStatus();
         return;
       }
 
@@ -2321,12 +2326,9 @@
       );
       applyCurrentSort();
       if (configuration.requiresVisitor && !visitorIdentifier) {
-        status.set(LOGIN_STATUS, "请登录后使用喜好契合排序", 5_000);
+        showLoginRequiredStatus();
       } else if (action.refreshMode) {
-        void profileRefresh.start(
-          configuration.createTarget(selection),
-          action.refreshMode,
-        );
+        void profileRefresh.start(requestedTarget, action.refreshMode);
       }
     }
 

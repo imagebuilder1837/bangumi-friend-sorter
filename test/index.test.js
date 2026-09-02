@@ -383,7 +383,7 @@ test("方向文案随排序维度切换", () => {
   });
 });
 
-test("仅为缺失或超过二十四小时的活跃缓存安排请求", () => {
+test("仅为缺失或超过二十四小时的上次活跃缓存安排请求", () => {
   const hour = 60 * 60 * 1_000;
   const now = 30 * hour;
   const friends = [
@@ -594,7 +594,7 @@ test("页面交互按排序维度记忆方向并仅重排当前缓存", () => {
   ]);
 });
 
-test("活跃刷新完成后沿用刷新期间选择的方向", async () => {
+test("上次活跃刷新完成后沿用刷新期间选择的方向", async () => {
   const page = friendPageWith([
     { href: "/user/a", name: "Ada" },
     { href: "/user/b", name: "Bob" },
@@ -664,43 +664,71 @@ test("活跃刷新完成后沿用刷新期间选择的方向", async () => {
 
 test("远程排序目标点击使用统一的待命和刷新动作", () => {
   assert.deepEqual(
-    sorter.nextRemoteSelectionAction(null, "activity", "idle"),
+    sorter.nextRemoteSelectionAction(null, { kind: "activity" }, "idle"),
     { kind: "select", clearPrompt: false, refreshMode: "incremental" },
   );
   assert.deepEqual(
-    sorter.nextRemoteSelectionAction("activity", "activity", "idle"),
+    sorter.nextRemoteSelectionAction(
+      { kind: "activity" },
+      { kind: "activity" },
+      "idle",
+    ),
     { kind: "arm", clearPrompt: false, refreshMode: null },
   );
   assert.deepEqual(
-    sorter.nextRemoteSelectionAction("activity", "activity", "armed"),
+    sorter.nextRemoteSelectionAction(
+      { kind: "activity" },
+      { kind: "activity" },
+      "armed",
+    ),
     { kind: "refresh", clearPrompt: true, refreshMode: "full" },
   );
   assert.deepEqual(
-    sorter.nextRemoteSelectionAction("activity", "activity", "fetching"),
-    { kind: "ignore", clearPrompt: false, refreshMode: null },
-  );
-  assert.deepEqual(
-    sorter.nextRemoteSelectionAction("activity", "activity", "completed"),
+    sorter.nextRemoteSelectionAction(
+      { kind: "activity" },
+      { kind: "activity" },
+      "fetching",
+    ),
     { kind: "ignore", clearPrompt: false, refreshMode: null },
   );
   assert.deepEqual(
     sorter.nextRemoteSelectionAction(
-      "completion:all",
-      "relation:syncRate",
+      { kind: "activity" },
+      { kind: "activity" },
+      "completed",
+    ),
+    { kind: "ignore", clearPrompt: false, refreshMode: null },
+  );
+  assert.deepEqual(
+    sorter.nextRemoteSelectionAction(
+      { kind: "completion", selection: "all" },
+      { kind: "relation", selection: "syncRate" },
       "fetching",
     ),
     { kind: "select", clearPrompt: false, refreshMode: "incremental" },
   );
   assert.deepEqual(
     sorter.nextRemoteSelectionAction(
-      "completion:all",
+      { kind: "completion", selection: "all" },
       null,
       "armed",
     ),
     { kind: "select", clearPrompt: true, refreshMode: null },
   );
   assert.deepEqual(
-    sorter.nextRemoteSelectionAction("name", "activity", "completed"),
+    sorter.nextRemoteSelectionAction(
+      null,
+      { kind: "relation", selection: "syncRate" },
+      "completed",
+    ),
+    { kind: "select", clearPrompt: false, refreshMode: "incremental" },
+  );
+  assert.deepEqual(
+    sorter.nextRemoteSelectionAction(
+      { kind: "relation", selection: "syncRate" },
+      { kind: "relation", selection: "commonLikes" },
+      "idle",
+    ),
     { kind: "select", clearPrompt: false, refreshMode: "incremental" },
   );
 });
@@ -726,7 +754,7 @@ test("省略秒的大单位文案不推测更小单位", () => {
   });
 });
 
-test("上次活跃时间保留页面提供的秒级精度", () => {
+test("活跃时刻保留页面提供的整数 Unix 秒精度", () => {
   const document = timelineDocumentFromFixture("timeline-active-seconds.html");
   const responseTime = Date.UTC(2026, 7, 26, 9, 43, 36) / 1_000;
 
@@ -789,7 +817,7 @@ test("仅在本次待请求人数超过四百时要求确认", () => {
   assert.equal(sorter.needsLargeRequestConfirmation(401), true);
 });
 
-test("收到限流响应时立即停止活跃请求批次", () => {
+test("收到限流响应时立即停止上次活跃请求批次", () => {
   const state = sorter.nextBatchState(
     { consecutiveServerFailures: 0, stopped: false },
     { kind: "http-error", status: 429 },
@@ -1478,7 +1506,7 @@ test("主页连续五次服务端错误后停止并恢复暂停的时间胶囊�
   await new Promise((resolve) => setImmediate(resolve));
 });
 
-test("持久存储不可用时活跃缓存仍在当前页面内工作", () => {
+test("持久存储不可用时上次活跃缓存仍在当前页面内工作", () => {
   const unavailableStorage = {
     getItem() {
       throw new Error("storage unavailable");
@@ -1496,7 +1524,7 @@ test("持久存储不可用时活跃缓存仍在当前页面内工作", () => {
   assert.deepEqual([...cache.entries()], [["sai", { activity: record }]]);
 });
 
-test("升级缓存版本时迁移有效的 v2 活跃记录到 v3", () => {
+test("升级缓存版本时迁移有效的 v2 上次活跃记录到 v3", () => {
   const writes = [];
   const removedKeys = [];
   const record = { kind: "active", activityAtSeconds: 1_000, fetchedAt: 2_000 };
@@ -1528,7 +1556,7 @@ test("升级缓存版本时迁移有效的 v2 活跃记录到 v3", () => {
   ]);
 });
 
-test("v2 活跃记录迁移遵守二十四小时有效期边界", () => {
+test("v2 上次活跃记录迁移遵守二十四小时有效期边界", () => {
   const hour = 60 * 60 * 1_000;
   const now = 100 * hour;
   const records = {
@@ -1561,7 +1589,7 @@ test("v2 活跃记录迁移遵守二十四小时有效期边界", () => {
   ]);
 });
 
-test("v3 缓存不完整时仍合并尚未迁移的 v2 活跃记录", () => {
+test("v3 缓存不完整时仍合并尚未迁移的 v2 上次活跃记录", () => {
   const activity = { kind: "active", activityAtSeconds: 1_000, fetchedAt: 2_000 };
   const writes = [];
   const storage = {
@@ -1696,7 +1724,7 @@ test("损坏的缓存 JSON 降级为当前页面内存缓存", () => {
   assert.equal(cache.getField("sai", "activity"), record);
 });
 
-test("请求响应头的时间按整秒传给活跃时间解析并写入秒级缓存", async () => {
+test("请求响应头的时间按整秒传给活跃时刻解析并写入整数 Unix 秒缓存", async () => {
   const document = timelineDocumentFromFixture("timeline-active-seconds.html");
   const records = [];
   const responseTime = Date.UTC(2026, 7, 26, 9, 43, 36);
@@ -2906,15 +2934,27 @@ test("喜好契合菜单的焦点状态只控制自身菜单", () => {
   assert.equal(relationButton.getAttribute("aria-expanded"), "false");
 });
 
-test("未登录时选择喜好契合不请求且登录提示不会因重复选择续时", () => {
+test("未登录时选择喜好契合不请求且登录提示不会因重复选择续时并允许切换子项", () => {
   const page = friendPageWith([{ href: "/user/friend", name: "好友" }]);
   let requests = 0;
+  let now = 0;
+  let nextTimerId = 0;
+  const timers = new Map();
+  const setTimer = (callback, delay) => {
+    const id = ++nextTimerId;
+    timers.set(id, { callback, due: now + delay });
+    return id;
+  };
+  const clearTimer = (id) => timers.delete(id);
   sorter.initialize({
     document: page.document,
     window: {
       location: { href: "https://bgm.tv/user/viewed/friends" },
     },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },
+    now: () => now,
+    setTimeout: setTimer,
+    clearTimeout: clearTimer,
     fetchImpl: async () => {
       requests += 1;
       return { ok: false, status: 500 };
@@ -2932,6 +2972,9 @@ test("未登录时选择喜好契合不请求且登录提示不会因重复选�
   relationButton.click();
   assert.equal(requests, 0);
   assert.equal(status.textContent, "请登录后使用喜好契合排序");
+  assert.equal(relationButton.getAttribute("aria-current"), "true");
+  assert.equal(relationMenu.children[0].getAttribute("aria-current"), "true");
+  assert.deepEqual([...timers.values()].map(({ due }) => due), [5_000]);
   const completionDropdown = sortOptions.children.find(
     (child) => child.children?.[0]?.textContent === "完成条目数",
   );
@@ -2940,6 +2983,12 @@ test("未登录时选择喜好契合不请求且登录提示不会因重复选�
   relationMenu.children[1].click();
   assert.equal(requests, 0);
   assert.equal(status.textContent, "请登录后使用喜好契合排序");
+  assert.equal(relationButton.getAttribute("aria-current"), "true");
+  assert.equal(relationMenu.children[0].getAttribute("aria-current"), null);
+  assert.equal(relationMenu.children[1].getAttribute("aria-current"), "true");
+  assert.deepEqual([...timers.values()].map(({ due }) => due), [5_000]);
+  relationMenu.children[1].click();
+  assert.deepEqual([...timers.values()].map(({ due }) => due), [5_000]);
 });
 
 test("选择喜好契合会清除已激活的上次活跃全量刷新提示", () => {
