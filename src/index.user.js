@@ -73,8 +73,11 @@
   const COMPLETION_CACHE_FIELD_PREFIX = "completion_";
   const INVALID_STATS_BLOCK = Symbol("invalid-stats-block");
 
+  // Normalizes a friend record to its stable cache and sort identity:
+  // only a non-empty string identifier counts (see CONTEXT.md, 用户标识).
   function userIdentifierFor(friend) {
-    return friend.userIdentifier;
+    const identifier = friend?.userIdentifier;
+    return typeof identifier === "string" && identifier ? identifier : null;
   }
 
   const RELATION_FIELD_PATTERN = /^relation_(.+)_(syncRate|commonLikes)$/;
@@ -1841,9 +1844,9 @@
 
   function createStatusController({
     clearTimeout: clearStatusTimeout = globalThis.clearTimeout,
-    controls,
     now = Date.now,
     scheduler,
+    statusElement,
     setTimeout: setStatusTimeout = globalThis.setTimeout,
   }) {
     let statusTimer = null;
@@ -1906,32 +1909,32 @@
 
       if (loginStatus) {
         statusKind = LOGIN_STATUS;
-        controls.status.textContent = loginStatus.message;
+        statusElement.textContent = loginStatus.message;
         return;
       }
 
       const completion = completionStatuses[0];
       if (completion) {
         statusKind = REFRESH_STATUS.COMPLETED;
-        controls.status.textContent = completion.message;
+        statusElement.textContent = completion.message;
         return;
       }
 
       if (transientStatus) {
         statusKind = transientStatus.kind;
-        controls.status.textContent = transientStatus.message;
+        statusElement.textContent = transientStatus.message;
         return;
       }
 
       const progress = currentProgressStatus();
       if (progress) {
         statusKind = REFRESH_STATUS.FETCHING;
-        controls.status.textContent = progress.message;
+        statusElement.textContent = progress.message;
         return;
       }
 
       statusKind = REFRESH_STATUS.IDLE;
-      controls.status.textContent = "";
+      statusElement.textContent = "";
     }
 
     function clearArmedStatus() {
@@ -2071,78 +2074,38 @@
     };
   }
 
-  function createFriendSortController({
+  function choiceLabelFor(choices, value) {
+    return choices.find(([choiceValue]) => choiceValue === value)?.[1] || value;
+  }
+
+  // Owns the refresh orchestration half of the sorter: scheduler, status
+  // rendering, task lifecycles and the activity/profile refresh starters.
+  // The selection/UI state machine only talks to it through `status`,
+  // `startActivity` and `startProfile`.
+  function createFriendRefreshTasks({
+    applyActivitySort,
+    applyProfileSort,
     cache,
-    collator,
-    controls,
     friends,
-    list,
     now,
     pageWindow,
     runtime,
+    statusElement,
     visitorIdentifier,
   }) {
     const scheduler = createTaskScheduler({ concurrency: 4 });
     const status = createStatusController({
       clearTimeout: runtime.clearTimeout ?? globalThis.clearTimeout,
-      controls,
       now,
       scheduler,
+      statusElement,
       setTimeout: runtime.setTimeout ?? globalThis.setTimeout,
     });
     const confirmRequest =
       runtime.confirm ?? pageWindow.confirm?.bind(pageWindow) ?? (() => false);
-    let currentCriterion = SORT.ADDED;
-    let completionScope = COMPLETION_SCOPE.ALL;
-    let relationMetric = RELATION_CHOICES[0][0];
-    const directionByCriterion = new Map(
-      [
-        ...SORT_CHOICES.map(([criterion]) => criterion),
-        SORT.COMPLETION,
-        SORT.RELATION,
-      ].map((criterion) => [criterion, defaultDirectionFor(criterion)]),
-    );
 
-    function selectionFor(criterion) {
-      if (criterion === SORT.RELATION) return relationMetric;
-      if (criterion === SORT.COMPLETION) return completionScope;
-      return COMPLETION_SCOPE.ALL;
-    }
-
-    function applyCurrentSort() {
-      applyFriendSort({
-        list,
-        friends,
-        criterion: currentCriterion,
-        sortData: cache,
-        collator,
-        direction: directionByCriterion.get(currentCriterion),
-        completionScope,
-        relationMetric,
-        relationVisitorIdentifier: visitorIdentifier,
-      });
-    }
-
-    function applySortIfCurrent(criterion) {
-      if (currentCriterion === criterion) applyCurrentSort();
-    }
-
-    function applyProfileSortIfCurrent() {
-      if (
-        currentCriterion === SORT.RELATION ||
-        currentCriterion === SORT.COMPLETION
-      ) {
-        applyCurrentSort();
-      }
-    }
-
-    function profileMainLabel(target) {
-      return profileTargetPolicyFor(target).label;
-    }
-
-    function showLoginRequiredStatus() {
-      if (status.getKind() === LOGIN_STATUS) return;
-      status.set(LOGIN_STATUS, "请登录后使用喜好契合排序", 5_000);
+    function profileLabelFor(target) {
+      return profileTargetPolicyFor(target)?.label ?? target?.kind ?? "";
     }
 
     const showActivityProgress = createTaskProgressReporter({
@@ -2157,11 +2120,11 @@
       status,
       taskType: "profile",
       messageFor: ({ completed, target, total }) =>
-        `正在获取“${profileMainLabel(target)}” ${completed}/${total}`,
+        `正在获取“${profileLabelFor(target)}” ${completed}/${total}`,
     });
 
     const activityLifecycle = createRefreshLifecycle({
-      applySort: () => applySortIfCurrent(SORT.ACTIVITY),
+      applySort: applyActivitySort,
       labelFor: () => "上次活跃",
       persist: () => cache.persist(),
       progressReporter: showActivityProgress,
@@ -2174,8 +2137,8 @@
     // The profile task persists the cache in onFinished and saves
     // completion/relation fields in onSuccess via saveProfileRecord.
     const profileBaseLifecycle = createRefreshLifecycle({
-      applySort: applyProfileSortIfCurrent,
-      labelFor: (target) => profileMainLabel(target),
+      applySort: applyProfileSort,
+      labelFor: profileLabelFor,
       progressReporter: showProfileProgress,
       status,
       taskType: "profile",
@@ -2252,41 +2215,127 @@
       },
     };
 
-    const profileTargetConfigurations = {
+    return {
+      startActivity: (mode) => activityRefresh.start(mode),
+      startProfile: (target, mode) => profileRefresh.start(target, mode),
+      status,
+    };
+  }
+
+  function createFriendSortController({
+    cache,
+    collator,
+    controls,
+    friends,
+    list,
+    now,
+    pageWindow,
+    runtime,
+    visitorIdentifier,
+  }) {
+    let currentCriterion = SORT.ADDED;
+    let completionScope = COMPLETION_SCOPE.ALL;
+    let relationMetric = RELATION_CHOICES[0][0];
+    const directionByCriterion = new Map(
+      [
+        ...SORT_CHOICES.map(([criterion]) => criterion),
+        SORT.COMPLETION,
+        SORT.RELATION,
+      ].map((criterion) => [criterion, defaultDirectionFor(criterion)]),
+    );
+
+    function selectionFor(criterion) {
+      if (criterion === SORT.RELATION) return relationMetric;
+      if (criterion === SORT.COMPLETION) return completionScope;
+      return COMPLETION_SCOPE.ALL;
+    }
+
+    function applyCurrentSort() {
+      applyFriendSort({
+        list,
+        friends,
+        criterion: currentCriterion,
+        sortData: cache,
+        collator,
+        direction: directionByCriterion.get(currentCriterion),
+        completionScope,
+        relationMetric,
+        relationVisitorIdentifier: visitorIdentifier,
+      });
+    }
+
+    const refresh = createFriendRefreshTasks({
+      applyActivitySort: () => {
+        if (currentCriterion === SORT.ACTIVITY) applyCurrentSort();
+      },
+      applyProfileSort: () => {
+        if (
+          currentCriterion === SORT.RELATION ||
+          currentCriterion === SORT.COMPLETION
+        ) {
+          applyCurrentSort();
+        }
+      },
+      cache,
+      friends,
+      now,
+      pageWindow,
+      runtime,
+      statusElement: controls.status,
+      visitorIdentifier,
+    });
+    const { status } = refresh;
+
+    function showLoginRequiredStatus() {
+      if (status.getKind() === LOGIN_STATUS) return;
+      status.set(LOGIN_STATUS, "请登录后使用喜好契合排序", 5_000);
+    }
+
+    const remoteTargetConfigurations = {
+      [SORT.ACTIVITY]: {
+        armMessageFor: () => "上次活跃",
+        requiresVisitor: false,
+        startRefresh: (_target, mode) => refresh.startActivity(mode),
+      },
       [SORT.RELATION]: {
-        choices: RELATION_CHOICES,
+        armMessageFor: (selection) =>
+          choiceLabelFor(RELATION_CHOICES, selection),
         defaultSelection: RELATION_CHOICES[0][0],
         requiresVisitor: true,
         setSelection: (selection) => {
           relationMetric = selection;
         },
+        startRefresh: (target, mode) => refresh.startProfile(target, mode),
       },
       [SORT.COMPLETION]: {
-        choices: COMPLETION_CHOICES,
+        armMessageFor: (selection) =>
+          choiceLabelFor(COMPLETION_CHOICES, selection),
         defaultSelection: COMPLETION_SCOPE.ALL,
         requiresVisitor: false,
         setSelection: (selection) => {
           completionScope = selection;
         },
+        startRefresh: (target, mode) => refresh.startProfile(target, mode),
       },
     };
 
-    function selectProfileCriterion(criterion, requestedSubcriterion) {
-      const configuration = profileTargetConfigurations[criterion];
-      const selection = requestedSubcriterion ?? configuration.defaultSelection;
-
+    function selectRemoteCriterion(
+      criterion,
+      configuration,
+      requestedSubcriterion,
+    ) {
+      const selection =
+        requestedSubcriterion ??
+        configuration.defaultSelection ??
+        COMPLETION_SCOPE.ALL;
       const currentTarget = remoteTargetFor(
         currentCriterion,
         selectionFor(currentCriterion),
       );
       const requestedTarget = remoteTargetFor(criterion, selection);
-      const repeatsCurrentTarget = sameRemoteTarget(
-        currentTarget,
-        requestedTarget,
-      );
       if (
         configuration.requiresVisitor &&
-        repeatsCurrentTarget &&
+        sameRemoteTarget(currentTarget, requestedTarget) &&
         !visitorIdentifier
       ) {
         showLoginRequiredStatus();
@@ -2301,18 +2350,15 @@
       if (action.kind === "ignore") return;
       if (action.clearPrompt) status.clear();
       if (action.kind === "arm") {
-        const label =
-          configuration.choices.find(([value]) => value === selection)?.[1] ||
-          selection;
         status.set(
           REFRESH_PROMPT_STATUS,
-          `5 秒内再次点击“${label}”以全量刷新`,
+          `5 秒内再次点击“${configuration.armMessageFor(selection)}”以全量刷新`,
           5_000,
         );
         return;
       }
 
-      configuration.setSelection(selection);
+      configuration.setSelection?.(selection);
       currentCriterion = criterion;
       controls.setCurrent(
         criterion,
@@ -2320,19 +2366,16 @@
         selection,
       );
       applyCurrentSort();
+
+      if (!action.refreshMode) return;
       if (configuration.requiresVisitor && !visitorIdentifier) {
         showLoginRequiredStatus();
-      } else if (action.refreshMode) {
-        void profileRefresh.start(requestedTarget, action.refreshMode);
-      }
-    }
-
-    function selectCriterion(criterion, requestedSubcriterion) {
-      if (profileTargetConfigurations[criterion]) {
-        selectProfileCriterion(criterion, requestedSubcriterion);
         return;
       }
+      configuration.startRefresh(requestedTarget, action.refreshMode);
+    }
 
+    function selectLocalCriterion(criterion) {
       const action = nextRemoteSelectionAction(
         remoteTargetFor(currentCriterion, selectionFor(currentCriterion)),
         remoteTargetFor(criterion, selectionFor(criterion)),
@@ -2349,15 +2392,15 @@
       applyCurrentSort();
 
       if (action.clearPrompt) status.clear();
-      if (action.kind === "arm") {
-        status.set(
-          REFRESH_PROMPT_STATUS,
-          "5 秒内再次点击“上次活跃”以全量刷新",
-          5_000,
-        );
-      } else if (action.refreshMode) {
-        void activityRefresh.start(action.refreshMode);
+    }
+
+    function selectCriterion(criterion, requestedSubcriterion) {
+      const configuration = remoteTargetConfigurations[criterion];
+      if (configuration) {
+        selectRemoteCriterion(criterion, configuration, requestedSubcriterion);
+        return;
       }
+      selectLocalCriterion(criterion);
     }
 
     function selectDirection(direction) {
