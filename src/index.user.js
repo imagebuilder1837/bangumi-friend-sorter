@@ -77,6 +77,21 @@
     return friend.userIdentifier;
   }
 
+  const RELATION_FIELD_PATTERN = /^relation_(.+)_(syncRate|commonLikes)$/;
+  const RELATION_METRICS = new Set(["syncRate", "commonLikes"]);
+
+  function isRelationMap(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return false;
+    }
+    return Object.values(value).every((metrics) =>
+      Object.entries(metrics || {}).every(
+        ([metric, record]) =>
+          RELATION_METRICS.has(metric) && isRelationRecord(record, metric),
+      ),
+    );
+  }
+
   function isActivityRecord(value) {
     if (!value || !Number.isFinite(value.fetchedAt)) return false;
     if (value.kind === "empty") return true;
@@ -110,6 +125,27 @@
 
   function relationFieldFor(visitorIdentifier, metric) {
     return `relation_${encodeURIComponent(String(visitorIdentifier))}_${metric}`;
+  }
+
+  function migratedRelationFields(savedValue, fields) {
+    const relation = { ...fields.relation };
+    let migrated = false;
+    for (const [field, value] of Object.entries(savedValue || {})) {
+      const match = RELATION_FIELD_PATTERN.exec(field);
+      if (!match || !isRelationRecord(value, match[2])) continue;
+      let visitorIdentifier;
+      try {
+        visitorIdentifier = decodeURIComponent(match[1]);
+      } catch {
+        continue;
+      }
+      relation[visitorIdentifier] = {
+        ...relation[visitorIdentifier],
+        [match[2]]: value,
+      };
+      migrated = true;
+    }
+    return migrated ? { ...fields, relation } : fields;
   }
 
   function completionCacheFieldValidators() {
@@ -150,20 +186,18 @@
     metric = "syncRate",
   ) {
     if (!visitorIdentifier) return null;
-    const field = relationFieldFor(visitorIdentifier, metric);
     if (typeof source?.getRelationField === "function") {
       return source.getRelationField(visitorIdentifier, userIdentifier, metric);
     }
     if (typeof source?.getField === "function") {
-      return source.getField(userIdentifier, field);
+      return source.getField(userIdentifier, "relation")?.[visitorIdentifier]?.[
+        metric
+      ];
     }
 
-    const value = source?.get?.(userIdentifier);
-    return (
-      value?.[field] ||
-      value?.relation?.[visitorIdentifier]?.[metric] ||
-      (isRelationRecord(value, metric) ? value : null)
-    );
+    return source?.get?.(userIdentifier)?.relation?.[visitorIdentifier]?.[
+      metric
+    ];
   }
 
   function activityRecordFor(source, userIdentifier) {
@@ -346,6 +380,7 @@
     const records = new Map();
     const validators = new Map([
       ["activity", isActivityRecord],
+      ["relation", isRelationMap],
       ...Object.entries(fieldValidators),
     ]);
 
@@ -367,12 +402,7 @@
     }
 
     function validatorFor(field) {
-      const validator = validators.get(field);
-      if (validator) return validator;
-      const relationMatch = /^relation_.+_(syncRate|commonLikes)$/.exec(field);
-      return relationMatch
-        ? (relationValue) => isRelationRecord(relationValue, relationMatch[1])
-        : null;
+      return validators.get(field) || null;
     }
 
     function validateFields(value) {
@@ -400,7 +430,7 @@
       }
 
       for (const [userIdentifier, value] of Object.entries(saved.records)) {
-        const fields = validateFields(value);
+        const fields = migratedRelationFields(value, validateFields(value));
         if (Object.keys(fields).length > 0) records.set(userIdentifier, fields);
       }
       return true;
@@ -462,10 +492,9 @@
         return records.get(userIdentifier)?.[field];
       },
       getRelationField(visitorIdentifier, userIdentifier, metric) {
-        return this.getField(
-          userIdentifier,
-          relationFieldFor(visitorIdentifier, metric),
-        );
+        return records.get(userIdentifier)?.relation?.[visitorIdentifier]?.[
+          metric
+        ];
       },
       persist,
       setField(userIdentifier, field, value, shouldPersist = true) {
@@ -486,13 +515,22 @@
         value,
         shouldPersist = true,
       ) {
-        if (!isRelationRecord(value, metric)) return this;
-        return this.setField(
-          userIdentifier,
-          relationFieldFor(visitorIdentifier, metric),
-          value,
-          shouldPersist,
-        );
+        if (!visitorIdentifier || !isRelationRecord(value, metric)) {
+          return this;
+        }
+        const fields = records.get(userIdentifier) || {};
+        records.set(userIdentifier, {
+          ...fields,
+          relation: {
+            ...fields.relation,
+            [visitorIdentifier]: {
+              ...fields.relation?.[visitorIdentifier],
+              [metric]: value,
+            },
+          },
+        });
+        if (shouldPersist) persist();
+        return this;
       },
       setFields(userIdentifier, values, shouldPersist = true) {
         const fields = validateFields(values);

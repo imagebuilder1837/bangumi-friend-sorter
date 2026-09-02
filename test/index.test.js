@@ -1681,6 +1681,124 @@ test("v3 缓存独立校验并保存好友的扩展字段", () => {
   ]);
 });
 
+test("v3 缓存把喜好契合记录按访问者嵌套保存", () => {
+  const writes = [];
+  const storage = {
+    getItem: () => null,
+    setItem(key, value) {
+      writes.push([key, JSON.parse(value)]);
+    },
+    removeItem() {},
+  };
+  const cache = sorter.createFriendCache(storage, {
+    fieldValidators: sorter.completionCacheFieldValidators(),
+  });
+  const syncRecord = { value: 42.5, fetchedAt: 1_000 };
+  const likesRecord = { value: 3, fetchedAt: 2_000 };
+
+  cache.setRelationField("visitor", "sai", "syncRate", syncRecord, false);
+  cache.setRelationField("visitor", "sai", "commonLikes", likesRecord);
+  cache.setField(
+    "sai",
+    sorter.completionFieldFor("all"),
+    { value: 9, fetchedAt: 3_000 },
+    false,
+  );
+  cache.persist();
+
+  assert.deepEqual(writes.at(-1)[1], {
+    version: 3,
+    records: {
+      sai: {
+        completion_all: { value: 9, fetchedAt: 3_000 },
+        relation: {
+          visitor: { syncRate: syncRecord, commonLikes: likesRecord },
+        },
+      },
+    },
+  });
+  assert.equal(cache.getRelationField("visitor", "sai", "syncRate"), syncRecord);
+  assert.equal(cache.getRelationField("other", "sai", "syncRate"), undefined);
+});
+
+test("加载 v3 缓存时把扁平的喜好契合字段迁移为按访问者嵌套", () => {
+  const stale = { value: 55, fetchedAt: 1_000 };
+  const fresh = { value: 90, fetchedAt: 2_000 };
+  const storage = {
+    getItem(key) {
+      if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
+      return JSON.stringify({
+        version: 3,
+        records: {
+          sai: {
+            [sorter.completionFieldFor("all")]: { value: 7, fetchedAt: 1_000 },
+            [sorter.relationFieldFor("visitor-a", "syncRate")]: stale,
+            [sorter.relationFieldFor("visitor-b", "syncRate")]: fresh,
+            [sorter.relationFieldFor("visitor-b", "commonLikes")]: {
+              value: -1,
+              fetchedAt: 2_000,
+            },
+          },
+          broken: {
+            [sorter.relationFieldFor("visitor", "syncRate")]: "bad",
+          },
+        },
+      });
+    },
+    setItem() {},
+    removeItem() {},
+  };
+
+  const cache = sorter.createFriendCache(storage, {
+    fieldValidators: sorter.completionCacheFieldValidators(),
+  });
+
+  assert.deepEqual(cache.get("sai"), {
+    completion_all: { value: 7, fetchedAt: 1_000 },
+    relation: {
+      "visitor-a": { syncRate: stale },
+      "visitor-b": { syncRate: fresh },
+    },
+  });
+  assert.equal(cache.get("broken"), undefined);
+  assert.deepEqual(cache.getRelationField("visitor-a", "sai", "syncRate"), stale);
+  assert.equal(
+    cache.getRelationField("visitor-b", "sai", "commonLikes"),
+    undefined,
+  );
+});
+
+test("加载包含无法解码的扁平字段时丢弃该字段并保留其余缓存", () => {
+  const storage = {
+    getItem(key) {
+      if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
+      return JSON.stringify({
+        version: 3,
+        records: {
+          sai: {
+            "relation_%_syncRate": { value: 1, fetchedAt: 1_000 },
+            [sorter.relationFieldFor("visitor", "syncRate")]: {
+              value: 2,
+              fetchedAt: 2_000,
+            },
+          },
+        },
+      });
+    },
+    setItem() {},
+    removeItem() {},
+  };
+
+  const cache = sorter.createFriendCache(storage, {
+    fieldValidators: sorter.completionCacheFieldValidators(),
+  });
+
+  assert.deepEqual(cache.getRelationField("visitor", "sai", "syncRate"), {
+    value: 2,
+    fetchedAt: 2_000,
+  });
+});
+
 test("升级缓存版本时删除旧版缓存而不迁移分钟级结果", () => {
   const removedKeys = [];
   const storage = {
@@ -1783,9 +1901,8 @@ test("用户主页返回四零四时计入失败且保留旧缓存", async () =>
   const now = 100_000;
   const oldRecord = {
     [sorter.completionFieldFor("all")]: { value: 7, fetchedAt: now - 1 },
-    [sorter.relationFieldFor("visitor", "syncRate")]: {
-      value: 55,
-      fetchedAt: now - 1,
+    relation: {
+      visitor: { syncRate: { value: 55, fetchedAt: now - 1 } },
     },
   };
   const cache = sorter.createFriendCache(
@@ -1812,9 +1929,8 @@ test("无效用户主页计入失败且保留旧缓存", async () => {
   const now = 100_000;
   const oldRecord = {
     [sorter.completionFieldFor("all")]: { value: 7, fetchedAt: now - 1 },
-    [sorter.relationFieldFor("visitor", "syncRate")]: {
-      value: 55,
-      fetchedAt: now - 1,
+    relation: {
+      visitor: { syncRate: { value: 55, fetchedAt: now - 1 } },
     },
   };
   const cache = sorter.createFriendCache(
@@ -2579,7 +2695,6 @@ test("同步率排序支持负值并按方向稳定排列", () => {
 test("过期同步率仍参与即时排序并触发刷新", async () => {
   const now = 100_000;
   const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
-  const syncField = sorter.relationFieldFor("visitor", "syncRate");
   const pending = new Map();
   const requests = [];
   const page = initializeRefreshPage({
@@ -2589,8 +2704,16 @@ test("过期同步率仍参与即时排序并触发刷新", async () => {
     ],
     now,
     records: {
-      low: { [syncField]: { value: -5, fetchedAt: staleFetchedAt } },
-      high: { [syncField]: { value: 80, fetchedAt: staleFetchedAt } },
+      low: {
+        relation: {
+          visitor: { syncRate: { value: -5, fetchedAt: staleFetchedAt } },
+        },
+      },
+      high: {
+        relation: {
+          visitor: { syncRate: { value: 80, fetchedAt: staleFetchedAt } },
+        },
+      },
     },
     domParser: {
       parseFromString: () => relationProfileDocument({ syncRate: "0%" }),
@@ -2743,9 +2866,8 @@ test("初始化按当前访问者隔离喜好契合缓存", () => {
         version: 3,
         records: {
           friend: {
-            [sorter.relationFieldFor(visitorA, "syncRate")]: {
-              value: 90,
-              fetchedAt: now,
+            relation: {
+              [visitorA]: { syncRate: { value: 90, fetchedAt: now } },
             },
           },
         },
@@ -3183,7 +3305,6 @@ test("主页同步率与共同喜好数切换复用任务、去重请求并按�
     { href: "/user/b", name: "B" },
   ]);
   const now = 100_000;
-  const syncField = sorter.relationFieldFor("visitor", "syncRate");
   const writes = [];
   const requests = [];
   const progress = [];
@@ -3198,12 +3319,15 @@ test("主页同步率与共同喜好数切换复用任务、去重请求并按�
         version: 3,
         records: {
           a: {
-            [sorter.relationFieldFor("visitor", "commonLikes")]: {
-              value: 1,
-              fetchedAt: now,
+            relation: {
+              visitor: { commonLikes: { value: 1, fetchedAt: now } },
             },
           },
-          b: { [syncField]: { value: 10, fetchedAt: now } },
+          b: {
+            relation: {
+              visitor: { syncRate: { value: 10, fetchedAt: now } },
+            },
+          },
         },
       });
     },
@@ -3265,15 +3389,15 @@ test("主页同步率与共同喜好数切换复用任务、去重请求并按�
   assert.ok(progress.some(([completed, total]) => completed === 2 && total === 2));
   assert.equal(status.textContent, "“喜好契合”获取完成，1 人失败");
   assert.deepEqual(page.list.children.map((item) => item.textContent), ["B", "A"]);
-  assert.deepEqual(writes.at(-1)[1].records.a[syncField], {
+  assert.deepEqual(writes.at(-1)[1].records.a.relation.visitor.syncRate, {
     value: 50,
     fetchedAt: now,
   });
-  assert.deepEqual(writes.at(-1)[1].records.a[sorter.relationFieldFor("visitor", "commonLikes")], {
+  assert.deepEqual(writes.at(-1)[1].records.a.relation.visitor.commonLikes, {
     value: 1,
     fetchedAt: now,
   });
-  assert.deepEqual(writes.at(-1)[1].records.b[sorter.relationFieldFor("visitor", "commonLikes")], {
+  assert.deepEqual(writes.at(-1)[1].records.b.relation.visitor.commonLikes, {
     value: 20,
     fetchedAt: now,
   });
@@ -3293,7 +3417,6 @@ test("同步率切换到完成条目数时复用同一主页任务", async () =>
     { href: "/user/b", name: "B" },
   ]);
   const now = 100_000;
-  const syncField = sorter.relationFieldFor("visitor", "syncRate");
   let releaseA;
   const pendingA = new Promise((resolve) => {
     releaseA = resolve;
@@ -3305,7 +3428,11 @@ test("同步率切换到完成条目数时复用同一主页任务", async () =>
       return JSON.stringify({
         version: 3,
         records: {
-          b: { [syncField]: { value: 10, fetchedAt: now } },
+          b: {
+            relation: {
+              visitor: { syncRate: { value: 10, fetchedAt: now } },
+            },
+          },
         },
       });
     },
@@ -3370,16 +3497,18 @@ test("取消大批量扩充后恢复旧主页任务目标", async () => {
     name: `好友${index}`,
   }));
   const now = 100_000;
-  const syncField = sorter.relationFieldFor("visitor", "syncRate");
   const cachedRecords = {};
   for (let index = 1; index < entries.length; index += 1) {
     cachedRecords[`friend-${index}`] = {
-      [syncField]: { value: 10, fetchedAt: now },
+      relation: {
+        visitor: { syncRate: { value: 10, fetchedAt: now } },
+      },
     };
   }
-  cachedRecords["friend-402"][
-    sorter.relationFieldFor("visitor", "commonLikes")
-  ] = { value: 20, fetchedAt: now };
+  cachedRecords["friend-402"].relation.visitor.commonLikes = {
+    value: 20,
+    fetchedAt: now,
+  };
   let releaseFirst;
   const firstResponse = new Promise((resolve) => {
     releaseFirst = resolve;
@@ -3496,12 +3625,17 @@ test("取消大批量主页扩充后保留前台时间胶囊进度提示", async
     name: `好友${index}`,
   }));
   const now = 100_000;
-  const syncField = sorter.relationFieldFor("visitor", "syncRate");
   const cachedRecords = Object.fromEntries(
     entries.slice(1).map(({ href }, index) => [
       href.split("/").pop(),
       {
-        ...(index > 0 ? { [syncField]: { value: 10, fetchedAt: now } } : {}),
+        ...(index > 0
+          ? {
+              relation: {
+                visitor: { syncRate: { value: 10, fetchedAt: now } },
+              },
+            }
+          : {}),
         activity: { kind: "active", activityAtSeconds: 1, fetchedAt: now },
       },
     ]),
@@ -3810,11 +3944,14 @@ test("取消全量刷新后必须重新两击才会再次触发", () => {
     name: `好友${index}`,
   }));
   const now = 100_000;
-  const syncField = sorter.relationFieldFor("visitor", "syncRate");
   const records = Object.fromEntries(
     entries.map(({ href }) => [
       href.split("/").pop(),
-      { [syncField]: { value: 10, fetchedAt: now } },
+      {
+        relation: {
+          visitor: { syncRate: { value: 10, fetchedAt: now } },
+        },
+      },
     ]),
   );
   const requests = [];
