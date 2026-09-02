@@ -520,7 +520,6 @@ test("名次随每次重排更新，#1 始终是当前展示顺序的第一位",
   const directionButtons = directionOptions.children.filter(
     (child) => child?.tagName === "button",
   );
-
   sortButtons[1].click();
   assert.deepEqual(pairs(), [
     ["Ada", "#1"],
@@ -606,6 +605,9 @@ test("排序栏分左右两组按钮并更新方向文案", () => {
   const directionButtons = directionOptions.children.filter(
     (child) => child?.tagName === "button",
   );
+  const dropdownButtons = sortOptions.children
+    .filter((child) => child?.className === "bangumi-friend-sorter-dropdown")
+    .map((dropdown) => dropdown.children[0]);
 
   assert.equal(controls.bar.id, "browserTools");
   assert.equal(controls.bar.className, "clearit bangumi-friend-sorter-bar");
@@ -621,11 +623,13 @@ test("排序栏分左右两组按钮并更新方向文案", () => {
     "名称",
     "上次活跃",
   ]);
-  assert.deepEqual(sortButtons.map(({ className }) => className), [
-    "l",
-    "l",
-    "l",
-  ]);
+  for (const button of [
+    ...sortButtons,
+    ...dropdownButtons,
+    ...directionButtons,
+  ]) {
+    assert.ok(button.className.split(/\s+/).includes("l"));
+  }
 
   controls.setCurrent("name", "desc");
   assert.deepEqual(directionButtons.map(({ textContent }) => textContent), [
@@ -2866,8 +2870,10 @@ test("喜好契合按访问者隔离并稳定排序可靠零和未知值", () =>
 test("同步率排序支持负值并按方向稳定排列", () => {
   const friends = [
     { userIdentifier: "negative", originalIndex: 0 },
-    { userIdentifier: "positive", originalIndex: 1 },
-    { userIdentifier: "zero", originalIndex: 2 },
+    { userIdentifier: "same-a", originalIndex: 1 },
+    { userIdentifier: "positive", originalIndex: 2 },
+    { userIdentifier: "same-b", originalIndex: 3 },
+    { userIdentifier: "zero", originalIndex: 4 },
   ];
   const cache = sorter.createFriendCache(null);
   cache.setRelationField("negative", "visitor", "syncRate", {
@@ -2882,6 +2888,12 @@ test("同步率排序支持负值并按方向稳定排列", () => {
     value: 0,
     fetchedAt: 1,
   });
+  for (const userIdentifier of ["same-a", "same-b"]) {
+    cache.setRelationField(userIdentifier, "visitor", "syncRate", {
+      value: 1,
+      fetchedAt: 1,
+    });
+  }
 
   assert.deepEqual(
     sorter.sortFriends(friends, {
@@ -2893,7 +2905,7 @@ test("同步率排序支持负值并按方向稳定排列", () => {
       friendCache: cache,
       direction: "desc",
     }).map(({ userIdentifier }) => userIdentifier),
-    ["positive", "zero", "negative"],
+    ["positive", "same-a", "same-b", "zero", "negative"],
   );
   assert.deepEqual(
     sorter.sortFriends(friends, {
@@ -2905,7 +2917,7 @@ test("同步率排序支持负值并按方向稳定排列", () => {
       friendCache: cache,
       direction: "asc",
     }).map(({ userIdentifier }) => userIdentifier),
-    ["negative", "zero", "positive"],
+    ["negative", "zero", "same-a", "same-b", "positive"],
   );
 });
 
@@ -4325,7 +4337,7 @@ test("完成条目数菜单的键盘焦点不因鼠标移出而关闭", () => {
   assert.equal(toggle.getAttribute("aria-expanded"), "false");
 });
 
-test("完成条目数菜单支持触屏点击后保留菜单", () => {
+function assertPointerKeepsCompletionMenuOpen(pointerType) {
   const selected = [];
   const page = friendPageWith([]);
   const controls = sorter.createSortBar(
@@ -4334,17 +4346,25 @@ test("完成条目数菜单支持触屏点击后保留菜单", () => {
   );
   const dropdown = dropdownForBar(controls, "完成条目数");
   const toggle = dropdown.children[0];
-  const menu = dropdown.children[1];
-  const musicButton = menu.children[3];
 
-  dropdown.dispatchEvent({ type: "pointerdown", pointerType: "touch" });
+  dropdown.dispatchEvent({ type: "pointerdown", pointerType });
   toggle.click();
   assert.deepEqual(selected, [["completion", "all"]]);
   assert.equal(page.document.activeElement, toggle);
   assert.equal(toggle.getAttribute("aria-expanded"), "true");
 
-  dropdown.dispatchEvent({ type: "pointerleave", pointerType: "touch" });
+  dropdown.dispatchEvent({ type: "pointerleave", pointerType });
+  assert.equal(page.document.activeElement, toggle);
   assert.equal(toggle.getAttribute("aria-expanded"), "true");
+
+  return { dropdown, selected, toggle };
+}
+
+test("完成条目数菜单支持触屏点击后保留菜单", () => {
+  const { dropdown, selected, toggle } =
+    assertPointerKeepsCompletionMenuOpen("touch");
+  const menu = dropdown.children[1];
+  const musicButton = menu.children[3];
 
   musicButton.focus();
   musicButton.click();
@@ -4356,24 +4376,7 @@ test("完成条目数菜单支持触屏点击后保留菜单", () => {
 });
 
 test("完成条目数菜单支持触控笔点击后保留菜单", () => {
-  const selected = [];
-  const page = friendPageWith([]);
-  const controls = sorter.createSortBar(
-    page.document,
-    (criterion, scope) => selected.push([criterion, scope]),
-  );
-  const dropdown = dropdownForBar(controls, "完成条目数");
-  const toggle = dropdown.children[0];
-
-  dropdown.dispatchEvent({ type: "pointerdown", pointerType: "pen" });
-  toggle.click();
-  assert.deepEqual(selected, [["completion", "all"]]);
-  assert.equal(page.document.activeElement, toggle);
-  assert.equal(toggle.getAttribute("aria-expanded"), "true");
-
-  dropdown.dispatchEvent({ type: "pointerleave", pointerType: "pen" });
-  assert.equal(page.document.activeElement, toggle);
-  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  assertPointerKeepsCompletionMenuOpen("pen");
 });
 
 test("完成条目数菜单在鼠标点击后移开指针时释放焦点并收起", () => {
