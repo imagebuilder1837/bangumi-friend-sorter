@@ -204,8 +204,8 @@
         [DIRECTION.ASCENDING]: "从旧到新",
         [DIRECTION.DESCENDING]: "从新到旧",
       }),
-      compare: numericValueCompare((friend, { sortData }) => {
-        const activity = sortData.getField(
+      compare: numericValueCompare((friend, { friendCache }) => {
+        const activity = friendCache.getField(
           userIdentifierFor(friend),
           "activity",
         );
@@ -218,13 +218,15 @@
         [DIRECTION.ASCENDING]: "从低到高",
         [DIRECTION.DESCENDING]: "从高到低",
       }),
-      compare: numericValueCompare((friend, { completionScope, sortData }) => {
-        const completion = sortData.getField(
-          userIdentifierFor(friend),
-          completionFieldFor(completionScope),
-        );
-        return isCompletionRecord(completion) ? completion.value : null;
-      }),
+      compare: numericValueCompare(
+        (friend, { completionScope, friendCache }) => {
+          const completion = friendCache.getField(
+            userIdentifierFor(friend),
+            completionFieldFor(completionScope),
+          );
+          return isCompletionRecord(completion) ? completion.value : null;
+        },
+      ),
     },
     [SORT.RELATION]: {
       defaultDirection: DIRECTION.DESCENDING,
@@ -233,8 +235,8 @@
         [DIRECTION.DESCENDING]: "从高到低",
       }),
       compare: numericValueCompare(
-        (friend, { relationSelection, sortData }) => {
-          const relation = sortData.getRelationField(
+        (friend, { relationSelection, friendCache }) => {
+          const relation = friendCache.getRelationField(
             userIdentifierFor(friend),
             relationSelection,
           );
@@ -245,18 +247,14 @@
       ),
     },
   });
-  // SORT is a closed enum: every criterion above declares a config, so no
-  // fallback exists and an unknown criterion fails fast.
-  function sortConfigFor(criterion) {
-    return SORT_CONFIG[criterion];
-  }
-
+  // SORT is a closed enum: every criterion above declares a config, so these
+  // readers index directly and an unknown criterion surfaces immediately.
   function directionLabelsFor(criterion) {
-    return { ...sortConfigFor(criterion).directionLabels };
+    return { ...SORT_CONFIG[criterion].directionLabels };
   }
 
   function defaultDirectionFor(criterion) {
-    return sortConfigFor(criterion).defaultDirection;
+    return SORT_CONFIG[criterion].defaultDirection;
   }
 
   function isAscendingDirection(direction, criterion) {
@@ -432,9 +430,9 @@
     friends,
     {
       criterion,
-      // Required for the remote sorts (activity/completion/relation read the
-      // friend cache); local sorts (added/name) never touch it.
-      sortData,
+      // Required for the remote sorts (activity/completion/relation); local
+      // sorts (added/name) never touch the friend cache.
+      friendCache,
       collator = new Intl.Collator(undefined, {
         numeric: true,
         sensitivity: "base",
@@ -457,7 +455,7 @@
           completionScope,
           isAscending,
           relationSelection: relationSelectionFor(relationSelection),
-          sortData,
+          friendCache,
         }),
       );
     }
@@ -482,28 +480,30 @@
     );
   }
 
-  // Remote refresh targets carry the per-criterion selection under a policy
-  // specific name: completion targets hold a 统计范围 `scope`, relation
-  // targets hold a 契合指标 `metric`. PROFILE_TARGET_POLICIES below reads
-  // the matching name for each kind.
+  // Remote targets are one shape apart from a single selection field:
+  // completion carries a 统计范围 `scope`, relation a 契合指标 `metric`,
+  // and activity carries none. remoteTargetFor and sameRemoteTarget both
+  // read this mapping so the target shape lives in one place.
+  const REMOTE_TARGET_SELECTION_KEYS = Object.freeze({
+    [SORT.ACTIVITY]: null,
+    [SORT.COMPLETION]: "scope",
+    [SORT.RELATION]: "metric",
+  });
+
   function remoteTargetFor(criterion, selection) {
-    if (criterion === SORT.ACTIVITY) return { kind: SORT.ACTIVITY };
-    if (criterion === SORT.COMPLETION) {
-      return { kind: criterion, scope: selection };
-    }
-    if (criterion === SORT.RELATION) {
-      return { kind: criterion, metric: selection };
-    }
-    return null;
+    const selectionKey = REMOTE_TARGET_SELECTION_KEYS[criterion];
+    if (selectionKey === undefined) return null;
+    return {
+      kind: criterion,
+      ...(selectionKey ? { [selectionKey]: selection } : {}),
+    };
   }
 
   function sameRemoteTarget(left, right) {
     if (left === right) return true;
     if (!left || !right || left.kind !== right.kind) return false;
-    if (left.kind === SORT.ACTIVITY) return true;
-    return left.kind === SORT.COMPLETION
-      ? left.scope === right.scope
-      : left.metric === right.metric;
+    const selectionKey = REMOTE_TARGET_SELECTION_KEYS[left.kind];
+    return !selectionKey || left[selectionKey] === right[selectionKey];
   }
 
   function nextRemoteSelectionAction(
@@ -592,9 +592,9 @@
     if (!text.endsWith("前")) return null;
 
     const body = text.slice(0, -1);
-    const unitRanks = { 年: 5, 月: 4, 天: 3, 小时: 2, 分: 1, 秒: 0 };
+    const unitRanks = { 年: 5, 月: 4, 天: 3, 小时: 2, 分: 1, 分钟: 1, 秒: 0 };
     const tokens = [];
-    const tokenPattern = /(\d+)(年|月|天|小时|分|秒)/g;
+    const tokenPattern = /(\d+)(年|月|天|小时|分(?:钟)?|秒)/g;
     let cursor = 0;
     let match;
     while ((match = tokenPattern.exec(body))) {
@@ -602,7 +602,9 @@
       tokens.push({
         amount: Number(match[1]),
         rank: unitRanks[match[2]],
-        unit: match[2],
+        // 分钟 and 分 are the same relative unit; normalize so the
+        // second-recovery checks below only need the canonical names.
+        unit: match[2] === "分钟" ? "分" : match[2],
       });
       cursor = tokenPattern.lastIndex;
     }
@@ -701,12 +703,12 @@
     const maxConcurrency = Math.max(1, Math.floor(concurrency));
     const tasks = new Map();
     let foregroundType = null;
-    // True once the currently designated foreground task has actually taken
-    // work. A designated foreground task that has not enqueued anything yet
-    // (foregroundEverActive is false, including right after setForeground
-    // re-designates one) keeps background tasks idle so they cannot start
-    // before the foreground task does.
-    let foregroundEverActive = false;
+    // True once the designated foreground task has queued work: set when a
+    // foreground enqueue is accepted, or when setForeground designates a task
+    // that already exists. A designated foreground task without queued work
+    // yet keeps background tasks idle so they cannot start before the
+    // foreground task does.
+    let foregroundHasQueuedWork = false;
     let inFlight = 0;
     let globallyStopped = false;
 
@@ -725,8 +727,10 @@
       if (foreground?.canSchedule()) return foreground;
       if (foreground?.hasInFlight()) return null;
       // Foreground task ended or not yet created, and the designated
-      // foreground task has not taken work yet: hold background tasks back.
-      if (foregroundType && !foreground && !foregroundEverActive) return null;
+      // foreground task has not queued work yet: hold background tasks back.
+      if (foregroundType && !foreground && !foregroundHasQueuedWork) {
+        return null;
+      }
       return [...tasks.values()].find((task) => task.canSchedule()) || null;
     }
 
@@ -912,9 +916,9 @@
       }
       if (foreground && accepted) {
         foregroundType = type;
-        foregroundEverActive = true;
+        foregroundHasQueuedWork = true;
       } else if (added > 0 && type === foregroundType) {
-        foregroundEverActive = true;
+        foregroundHasQueuedWork = true;
       }
       pump();
       return { added, task };
@@ -929,7 +933,7 @@
       isGloballyStopped: () => globallyStopped,
       setForeground(type) {
         foregroundType = type || null;
-        foregroundEverActive = Boolean(
+        foregroundHasQueuedWork = Boolean(
           foregroundType && tasks.has(foregroundType),
         );
         pump();
@@ -2063,7 +2067,7 @@
         list,
         friends,
         criterion: currentCriterion,
-        sortData: cache,
+        friendCache: cache,
         collator,
         direction: directionByCriterion.get(currentCriterion),
         completionScope,

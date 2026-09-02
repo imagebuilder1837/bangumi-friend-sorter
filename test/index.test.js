@@ -419,7 +419,10 @@ test("上次活跃支持从新到旧和从旧到新，未知活跃时间始终�
   }
 
   assert.deepEqual(
-    sorter.sortFriends(friends, { criterion: "activity", sortData: activities }).map(
+    sorter.sortFriends(friends, {
+      criterion: "activity",
+      friendCache: activities,
+    }).map(
       ({ userIdentifier }) => userIdentifier,
     ),
     ["newer-a", "newer-b", "older", "unknown", "empty"],
@@ -427,7 +430,7 @@ test("上次活跃支持从新到旧和从旧到新，未知活跃时间始终�
   assert.deepEqual(
     sorter.sortFriends(friends, {
       criterion: "activity",
-      sortData: activities,
+      friendCache: activities,
       direction: "asc",
     }).map(
       ({ userIdentifier }) => userIdentifier,
@@ -844,6 +847,30 @@ test("只有分钟的相对文案不推测秒数", () => {
   assert.deepEqual(sorter.parseTimelineDocument(document, responseTime), {
     kind: "active",
     activityAtSeconds: Date.UTC(2026, 7, 26, 9, 42) / 1_000,
+  });
+});
+
+test("“分钟”后缀不阻止分秒文案恢复秒数", () => {
+  const document = timelineDocumentFromFixture(
+    "timeline-active-minutes-suffix-seconds.html",
+  );
+  const responseTime = Date.UTC(2026, 7, 26, 9, 43, 36) / 1_000;
+
+  assert.deepEqual(sorter.parseTimelineDocument(document, responseTime), {
+    kind: "active",
+    activityAtSeconds: Date.UTC(2026, 7, 26, 9, 42, 34) / 1_000,
+  });
+});
+
+test("含“分钟”的大单位文案不推测秒数", () => {
+  const document = timelineDocumentFromFixture(
+    "timeline-active-minutes-suffix-large.html",
+  );
+  const responseTime = Date.UTC(2026, 7, 26, 9, 43, 34) / 1_000;
+
+  assert.deepEqual(sorter.parseTimelineDocument(document, responseTime), {
+    kind: "active",
+    activityAtSeconds: Date.UTC(2026, 7, 26, 7, 42) / 1_000,
   });
 });
 
@@ -2589,7 +2616,7 @@ test("完成条目数按当前范围从高到低或从低到高稳定排序", ()
   assert.deepEqual(
     sorter.sortFriends(friends, {
       criterion: "completion",
-      sortData: values,
+      friendCache: values,
       direction: "desc",
       completionScope: "all",
     })
@@ -2599,7 +2626,7 @@ test("完成条目数按当前范围从高到低或从低到高稳定排序", ()
   assert.deepEqual(
     sorter.sortFriends(friends, {
       criterion: "completion",
-      sortData: values,
+      friendCache: values,
       direction: "asc",
       completionScope: "all",
     })
@@ -2641,7 +2668,7 @@ test("喜好契合按访问者隔离并稳定排序可靠零和未知值", () =>
         metric: "commonLikes",
         visitorIdentifier: "visitor-a",
       },
-      sortData: cache,
+      friendCache: cache,
       direction: "desc",
     }).map(({ userIdentifier }) => userIdentifier),
     ["high", "same-b", "same-a", "zero", "unknown"],
@@ -2653,7 +2680,7 @@ test("喜好契合按访问者隔离并稳定排序可靠零和未知值", () =>
         metric: "commonLikes",
         visitorIdentifier: "visitor-a",
       },
-      sortData: cache,
+      friendCache: cache,
       direction: "asc",
     }).map(({ userIdentifier }) => userIdentifier),
     ["zero", "same-b", "same-a", "high", "unknown"],
@@ -2665,7 +2692,7 @@ test("喜好契合按访问者隔离并稳定排序可靠零和未知值", () =>
         metric: "commonLikes",
         visitorIdentifier: "visitor-b",
       },
-      sortData: cache,
+      friendCache: cache,
     }).map(({ userIdentifier }) => userIdentifier),
     ["unknown", "same-b", "high", "zero", "same-a"],
   );
@@ -2698,7 +2725,7 @@ test("同步率排序支持负值并按方向稳定排列", () => {
         metric: "syncRate",
         visitorIdentifier: "visitor",
       },
-      sortData: cache,
+      friendCache: cache,
       direction: "desc",
     }).map(({ userIdentifier }) => userIdentifier),
     ["positive", "zero", "negative"],
@@ -2710,7 +2737,7 @@ test("同步率排序支持负值并按方向稳定排列", () => {
         metric: "syncRate",
         visitorIdentifier: "visitor",
       },
-      sortData: cache,
+      friendCache: cache,
       direction: "asc",
     }).map(({ userIdentifier }) => userIdentifier),
     ["negative", "zero", "positive"],
