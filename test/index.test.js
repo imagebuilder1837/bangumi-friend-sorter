@@ -765,7 +765,7 @@ test("远程排序目标点击使用统一的待命和刷新动作", () => {
       { kind: "activity" },
       "fetching",
     ),
-    { kind: "ignore", clearPrompt: false, refreshMode: null },
+    { kind: "ignore" },
   );
   assert.deepEqual(
     sorter.nextRemoteSelectionAction(
@@ -773,7 +773,7 @@ test("远程排序目标点击使用统一的待命和刷新动作", () => {
       { kind: "activity" },
       "completed",
     ),
-    { kind: "ignore", clearPrompt: false, refreshMode: null },
+    { kind: "ignore" },
   );
   assert.deepEqual(
     sorter.nextRemoteSelectionAction(
@@ -1054,6 +1054,58 @@ test("前台队列耗尽但仍有在途请求时不会恢复后台任务", async
 
   pending.get("activity:a3")({ kind: "success" });
   await new Promise((resolve) => setImmediate(resolve));
+});
+
+test("全量刷新扩充进行中的同页面类型任务且不重试已尝试好友", async () => {
+  const scheduler = sorter.createTaskScheduler({ concurrency: 1 });
+  const started = [];
+  const pending = new Map();
+  const finished = [];
+  const fetch = (item) =>
+    new Promise((resolve) => {
+      started.push(item);
+      pending.set(item, resolve);
+    });
+  const options = (target) => ({
+    fetch,
+    isSuccess: (record, outcome) => outcome.kind === "success" && record,
+    lifecycle: {
+      onFinished: (result) => finished.push(result),
+    },
+    target,
+  });
+
+  // Incremental task: p1's field parse fails; p2 stays in flight so the
+  // task survives until the full-refresh expansion arrives.
+  scheduler.setForeground("profile");
+  scheduler.enqueue("profile", ["p1", "p2"], options("syncRate"));
+  pending.get("p1")({ kind: "parse-error" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(started, ["p1", "p2"]);
+
+  // A full refresh requests every friend against the same running task:
+  // already attempted (including parse-failed) and queued friends are not
+  // re-added, only genuinely new ones join the union.
+  scheduler.enqueue("profile", ["p1", "p2", "p3"], options("full"));
+  assert.deepEqual(started, ["p1", "p2"]);
+
+  pending.get("p2")({ kind: "success", record: { value: 1 } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(started, ["p1", "p2", "p3"]);
+
+  pending.get("p3")({ kind: "success", record: { value: 2 } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(scheduler.getTask("profile"), null);
+  assert.deepEqual(finished, [
+    {
+      completed: 3,
+      failures: 1,
+      globallyStopped: false,
+      stopped: false,
+      target: "full",
+      total: 3,
+    },
+  ]);
 });
 
 test("页面任务调度器收到 429 时停止所有任务并统计未尝试好友", async () => {
@@ -1775,7 +1827,9 @@ test("v3 缓存把喜好契合记录按访问者嵌套保存", () => {
   const syncRecord = { value: 42.5, fetchedAt: 1_000 };
   const likesRecord = { value: 3, fetchedAt: 2_000 };
 
-  cache.setRelationField("sai", "visitor", "syncRate", syncRecord, false);
+  cache.setRelationField("sai", "visitor", "syncRate", syncRecord, {
+    persist: false,
+  });
   cache.setRelationField("sai", "visitor", "commonLikes", likesRecord);
   cache.setField(
     "sai",

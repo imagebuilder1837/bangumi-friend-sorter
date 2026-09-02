@@ -26,7 +26,10 @@
   const PROFILE_CACHE_TTL_MS = 72 * 60 * 60 * 1_000;
   const PAGE_REQUEST_TIMEOUT_MS = 15_000;
   const SITE_OFFSET_SECONDS = 8 * 60 * 60;
-  const CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v3";
+  // The v3 store holds activity, visitor-nested relation and completion
+  // fields, but the storage key keeps its historical "activity-cache" name:
+  // renaming it would strand every existing visitor's v3 payload.
+  const FRIEND_CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v3";
   const PREVIOUS_CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v2";
   const LEGACY_CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v1";
   const SORT = Object.freeze({
@@ -116,15 +119,20 @@
     );
   }
 
+  // The record envelope (finite value + fetch time) is shared; each 契合指标
+  // only constrains its own value, so the metric branch lives in this table.
+  const RELATION_VALUE_VALIDATORS = Object.freeze({
+    commonLikes: (value) => Number.isInteger(value) && value >= 0,
+    syncRate: Number.isFinite,
+  });
+
   function isRelationRecord(value, metric) {
-    if (!value || typeof value !== "object") return false;
-    if (!Number.isFinite(value.value) || !Number.isFinite(value.fetchedAt)) {
-      return false;
-    }
-    if (metric === "commonLikes") {
-      return Number.isInteger(value.value) && value.value >= 0;
-    }
-    return metric === "syncRate";
+    return Boolean(
+      value &&
+      typeof value === "object" &&
+      Number.isFinite(value.fetchedAt) &&
+      RELATION_VALUE_VALIDATORS[metric]?.(value.value),
+    );
   }
 
   // The fields this cache persists are fixed (activity, visitor-nested
@@ -326,7 +334,7 @@
       try {
         if (!storage?.setItem) return false;
         storage.setItem(
-          CACHE_STORAGE_KEY,
+          FRIEND_CACHE_STORAGE_KEY,
           JSON.stringify({ version: 3, records: Object.fromEntries(records) }),
         );
         return true;
@@ -336,7 +344,7 @@
       }
     }
 
-    const hasCurrentCache = loadFields(read(CACHE_STORAGE_KEY));
+    const hasCurrentCache = loadFields(read(FRIEND_CACHE_STORAGE_KEY));
     const previous = read(PREVIOUS_CACHE_STORAGE_KEY);
     if (
       previous?.version === 2 &&
@@ -384,7 +392,14 @@
         ];
       },
       persist,
-      setField(userIdentifier, field, value, shouldPersist = true) {
+      // Task batches pass { persist: false } per field and persist once
+      // when the task finishes; direct writers keep the persisting default.
+      setField(
+        userIdentifier,
+        field,
+        value,
+        { persist: shouldPersist = true } = {},
+      ) {
         const validator = validatorFor(field);
         if (typeof validator !== "function" || !validator(value)) {
           return this;
@@ -400,7 +415,7 @@
         visitorIdentifier,
         metric,
         value,
-        shouldPersist = true,
+        { persist: shouldPersist = true } = {},
       ) {
         if (!visitorIdentifier || !isRelationRecord(value, metric)) {
           return this;
@@ -532,11 +547,8 @@
         refreshMode: "full",
       };
     }
-    return {
-      kind: "ignore",
-      clearPrompt: false,
-      refreshMode: null,
-    };
+    // The caller bails out on "ignore" without reading any other field.
+    return { kind: "ignore" };
   }
 
   function siteDateFromEpochSeconds(epochSeconds) {
@@ -1218,7 +1230,7 @@
         userIdentifierFor(friend),
         completionFieldFor(scope),
         { value, fetchedAt: record.fetchedAt },
-        false,
+        { persist: false },
       );
     }
     if (!visitorIdentifier) return;
@@ -1228,7 +1240,7 @@
         visitorIdentifier,
         metric,
         { value, fetchedAt: record.fetchedAt },
-        false,
+        { persist: false },
       );
     }
   }
@@ -1922,7 +1934,9 @@
       status,
       taskType: "activity",
       onSuccess: (friend, record) =>
-        cache.setField(userIdentifierFor(friend), "activity", record, false),
+        cache.setField(userIdentifierFor(friend), "activity", record, {
+          persist: false,
+        }),
     });
 
     // The profile task persists the cache in onFinished and saves
@@ -2142,10 +2156,9 @@
       configuration,
       requestedSubcriterion,
     ) {
-      const selection =
-        requestedSubcriterion ??
-        configuration.defaultSelection ??
-        COMPLETION_SCOPE.ALL;
+      // Only dropdown criteria (relation/completion) carry a selection;
+      // activity's target shape drops it, so no placeholder fallback here.
+      const selection = requestedSubcriterion ?? configuration.defaultSelection;
       const currentTarget = remoteTargetFor(
         currentCriterion,
         selectionFor(currentCriterion),
