@@ -2434,7 +2434,7 @@ test("主页完成统计按完成描述定位六个统计范围", () => {
 
   assert.deepEqual(parsed, {
     kind: "success",
-    values: { all: 20, "2": 8, "1": 10, "3": 6, "4": 4, "6": 2 },
+    completion: { all: 20, "2": 8, "1": 10, "3": 6, "4": 4, "6": 2 },
   });
 });
 
@@ -2479,7 +2479,7 @@ test("唯一完成卡存在多个数量节点时视为结构矛盾", () => {
 test("缺失分类块可靠解析为零，缺失聚合块视为失败", () => {
   assert.deepEqual(sorter.parseProfileDocument(profileStatsDocument()), {
     kind: "success",
-    values: { all: 20, "1": 0, "2": 8, "3": 6, "4": 4, "6": 2 },
+    completion: { all: 20, "1": 0, "2": 8, "3": 6, "4": 4, "6": 2 },
   });
 
   const invalid = new ProfileNode({
@@ -2501,13 +2501,13 @@ test("缺失分类块可靠解析为零，缺失聚合块视为失败", () => {
         : empty.querySelector(selector),
   }), {
     kind: "success",
-    values: { all: 0, "1": 0, "2": 0, "3": 0, "4": 0, "6": 0 },
+    completion: { all: 0, "1": 0, "2": 0, "3": 0, "4": 0, "6": 0 },
   });
 
   const partial = sorter.parseProfileDocument(
     profileStatsDocument({ includeBooks: true, malformedBooks: true }),
   );
-  assert.equal(partial.values["1"], undefined);
+  assert.equal(partial.completion["1"], undefined);
 });
 
 test("统计范围只接受容器内的唯一统计块", () => {

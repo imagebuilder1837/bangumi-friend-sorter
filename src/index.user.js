@@ -1128,28 +1128,28 @@
     const aggregateValue = parseCompletionCount(aggregate);
     if (aggregateValue === null) return null;
 
-    const values = { [COMPLETION_SCOPE.ALL]: aggregateValue };
+    const completionValues = { [COMPLETION_SCOPE.ALL]: aggregateValue };
     for (const [scope] of COMPLETION_CHOICES.slice(1)) {
       const block = statsBlockFor(container, scope);
       if (block === INVALID_STATS_BLOCK) return null;
       if (!block) {
-        values[scope] = 0;
+        completionValues[scope] = 0;
         continue;
       }
       const value = parseCompletionCount(block);
-      if (value !== null) values[scope] = value;
+      if (value !== null) completionValues[scope] = value;
     }
 
-    return values;
+    return completionValues;
   }
 
   function parseProfileDocument(document) {
-    const values = parseCompletionValues(document);
+    const completionValues = parseCompletionValues(document);
     const relation = parseRelationValues(document);
-    if (!values && relation === null) return { kind: "invalid" };
+    if (!completionValues && relation === null) return { kind: "invalid" };
 
     const parsed = { kind: "success" };
-    if (values) parsed.values = values;
+    if (completionValues) parsed.completion = completionValues;
     if (relation !== null) parsed.relation = relation;
     return parsed;
   }
@@ -1194,7 +1194,7 @@
     [SORT.COMPLETION]: Object.freeze({
       label: "完成条目数",
       hasTarget: (record, target) => {
-        const value = record?.values?.[target.selection];
+        const value = record?.completion?.[target.selection];
         return Number.isSafeInteger(value) && value >= 0;
       },
       findPending: ({ cache, friends, now, target }) =>
@@ -1306,7 +1306,7 @@
         const parsed = parseProfileDocument(document);
         if (parsed.kind === "invalid") return { kind: "parse-error" };
         const record = { fetchedAt };
-        if (parsed.values) record.values = parsed.values;
+        if (parsed.completion) record.completion = parsed.completion;
         if (parsed.relation) record.relation = parsed.relation;
         return { kind: "success", record };
       },
@@ -1314,7 +1314,7 @@
   }
 
   function saveProfileRecord(cache, visitorIdentifier, friend, record) {
-    for (const [scope, value] of Object.entries(record.values || {})) {
+    for (const [scope, value] of Object.entries(record.completion || {})) {
       cache.setField(
         userIdentifierFor(friend),
         completionFieldFor(scope),
@@ -1750,124 +1750,45 @@
     return profileTargetPolicyFor(target)?.hasTarget(record, target) ?? false;
   }
 
-  function enqueueRefreshTask({
+  function createRefreshCoordinator({
     confirmMessage,
     confirmRequest,
-    fetchItem,
     getDependencies,
-    isSuccess,
-    keyFor,
-    lifecycle = {},
-    pending,
     scheduler,
-    target,
-    taskType,
   }) {
-    const { task } = scheduler.enqueue(
-      taskType,
-      pending,
-      {
-        confirmMessage,
-        confirmRequest,
-        fetch: (item) => {
-          const dependencies = getDependencies();
-          if (!dependencies) return { kind: "network-error" };
-          return fetchItem(item, dependencies);
-        },
-        isSuccess,
+    return {
+      start({
+        fetchItem,
+        getPending,
+        isSuccess = (record, outcome) => outcome.kind === "success",
         keyFor,
-        lifecycle,
+        lifecycle = {},
         target,
-      },
-      { foreground: true },
-    );
-    return task;
-  }
-
-  function createProfileRefreshCoordinator({
-    cache,
-    confirmMessage,
-    confirmRequest,
-    getDependencies,
-    friends,
-    getPending,
-    now,
-    lifecycle = {},
-    scheduler,
-    visitorIdentifier,
-  }) {
-    const profileLifecycle = {
-      ...lifecycle,
-      onFinished(result) {
-        cache.persist();
-        lifecycle.onFinished?.(result);
-      },
-      onSuccess(friend, record) {
-        saveProfileRecord(cache, visitorIdentifier, friend, record);
-      },
-    };
-
-    return {
-      start(target, mode = "incremental") {
+        taskType,
+      }) {
         if (scheduler.isGloballyStopped() || !getDependencies()) return null;
 
-        const pending = mode === "full" ? friends : getPending(target);
-        if (pending.length === 0 && !scheduler.getTask("profile")) return null;
-        return enqueueRefreshTask({
-          confirmMessage,
-          confirmRequest,
-          fetchItem: (friend, dependencies) =>
-            fetchProfile(
-              friend,
-              dependencies.fetchImpl,
-              dependencies.domParser,
-              now,
-            ),
-          getDependencies,
-          isSuccess: (record, outcome, nextTarget) =>
-            outcome.kind === "success" &&
-            profileRecordHasTarget(record, nextTarget),
-          keyFor: userIdentifierFor,
-          lifecycle: profileLifecycle,
-          pending,
-          scheduler,
-          target,
-          taskType: "profile",
-        });
-      },
-    };
-  }
-
-  function createPageRefreshCoordinator({
-    confirmMessage,
-    confirmRequest,
-    getDependencies,
-    getPending,
-    keyFor,
-    lifecycle = {},
-    scheduler,
-    taskType,
-    fetchPage,
-  }) {
-    return {
-      start(mode) {
-        if (scheduler.isGloballyStopped() || !getDependencies()) return null;
-
-        const pending = getPending(mode);
+        const pending = getPending();
         if (pending.length === 0 && !scheduler.getTask(taskType)) return null;
-        return enqueueRefreshTask({
-          confirmMessage,
-          confirmRequest,
-          fetchItem: fetchPage,
-          getDependencies,
-          isSuccess: (record, outcome) => outcome.kind === "success",
-          keyFor,
-          lifecycle,
-          pending,
-          scheduler,
-          target: mode,
+        const { task } = scheduler.enqueue(
           taskType,
-        });
+          pending,
+          {
+            confirmMessage,
+            confirmRequest,
+            fetch: (item) => {
+              const dependencies = getDependencies();
+              if (!dependencies) return { kind: "network-error" };
+              return fetchItem(item, dependencies);
+            },
+            isSuccess,
+            keyFor,
+            lifecycle,
+            target,
+          },
+          { foreground: true },
+        );
+        return task;
       },
     };
   }
@@ -2250,57 +2171,86 @@
         cache.setField(userIdentifierFor(friend), "activity", record, false),
     });
 
-    // createProfileRefreshCoordinator persists the cache in onFinished.
-    const profileLifecycle = createRefreshLifecycle({
+    // The profile task persists the cache in onFinished and saves
+    // completion/relation fields in onSuccess via saveProfileRecord.
+    const profileBaseLifecycle = createRefreshLifecycle({
       applySort: applyProfileSortIfCurrent,
       labelFor: (target) => profileMainLabel(target),
       progressReporter: showProfileProgress,
       status,
       taskType: "profile",
     });
+    const profileLifecycle = {
+      ...profileBaseLifecycle,
+      onFinished(result) {
+        cache.persist();
+        profileBaseLifecycle.onFinished?.(result);
+      },
+      onSuccess(friend, record) {
+        saveProfileRecord(cache, visitorIdentifier, friend, record);
+      },
+    };
 
-    const activityRefresh = createPageRefreshCoordinator({
+    const refreshCoordinator = createRefreshCoordinator({
       confirmMessage: (count) =>
         `本次新增获取的好友数量过多（${count} 人），是否继续？`,
       confirmRequest,
       getDependencies: () => pageFetchDependencies(runtime, pageWindow),
-      getPending: (mode) =>
-        mode === "full"
-          ? friends
-          : findFriendsNeedingActivity(friends, cache, now()),
-      keyFor: userIdentifierFor,
-      lifecycle: activityLifecycle,
       scheduler,
-      taskType: "activity",
-      fetchPage: (friend, dependencies) =>
-        fetchActivity(
-          friend,
-          dependencies.fetchImpl,
-          dependencies.domParser,
-          now,
-        ),
     });
 
-    const profileRefresh = createProfileRefreshCoordinator({
-      cache,
-      confirmMessage: (count) =>
-        `本次新增获取的好友数量过多（${count} 人），是否继续？`,
-      confirmRequest,
-      friends,
-      getDependencies: () => pageFetchDependencies(runtime, pageWindow),
-      getPending: (target) =>
-        profileTargetPolicyFor(target).findPending({
-          cache,
-          friends,
-          now: now(),
+    const activityRefresh = {
+      start(mode) {
+        return refreshCoordinator.start({
+          fetchItem: (friend, dependencies) =>
+            fetchActivity(
+              friend,
+              dependencies.fetchImpl,
+              dependencies.domParser,
+              now,
+            ),
+          getPending: () =>
+            mode === "full"
+              ? friends
+              : findFriendsNeedingActivity(friends, cache, now()),
+          keyFor: userIdentifierFor,
+          lifecycle: activityLifecycle,
+          target: mode,
+          taskType: "activity",
+        });
+      },
+    };
+
+    const profileRefresh = {
+      start(target, mode = "incremental") {
+        return refreshCoordinator.start({
+          fetchItem: (friend, dependencies) =>
+            fetchProfile(
+              friend,
+              dependencies.fetchImpl,
+              dependencies.domParser,
+              now,
+            ),
+          getPending: () =>
+            mode === "full"
+              ? friends
+              : profileTargetPolicyFor(target).findPending({
+                  cache,
+                  friends,
+                  now: now(),
+                  target,
+                  visitorIdentifier,
+                }),
+          isSuccess: (record, outcome, nextTarget) =>
+            outcome.kind === "success" &&
+            profileRecordHasTarget(record, nextTarget),
+          keyFor: userIdentifierFor,
+          lifecycle: profileLifecycle,
           target,
-          visitorIdentifier,
-        }),
-      now,
-      lifecycle: profileLifecycle,
-      scheduler,
-      visitorIdentifier,
-    });
+          taskType: "profile",
+        });
+      },
+    };
 
     const profileTargetConfigurations = {
       [SORT.RELATION]: {
