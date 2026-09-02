@@ -662,38 +662,46 @@ test("活跃刷新完成后沿用刷新期间选择的方向", async () => {
   }
 });
 
-test("上次活跃点击按排序切换、待命和刷新状态分流", () => {
+test("远程排序目标点击使用统一的待命和刷新动作", () => {
   assert.deepEqual(
-    sorter.nextActivitySelectionAction("name", "activity", "idle"),
-    { kind: "sort", refresh: "incremental" },
+    sorter.nextRemoteSelectionAction(null, "activity", "idle"),
+    { kind: "select", clearPrompt: false, refreshMode: "incremental" },
   );
   assert.deepEqual(
-    sorter.nextActivitySelectionAction("activity", "activity", "idle"),
-    { kind: "arm" },
+    sorter.nextRemoteSelectionAction("activity", "activity", "idle"),
+    { kind: "arm", clearPrompt: false, refreshMode: null },
   );
   assert.deepEqual(
-    sorter.nextActivitySelectionAction("activity", "activity", "armed"),
-    { kind: "refresh", mode: "full" },
+    sorter.nextRemoteSelectionAction("activity", "activity", "armed"),
+    { kind: "refresh", clearPrompt: true, refreshMode: "full" },
   );
   assert.deepEqual(
-    sorter.nextActivitySelectionAction("activity", "activity", "fetching"),
-    { kind: "ignore" },
+    sorter.nextRemoteSelectionAction("activity", "activity", "fetching"),
+    { kind: "ignore", clearPrompt: false, refreshMode: null },
   );
   assert.deepEqual(
-    sorter.nextActivitySelectionAction("activity", "activity", "completed"),
-    { kind: "ignore" },
+    sorter.nextRemoteSelectionAction("activity", "activity", "completed"),
+    { kind: "ignore", clearPrompt: false, refreshMode: null },
   );
   assert.deepEqual(
-    sorter.nextActivitySelectionAction("name", "activity", "fetching"),
-    { kind: "sort", refresh: "incremental" },
+    sorter.nextRemoteSelectionAction(
+      "completion:all",
+      "relation:syncRate",
+      "fetching",
+    ),
+    { kind: "select", clearPrompt: false, refreshMode: "incremental" },
   );
   assert.deepEqual(
-    sorter.nextActivitySelectionAction("name", "activity", "completed"),
-    { kind: "sort", refresh: "incremental" },
+    sorter.nextRemoteSelectionAction(
+      "completion:all",
+      null,
+      "armed",
+    ),
+    { kind: "select", clearPrompt: true, refreshMode: null },
   );
   assert.deepEqual(
-    sorter.nextActivitySelectionAction("activity", "name", "armed"),
-    { kind: "sort", clearPrompt: true },
+    sorter.nextRemoteSelectionAction("name", "activity", "completed"),
+    { kind: "select", clearPrompt: false, refreshMode: "incremental" },
   );
 });
 

@@ -552,26 +552,37 @@
     });
   }
 
-  function nextActivitySelectionAction(
-    currentCriterion,
-    requestedCriterion,
+  function nextRemoteSelectionAction(
+    currentTarget,
+    requestedTarget,
     statusKind,
   ) {
-    if (requestedCriterion !== SORT.ACTIVITY) {
-      return statusKind === REFRESH_PROMPT_STATUS
-        ? { kind: "sort", clearPrompt: true }
-        : { kind: "sort" };
+    const clearPrompt = statusKind === REFRESH_PROMPT_STATUS;
+    const selectAction = (refreshMode = null) => ({
+      kind: "select",
+      clearPrompt,
+      refreshMode,
+    });
+
+    if (requestedTarget === null) return selectAction();
+    if (currentTarget !== requestedTarget) {
+      return selectAction("incremental");
     }
-    if (currentCriterion !== SORT.ACTIVITY) {
-      return statusKind === REFRESH_PROMPT_STATUS
-        ? { kind: "sort", clearPrompt: true, refresh: "incremental" }
-        : { kind: "sort", refresh: "incremental" };
+    if (statusKind === REFRESH_STATUS.IDLE) {
+      return { kind: "arm", clearPrompt: false, refreshMode: null };
     }
-    if (statusKind === REFRESH_STATUS.IDLE) return { kind: "arm" };
     if (statusKind === REFRESH_PROMPT_STATUS) {
-      return { kind: "refresh", mode: "full" };
+      return {
+        kind: "refresh",
+        clearPrompt: true,
+        refreshMode: "full",
+      };
     }
-    return { kind: "ignore" };
+    return {
+      kind: "ignore",
+      clearPrompt: false,
+      refreshMode: null,
+    };
   }
 
   function siteDateFromEpochSeconds(epochSeconds) {
@@ -2227,26 +2238,11 @@
       visitorIdentifier,
     });
 
-    function profileSelectionAction(repeatsCurrentTarget) {
-      if (!repeatsCurrentTarget) {
-        return {
-          clearPrompt: status.getKind() === REFRESH_PROMPT_STATUS,
-          refreshMode: "incremental",
-        };
-      }
-      if (status.getKind() === REFRESH_PROMPT_STATUS) {
-        return { clearPrompt: true, refreshMode: "full" };
-      }
-      if (status.getKind() === REFRESH_STATUS.IDLE) return { arm: true };
-      return { ignore: true };
-    }
-
     const profileTargetConfigurations = {
       [SORT.RELATION]: {
         choices: RELATION_CHOICES,
         defaultSelection: RELATION_CHOICES[0][0],
         requiresVisitor: true,
-        currentSelection: () => relationMetric,
         setSelection: (selection) => {
           relationMetric = selection;
         },
@@ -2259,7 +2255,6 @@
         choices: COMPLETION_CHOICES,
         defaultSelection: COMPLETION_SCOPE.ALL,
         requiresVisitor: false,
-        currentSelection: () => completionScope,
         setSelection: (selection) => {
           completionScope = selection;
         },
@@ -2270,6 +2265,12 @@
       },
     };
 
+    function remoteTargetFor(criterion, selection) {
+      if (criterion === SORT.ACTIVITY) return SORT.ACTIVITY;
+      if (!profileTargetConfigurations[criterion]) return null;
+      return `${criterion}:${selection}`;
+    }
+
     function selectProfileCriterion(criterion, requestedSubcriterion) {
       const configuration = profileTargetConfigurations[criterion];
       const selection = requestedSubcriterion ?? configuration.defaultSelection;
@@ -2277,9 +2278,12 @@
         return;
       }
 
-      const repeatsCurrentTarget =
-        currentCriterion === criterion &&
-        configuration.currentSelection() === selection;
+      const currentTarget = remoteTargetFor(
+        currentCriterion,
+        selectionFor(currentCriterion),
+      );
+      const requestedTarget = remoteTargetFor(criterion, selection);
+      const repeatsCurrentTarget = currentTarget === requestedTarget;
       if (
         configuration.requiresVisitor &&
         repeatsCurrentTarget &&
@@ -2289,10 +2293,14 @@
         return;
       }
 
-      const action = profileSelectionAction(repeatsCurrentTarget);
-      if (action.ignore) return;
+      const action = nextRemoteSelectionAction(
+        currentTarget,
+        requestedTarget,
+        status.getKind(),
+      );
+      if (action.kind === "ignore") return;
       if (action.clearPrompt) status.clear();
-      if (action.arm) {
+      if (action.kind === "arm") {
         const label =
           configuration.choices.find(([value]) => value === selection)?.[1] ||
           selection;
@@ -2314,7 +2322,7 @@
       applyCurrentSort();
       if (configuration.requiresVisitor && !visitorIdentifier) {
         status.set(LOGIN_STATUS, "请登录后使用喜好契合排序", 5_000);
-      } else {
+      } else if (action.refreshMode) {
         void profileRefresh.start(
           configuration.createTarget(selection),
           action.refreshMode,
@@ -2328,9 +2336,9 @@
         return;
       }
 
-      const action = nextActivitySelectionAction(
-        currentCriterion,
-        criterion,
+      const action = nextRemoteSelectionAction(
+        remoteTargetFor(currentCriterion, selectionFor(currentCriterion)),
+        remoteTargetFor(criterion, selectionFor(criterion)),
         status.getKind(),
       );
       if (action.kind === "ignore") return;
@@ -2350,11 +2358,8 @@
           "5 秒内再次点击“上次活跃”以全量刷新",
           5_000,
         );
-      } else if (action.refresh === "incremental") {
-        void activityRefresh.start("incremental");
-      } else if (action.kind === "refresh" && action.mode === "full") {
-        status.clear();
-        void activityRefresh.start("full");
+      } else if (action.refreshMode) {
+        void activityRefresh.start(action.refreshMode);
       }
     }
 
@@ -2446,7 +2451,7 @@
     isRelationRecord,
     needsLargeRequestConfirmation,
     nextBatchState,
-    nextActivitySelectionAction,
+    nextRemoteSelectionAction,
     createTaskScheduler,
     parseProfileDocument,
     parseTimelineDocument,
