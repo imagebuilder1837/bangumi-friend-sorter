@@ -15,3 +15,11 @@ This is a single-context repo with root `CONTEXT.md` and `docs/adr/`. See `docs/
 ### Script metadata
 
 Userscript metadata (the `==UserScript==` header block) is manually managed. Agents must get explicit per-item approval before touching it. See `docs/agents/metadata.md`.
+
+### Commit messages
+
+Commits must use the Conventional Commits format.
+
+### Site styles
+
+Before adding CSS, inspect the current Bangumi site code for reusable styles. Reuse a suitable site style when one exists; write new CSS only after confirming that none fits.

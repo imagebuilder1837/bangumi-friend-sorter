@@ -607,6 +607,10 @@ test("排序栏分左右两组按钮并更新方向文案", () => {
     (child) => child?.tagName === "button",
   );
 
+  assert.equal(controls.bar.id, "browserTools");
+  assert.equal(controls.bar.className, "clearit bangumi-friend-sorter-bar");
+  assert.equal(filters.id, "bangumi-friend-sorter");
+  assert.equal(filters.className, "filters");
   assert.equal(sortOptions.className, "bangumi-friend-sorter-sort-options");
   assert.equal(
     directionOptions.className,
@@ -616,6 +620,11 @@ test("排序栏分左右两组按钮并更新方向文案", () => {
     "加好友时间",
     "名称",
     "上次活跃",
+  ]);
+  assert.deepEqual(sortButtons.map(({ className }) => className), [
+    "l",
+    "l",
+    "l",
   ]);
 
   controls.setCurrent("name", "desc");
@@ -4343,6 +4352,27 @@ test("完成条目数菜单支持触屏点击后保留菜单", () => {
     ["completion", "all"],
     ["completion", "3"],
   ]);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+});
+
+test("完成条目数菜单支持触控笔点击后保留菜单", () => {
+  const selected = [];
+  const page = friendPageWith([]);
+  const controls = sorter.createSortBar(
+    page.document,
+    (criterion, scope) => selected.push([criterion, scope]),
+  );
+  const dropdown = dropdownForBar(controls, "完成条目数");
+  const toggle = dropdown.children[0];
+
+  dropdown.dispatchEvent({ type: "pointerdown", pointerType: "pen" });
+  toggle.click();
+  assert.deepEqual(selected, [["completion", "all"]]);
+  assert.equal(page.document.activeElement, toggle);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+
+  dropdown.dispatchEvent({ type: "pointerleave", pointerType: "pen" });
+  assert.equal(page.document.activeElement, toggle);
   assert.equal(toggle.getAttribute("aria-expanded"), "true");
 });
 
