@@ -11,3 +11,7 @@ Use the default canonical triage labels: `needs-triage`, `needs-info`, `ready-fo
 ### Domain docs
 
 This is a single-context repo with root `CONTEXT.md` and `docs/adr/`. See `docs/agents/domain.md`.
+
+### Script metadata
+
+Userscript metadata (the `==UserScript==` header block) is manually managed. Agents must get explicit per-item approval before touching it. See `docs/agents/metadata.md`.

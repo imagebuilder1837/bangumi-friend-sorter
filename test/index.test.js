@@ -2252,7 +2252,7 @@ test("三个支持站点都使用隔离存储和同源请求刷新两类页面",
   assert.notEqual(domainWrites.get("bangumi.tv"), domainWrites.get("chii.in"));
 });
 
-test("单文件 userscript 元数据描述完整能力并匹配三个站点的双好友页", () => {
+test("单文件 userscript 元数据匹配三个站点的双好友页", () => {
   const source = fs.readFileSync(
     path.join(__dirname, "..", "src", "index.user.js"),
     "utf8",
@@ -2269,10 +2269,8 @@ test("单文件 userscript 元数据描述完整能力并匹配三个站点的�
     "https://chii.in/user/*/friends",
     "https://chii.in/user/*/rev_friends",
   ]);
-  assert.match(
-    source,
-    /^\/\/ @description\s+.*上次活跃.*喜好契合.*完成条目数.*$/m,
-  );
+  // @description 等声明性字段由人工管理，测试只确认其存在，不断言内容。
+  assert.match(source, /^\/\/ @description\s+\S.*$/m);
   assert.doesNotMatch(source, /^\s*(?:import|export)\s/m);
 });
 
