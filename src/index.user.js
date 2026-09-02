@@ -1364,8 +1364,10 @@
         border-left-color: #444;
         border-right-color: #333;
       }
-      // Keep a one-space gap between the fixed "按"/"排序" labels and the
-      // adjacent buttons so hover/focus backgrounds never touch the text.
+      /* CSS has no // comments: one would be absorbed into the next
+         selector, silently dropping the whole rule. */
+      /* Keep a one-space gap between the fixed "按"/"排序" labels and the
+         adjacent buttons so hover/focus backgrounds never touch the text. */
       #bangumi-friend-sorter .bangumi-friend-sorter-prefix {
         margin-right: .25em;
       }
