@@ -1364,6 +1364,14 @@
         border-left-color: #444;
         border-right-color: #333;
       }
+      // Keep a one-space gap between the fixed "按"/"排序" labels and the
+      // adjacent buttons so hover/focus backgrounds never touch the text.
+      #bangumi-friend-sorter .bangumi-friend-sorter-prefix {
+        margin-right: .25em;
+      }
+      #bangumi-friend-sorter .bangumi-friend-sorter-suffix {
+        margin-left: .25em;
+      }
       #bangumi-friend-sorter button.l {
         appearance: none;
         background: none;
@@ -1411,7 +1419,12 @@
 
     const sortOptions = document.createElement("span");
     sortOptions.className = "bangumi-friend-sorter-sort-options";
-    sortOptions.append("按");
+    // Bare text nodes are anonymous flex items and cannot carry margins, so
+    // the fixed labels get wrapper spans for the breathing-room gaps.
+    const prefix = document.createElement("span");
+    prefix.className = "bangumi-friend-sorter-prefix";
+    prefix.textContent = "按";
+    sortOptions.append(prefix);
 
     const buttons = new Map();
     for (const [criterion, label] of SORT_CHOICES) {
@@ -1515,7 +1528,10 @@
     sortOptions.append(relationDropdown);
     sortOptions.append(completionDropdown);
 
-    sortOptions.append("排序");
+    const suffix = document.createElement("span");
+    suffix.className = "bangumi-friend-sorter-suffix";
+    suffix.textContent = "排序";
+    sortOptions.append(suffix);
     const status = document.createElement("span");
     status.id = "bangumi-friend-sorter-status";
     status.setAttribute("aria-live", "polite");
