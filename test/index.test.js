@@ -1001,6 +1001,66 @@ test("页面任务连续五次服务端失败后停止自身并恢复另一页�
   assert.equal(finished[1][1].failures, 0);
 });
 
+test("停止任务在残余请求完成前重新入队不会留下不可调度队列", async () => {
+  const scheduler = sorter.createTaskScheduler({ concurrency: 4 });
+  const started = [];
+  const pending = new Map();
+  const finished = [];
+  const options = {
+    fetch: (item) =>
+      new Promise((resolve) => {
+        started.push(item);
+        pending.set(item, resolve);
+      }),
+    isSuccess: () => false,
+    onFinished: (result) => finished.push(result),
+  };
+
+  scheduler.setForeground("profile");
+  scheduler.enqueue(
+    "profile",
+    ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9"],
+    options,
+  );
+  assert.deepEqual(started, ["a1", "a2", "a3", "a4"]);
+
+  const reject = async (item) => {
+    const resolve = pending.get(item);
+    assert.ok(resolve, `expected a pending request for ${item}`);
+    pending.delete(item);
+    resolve({ kind: "http-error", status: 500 });
+    await new Promise((complete) => setImmediate(complete));
+  };
+
+  await reject("a1");
+  await reject("a2");
+  await reject("a3");
+  await reject("a4");
+  await reject("a5");
+
+  assert.deepEqual(started, [
+    "a1",
+    "a2",
+    "a3",
+    "a4",
+    "a5",
+    "a6",
+    "a7",
+    "a8",
+  ]);
+  const requeue = scheduler.enqueue("profile", ["retry"], options);
+  assert.equal(requeue.added, 0);
+
+  await reject("a6");
+  await reject("a7");
+  await reject("a8");
+
+  assert.equal(finished.length, 1);
+  assert.equal(finished[0].failures, 9);
+  assert.equal(scheduler.getTask("profile"), null);
+  assert.equal(pending.size, 0);
+});
+
 test("没有待请求好友的远程目标不会暂停后台任务", async () => {
   const page = friendPageWith(
     ["a", "b", "c", "d", "e"].map((userIdentifier) => ({
@@ -1252,6 +1312,38 @@ test("同一页面任务收到 429 时立即显示全局限流提示", async () 
     });
   }
   await new Promise((resolve) => setImmediate(resolve));
+});
+
+test("已有完成提示时收到 429 会立即抢占完成队列", async () => {
+  const page = initializeRefreshPage({
+    entries: ["a", "b", "c", "d", "e"].map((userIdentifier) => ({
+      href: `/user/${userIdentifier}`,
+      name: userIdentifier.toUpperCase(),
+    })),
+    now: 100_000,
+    records: {},
+    domParser: {
+      parseFromString: (html) =>
+        html === "timeline"
+          ? timelineDocumentFromFixture("timeline-active-seconds.html")
+          : profileStatsDocument(),
+    },
+    fetchImpl: async (url) => {
+      if (url.endsWith("/timeline")) return refreshResponseFor(url);
+      return { ok: false, status: 429 };
+    },
+  });
+
+  const status = statusFor(page);
+  mainSortControl(page, "上次活跃").click();
+  await waitForCondition(
+    () => status.textContent === "“上次活跃”获取完成",
+  );
+
+  mainSortControl(page, "完成条目数").children[0].click();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(status.textContent, "请求受限，已停止全部获取");
 });
 
 test("本地排序不改变当前远程任务的前台优先级", async () => {

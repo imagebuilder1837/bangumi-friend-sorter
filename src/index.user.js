@@ -175,6 +175,27 @@
     return value?.activity ?? value;
   }
 
+  function compareReliableNumbers(
+    left,
+    right,
+    { isAscending, leftValue, rightValue },
+  ) {
+    const leftHasValue = Number.isFinite(leftValue);
+    const rightHasValue = Number.isFinite(rightValue);
+
+    if (leftHasValue && rightHasValue) {
+      const valueComparison =
+        leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
+      return (
+        valueComparison * (isAscending ? 1 : -1) ||
+        left.originalIndex - right.originalIndex
+      );
+    }
+    if (leftHasValue) return -1;
+    if (rightHasValue) return 1;
+    return left.originalIndex - right.originalIndex;
+  }
+
   const SORT_CONFIG = Object.freeze({
     [SORT.ADDED]: {
       defaultDirection: DIRECTION.ASCENDING,
@@ -217,18 +238,17 @@
           sortData,
           userIdentifierFor(right),
         );
-        const leftHasTime = leftActivity?.kind === "active";
-        const rightHasTime = rightActivity?.kind === "active";
-
-        if (leftHasTime && rightHasTime) {
-          return (
-            (leftActivity.activityAtSeconds - rightActivity.activityAtSeconds) *
-              (isAscending ? 1 : -1) || left.originalIndex - right.originalIndex
-          );
-        }
-        if (leftHasTime) return -1;
-        if (rightHasTime) return 1;
-        return left.originalIndex - right.originalIndex;
+        return compareReliableNumbers(left, right, {
+          isAscending,
+          leftValue:
+            leftActivity?.kind === "active"
+              ? leftActivity.activityAtSeconds
+              : null,
+          rightValue:
+            rightActivity?.kind === "active"
+              ? rightActivity.activityAtSeconds
+              : null,
+        });
       },
     },
     [SORT.COMPLETION]: {
@@ -248,18 +268,15 @@
           userIdentifierFor(right),
           completionScope,
         );
-        const leftHasValue = isCompletionRecord(leftCompletion);
-        const rightHasValue = isCompletionRecord(rightCompletion);
-
-        if (leftHasValue && rightHasValue) {
-          return (
-            (leftCompletion.value - rightCompletion.value) *
-              (isAscending ? 1 : -1) || left.originalIndex - right.originalIndex
-          );
-        }
-        if (leftHasValue) return -1;
-        if (rightHasValue) return 1;
-        return left.originalIndex - right.originalIndex;
+        return compareReliableNumbers(left, right, {
+          isAscending,
+          leftValue: isCompletionRecord(leftCompletion)
+            ? leftCompletion.value
+            : null,
+          rightValue: isCompletionRecord(rightCompletion)
+            ? rightCompletion.value
+            : null,
+        });
       },
     },
     [SORT.RELATION]: {
@@ -285,18 +302,15 @@
           relationVisitorIdentifier,
           relationMetric,
         );
-        const leftHasValue = isRelationRecord(leftRelation, relationMetric);
-        const rightHasValue = isRelationRecord(rightRelation, relationMetric);
-
-        if (leftHasValue && rightHasValue) {
-          return (
-            (leftRelation.value - rightRelation.value) *
-              (isAscending ? 1 : -1) || left.originalIndex - right.originalIndex
-          );
-        }
-        if (leftHasValue) return -1;
-        if (rightHasValue) return 1;
-        return left.originalIndex - right.originalIndex;
+        return compareReliableNumbers(left, right, {
+          isAscending,
+          leftValue: isRelationRecord(leftRelation, relationMetric)
+            ? leftRelation.value
+            : null,
+          rightValue: isRelationRecord(rightRelation, relationMetric)
+            ? rightRelation.value
+            : null,
+        });
       },
     },
   });
@@ -880,6 +894,9 @@
         getState() {
           return { completed, target, total };
         },
+        isStopped() {
+          return batchState.stopped;
+        },
         stop() {
           if (finished) return;
           batchState = { ...batchState, stopped: true };
@@ -907,6 +924,7 @@
     function enqueue(type, items, options, { foreground = false } = {}) {
       if (globallyStopped) return { added: 0, task: null };
       let task = tasks.get(type);
+      if (task?.isStopped()) return { added: 0, task: null };
       if (!task) {
         task = createTask(type, options);
         tasks.set(type, task);
@@ -1079,10 +1097,6 @@
     scope = COMPLETION_SCOPE.ALL,
     now = Date.now(),
   ) {
-    if (typeof scope === "number") {
-      now = scope;
-      scope = COMPLETION_SCOPE.ALL;
-    }
     return friends.filter((friend) => {
       const completion = completionRecordFor(
         completionByUser,
@@ -1111,6 +1125,40 @@
       );
       return !relation || now - relation.fetchedAt > COMPLETION_CACHE_TTL_MS;
     });
+  }
+
+  const PROFILE_TARGET_POLICIES = Object.freeze({
+    [SORT.COMPLETION]: Object.freeze({
+      label: "完成条目数",
+      hasTarget: (record, target) => {
+        const value = record?.values?.[target.scope];
+        return Number.isSafeInteger(value) && value >= 0;
+      },
+      findPending: ({ cache, friends, now, target }) =>
+        findFriendsNeedingCompletion(friends, cache, target.scope, now),
+    }),
+    [SORT.RELATION]: Object.freeze({
+      label: "喜好契合",
+      hasTarget: (record, target) => {
+        const value = record?.relation?.[target.metric];
+        return isRelationRecord(
+          { value, fetchedAt: record?.fetchedAt },
+          target.metric,
+        );
+      },
+      findPending: ({ cache, friends, now, target, visitorIdentifier }) =>
+        findFriendsNeedingRelation(
+          friends,
+          cache,
+          visitorIdentifier,
+          target.metric,
+          now,
+        ),
+    }),
+  });
+
+  function profileTargetPolicyFor(target) {
+    return PROFILE_TARGET_POLICIES[target?.kind] || null;
   }
 
   function positiveIntegerIdentifier(value) {
@@ -1636,16 +1684,7 @@
   }
 
   function profileRecordHasTarget(record, target) {
-    if (!record) return false;
-    if (target.kind === "completion") {
-      const value = record.values?.[target.scope];
-      return Number.isSafeInteger(value) && value >= 0;
-    }
-    const value = record.relation?.[target.metric];
-    return isRelationRecord(
-      { value, fetchedAt: record.fetchedAt },
-      target.metric,
-    );
+    return profileTargetPolicyFor(target)?.hasTarget(record, target) ?? false;
   }
 
   function enqueueRefreshTask({
@@ -1680,15 +1719,6 @@
       { foreground: true },
     );
     return task;
-  }
-
-  function lifecycleWithMode(lifecycle, mode) {
-    return {
-      ...lifecycle,
-      onFetching: (state) => lifecycle.onFetching?.({ ...state, mode }),
-      onProgress: (state) => lifecycle.onProgress?.({ ...state, mode }),
-      onQueue: (state) => lifecycle.onQueue?.({ ...state, mode }),
-    };
   }
 
   function createProfileRefreshCoordinator({
@@ -1769,7 +1799,7 @@
           getDependencies,
           isSuccess: (record, outcome) => outcome.kind === "success",
           keyFor,
-          lifecycle: lifecycleWithMode(lifecycle, mode),
+          lifecycle,
           pending,
           scheduler,
           target: mode,
@@ -1927,6 +1957,12 @@
       transientStatus = null;
     }
 
+    function clearCompletionStatuses() {
+      completionStatuses.length = 0;
+      clearStatusTimeout(completionTimer);
+      completionTimer = null;
+    }
+
     function clear() {
       clearStatusTimeout(statusTimer);
       statusTimer = null;
@@ -1986,6 +2022,11 @@
     function showRateLimit() {
       if (rateLimitStatusShown) return;
       rateLimitStatusShown = true;
+      clearCompletionStatuses();
+      clearStatusTimeout(statusTimer);
+      statusTimer = null;
+      transientStatus = null;
+      loginStatus = null;
       set(REFRESH_STATUS.COMPLETED, "请求受限，已停止全部获取", 5_000);
     }
 
@@ -2077,7 +2118,7 @@
     }
 
     function profileMainLabel(target) {
-      return target.kind === "relation" ? "喜好契合" : "完成条目数";
+      return profileTargetPolicyFor(target).label;
     }
 
     const showActivityProgress = createTaskProgressReporter({
@@ -2173,15 +2214,13 @@
       friends,
       getDependencies: () => pageFetchDependencies(runtime, pageWindow),
       getPending: (target) =>
-        target.kind === "relation"
-          ? findFriendsNeedingRelation(
-              friends,
-              cache,
-              visitorIdentifier,
-              target.metric,
-              now(),
-            )
-          : findFriendsNeedingCompletion(friends, cache, target.scope, now()),
+        profileTargetPolicyFor(target).findPending({
+          cache,
+          friends,
+          now: now(),
+          target,
+          visitorIdentifier,
+        }),
       now,
       lifecycle: profileLifecycle,
       scheduler,
