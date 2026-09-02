@@ -4213,18 +4213,21 @@ test("下拉菜单竖向堆叠并以蓝色药丸呈现悬停与键盘焦点", ()
     /#bangumi-friend-sorter \.bangumi-friend-sorter-dropdown-menu \{([^}]*)\}/,
   );
   assert.ok(menuRule);
-  assert.match(menuRule[1], /width: 200px;/);
+  // 菜单宽度收紧到最宽子项，不留固定定宽。
+  assert.match(menuRule[1], /width: max-content;/);
+  assert.doesNotMatch(menuRule[1], /width: \d+px;/);
+  assert.match(menuRule[1], /flex-direction: column;/);
   assert.match(menuRule[1], /border-radius: 15px;/);
   assert.doesNotMatch(menuRule[1], /flex-wrap/);
   assert.doesNotMatch(menuRule[1], /border:\s*1px solid/);
-  // 菜单项是竖向堆叠的药丸：圆角 100px、外边距 5px，无左右分隔线。
+  // 菜单项是竖向堆叠的药丸：圆角 100px、外边距 5px，不设宽度以拉伸占满菜单，无左右分隔线。
   const itemRule = styleText.match(
     /#bangumi-friend-sorter \.bangumi-friend-sorter-dropdown-menu button\.l \{([^}]*)\}/,
   );
   assert.ok(itemRule);
   assert.match(itemRule[1], /border-radius: 100px;/);
   assert.match(itemRule[1], /margin: 5px;/);
-  assert.match(itemRule[1], /display: block;/);
+  assert.doesNotMatch(itemRule[1], /width/);
   assert.doesNotMatch(itemRule[1], /border-left/);
   assert.doesNotMatch(itemRule[1], /border-right/);
   // 悬停与键盘焦点共用蓝色药丸，不再有粉色 outline。

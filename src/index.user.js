@@ -1306,6 +1306,8 @@
         box-shadow: inset 0 1px 1px hsla(0, 100%, 100%, .3),
           inset 0 -1px 0 hsla(0, 100%, 100%, .1),
           0 3px 15px hsla(214, 100%, 0%, .2);
+        display: flex;
+        flex-direction: column;
         left: -5px;
         opacity: 0;
         padding: 0;
@@ -1315,7 +1317,7 @@
         transform: translateY(-4px);
         transition: opacity .15s ease, transform .15s ease, visibility .15s;
         visibility: hidden;
-        width: 200px;
+        width: max-content;
         z-index: 10;
       }
       #bangumi-friend-sorter .bangumi-friend-sorter-dropdown[data-open="true"]
@@ -1332,12 +1334,10 @@
       #bangumi-friend-sorter .bangumi-friend-sorter-dropdown-menu button.l {
         border-radius: 100px;
         box-sizing: border-box;
-        display: block;
         margin: 5px;
         padding: 5px 15px;
         text-align: left;
         transition: all .2s ease-in-out;
-        width: auto;
       }
       #bangumi-friend-sorter .bangumi-friend-sorter-dropdown-menu button.l:hover,
       #bangumi-friend-sorter
