@@ -2103,6 +2103,41 @@
     };
   }
 
+  function createRefreshLifecycle({
+    applySort,
+    labelFor,
+    persist,
+    progressReporter,
+    status,
+    taskType,
+    onSuccess,
+  }) {
+    return {
+      onFetching: progressReporter,
+      onProgress: progressReporter,
+      onQueue: progressReporter,
+      onRateLimited: status.showRateLimit,
+      onSuccess,
+      onFinished({ failures, globallyStopped, target }) {
+        status.clearProgress(taskType);
+        applySort();
+        persist?.();
+        if (globallyStopped) {
+          status.showRateLimit();
+          return;
+        }
+        const label = labelFor(target);
+        status.set(
+          REFRESH_STATUS.COMPLETED,
+          failures
+            ? `“${label}”获取完成，${failures} 人失败`
+            : `“${label}”获取完成`,
+          5_000,
+        );
+      },
+    };
+  }
+
   function createTaskProgressReporter({
     onProgress,
     status,
@@ -2204,53 +2239,25 @@
         `正在获取“${profileMainLabel(target)}” ${completed}/${total}`,
     });
 
-    const activityLifecycle = {
-      onFetching: showActivityProgress,
-      onFinished: ({ failures, globallyStopped }) => {
-        status.clearProgress("activity");
-        cache.persist();
-        applySortIfCurrent(SORT.ACTIVITY);
-        if (globallyStopped) {
-          status.showRateLimit();
-          return;
-        }
-        status.set(
-          REFRESH_STATUS.COMPLETED,
-          failures
-            ? `“上次活跃”获取完成，${failures} 人失败`
-            : "“上次活跃”获取完成",
-          5_000,
-        );
-      },
-      onProgress: showActivityProgress,
-      onQueue: showActivityProgress,
-      onRateLimited: status.showRateLimit,
+    const activityLifecycle = createRefreshLifecycle({
+      applySort: () => applySortIfCurrent(SORT.ACTIVITY),
+      labelFor: () => "上次活跃",
+      persist: () => cache.persist(),
+      progressReporter: showActivityProgress,
+      status,
+      taskType: "activity",
       onSuccess: (friend, record) =>
         cache.setField(userIdentifierFor(friend), "activity", record, false),
-    };
+    });
 
-    const profileLifecycle = {
-      onFetching: showProfileProgress,
-      onFinished: ({ failures, globallyStopped, target }) => {
-        status.clearProgress("profile");
-        applyProfileSortIfCurrent();
-        if (globallyStopped) {
-          status.showRateLimit();
-          return;
-        }
-        const label = profileMainLabel(target);
-        status.set(
-          REFRESH_STATUS.COMPLETED,
-          failures
-            ? `“${label}”获取完成，${failures} 人失败`
-            : `“${label}”获取完成`,
-          5_000,
-        );
-      },
-      onProgress: showProfileProgress,
-      onQueue: showProfileProgress,
-      onRateLimited: status.showRateLimit,
-    };
+    // createProfileRefreshCoordinator persists the cache in onFinished.
+    const profileLifecycle = createRefreshLifecycle({
+      applySort: applyProfileSortIfCurrent,
+      labelFor: (target) => profileMainLabel(target),
+      progressReporter: showProfileProgress,
+      status,
+      taskType: "profile",
+    });
 
     const activityRefresh = createPageRefreshCoordinator({
       confirmMessage: (count) =>
