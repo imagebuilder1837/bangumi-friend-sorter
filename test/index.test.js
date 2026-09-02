@@ -122,8 +122,12 @@ function friendPageWith(entries) {
   return { document, list };
 }
 
+function filtersFor(page) {
+  return page.list.beforeNodes[0].children[0];
+}
+
 function sortOptionsFor(page) {
-  return page.list.beforeNodes[0].children[0].children[0];
+  return filtersFor(page).children[0];
 }
 
 function statusFor(page) {
@@ -217,8 +221,12 @@ function mainSortControl(page, label) {
   );
 }
 
+function directionOptionsFor(page) {
+  return filtersFor(page).children[1];
+}
+
 function directionButtonsFor(page) {
-  return page.list.beforeNodes[0].children[0].children[1].children.filter(
+  return directionOptionsFor(page).children.filter(
     (child) => child?.tagName === "button",
   );
 }
@@ -579,9 +587,8 @@ test("页面交互按排序维度记忆方向并仅重排当前缓存", () => {
     global.window = previousWindow;
   }
 
-  const filters = page.list.beforeNodes[0].children[0];
-  const sortOptions = filters.children[0];
-  const directionOptions = filters.children[1];
+  const sortOptions = sortOptionsFor(page);
+  const directionOptions = directionOptionsFor(page);
   const sortButtons = sortOptions.children.filter(
     (child) => child?.tagName === "button",
   );
@@ -670,9 +677,8 @@ test("上次活跃刷新完成后沿用刷新期间选择的方向", async () =>
 
   try {
     sorter.initialize();
-    const filters = page.list.beforeNodes[0].children[0];
-    const sortOptions = filters.children[0];
-    const directionOptions = filters.children[1];
+    const sortOptions = sortOptionsFor(page);
+    const directionOptions = directionOptionsFor(page);
     const sortButtons = sortOptions.children.filter(
       (child) => child?.tagName === "button",
     );
@@ -1190,8 +1196,7 @@ test("没有待请求好友的远程目标不会暂停后台任务", async () =>
     },
   });
 
-  const filters = page.list.beforeNodes[0].children[0];
-  const sortOptions = filters.children[0];
+  const sortOptions = sortOptionsFor(page);
   const activityButton = sortOptions.children.find(
     (child) => child?.tagName === "button" && child.textContent === "上次活跃",
   );
@@ -1256,8 +1261,7 @@ test("初始化在时间胶囊和用户主页任务之间切换并恢复暂停�
     },
   });
 
-  const filters = page.list.beforeNodes[0].children[0];
-  const sortOptions = filters.children[0];
+  const sortOptions = sortOptionsFor(page);
   const sortButtons = sortOptions.children.filter(
     (child) => child?.tagName === "button",
   );
@@ -1759,10 +1763,19 @@ test("v3 缓存把喜好契合记录按访问者嵌套保存", () => {
     },
   });
   assert.equal(
-    cache.getRelationField("sai", "visitor", "syncRate"),
+    cache.getRelationField("sai", {
+      visitorIdentifier: "visitor",
+      metric: "syncRate",
+    }),
     syncRecord,
   );
-  assert.equal(cache.getRelationField("sai", "other", "syncRate"), undefined);
+  assert.equal(
+    cache.getRelationField("sai", {
+      visitorIdentifier: "other",
+      metric: "syncRate",
+    }),
+    undefined,
+  );
 });
 
 test("升级缓存版本时删除旧版缓存而不迁移分钟级结果", () => {
@@ -2071,8 +2084,7 @@ test("页面初始化可以注入获取任务所需的运行时依赖", async ()
     onProgress: (completed, total) => progress.push([completed, total]),
   });
 
-  const filters = page.list.beforeNodes[0].children[0];
-  const sortButtons = filters.children[0].children.filter(
+  const sortButtons = sortOptionsFor(page).children.filter(
     (child) => child?.tagName === "button",
   );
   sortButtons[2].click();
@@ -2226,8 +2238,7 @@ test("页面初始化使用注入时钟判断 v2 上次活跃记录迁移有效�
     now: () => now,
   });
 
-  const filters = page.list.beforeNodes[0].children[0];
-  const sortButtons = filters.children[0].children.filter(
+  const sortButtons = sortOptionsFor(page).children.filter(
     (child) => child?.tagName === "button",
   );
   sortButtons[2].click();
@@ -2918,7 +2929,7 @@ test("初始化按当前访问者隔离喜好契合缓存", () => {
       return { ok: true, text: async () => "profile" };
     },
   });
-  const sortOptionsA = pageA.list.beforeNodes[0].children[0].children[0];
+  const sortOptionsA = sortOptionsFor(pageA);
   const relationDropdownA = sortOptionsA.children.find(
     (child) => child.children?.[0]?.textContent === "喜好契合",
   );
@@ -2943,7 +2954,7 @@ test("初始化按当前访问者隔离喜好契合缓存", () => {
       return { ok: true, text: async () => "profile" };
     },
   });
-  const sortOptionsB = pageB.list.beforeNodes[0].children[0].children[0];
+  const sortOptionsB = sortOptionsFor(pageB);
   const relationDropdownB = sortOptionsB.children.find(
     (child) => child.children?.[0]?.textContent === "喜好契合",
   );
@@ -3111,13 +3122,13 @@ test("未登录时选择喜好契合不请求且登录提示不会因重复选�
     },
   });
 
-  const sortOptions = page.list.beforeNodes[0].children[0].children[0];
+  const sortOptions = sortOptionsFor(page);
   const relationDropdown = sortOptions.children.find(
     (child) => child.children?.[0]?.textContent === "喜好契合",
   );
   const relationButton = relationDropdown.children[0];
   const relationMenu = relationDropdown.children[1];
-  const status = page.list.beforeNodes[0].children[0].children[0].children.at(-1);
+  const status = statusFor(page);
 
   relationButton.click();
   assert.equal(requests, 0);
@@ -3152,7 +3163,7 @@ test("选择喜好契合会清除已激活的上次活跃全量刷新提示", ()
     storage: { getItem: () => null, setItem() {}, removeItem() {} },
   });
 
-  const sortOptions = page.list.beforeNodes[0].children[0].children[0];
+  const sortOptions = sortOptionsFor(page);
   const activityButton = sortOptions.children.find(
     (child) => child?.tagName === "button" && child.textContent === "上次活跃",
   );
@@ -3209,7 +3220,7 @@ test("登录提示不会被完成任务完成状态覆盖", async () => {
     fetchImpl: () => pendingProfile,
   });
 
-  const sortOptions = page.list.beforeNodes[0].children[0].children[0];
+  const sortOptions = sortOptionsFor(page);
   const completionDropdown = sortOptions.children.find(
     (child) => child.children?.[0]?.textContent === "完成条目数",
   );
@@ -3287,7 +3298,7 @@ test("不同页面类型的完成提示按队头出现时间各保持五秒", as
       url.endsWith("/timeline") ? activityResponse : profileResponse,
   });
 
-  const sortOptions = page.list.beforeNodes[0].children[0].children[0];
+  const sortOptions = sortOptionsFor(page);
   const activityButton = sortOptions.children.find(
     (child) => child?.tagName === "button" && child.textContent === "上次活跃",
   );
@@ -3396,7 +3407,7 @@ test("主页同步率与共同喜好数切换复用任务、去重请求并按�
     onProgress: (completed, total) => progress.push([completed, total]),
   });
 
-  const sortOptions = page.list.beforeNodes[0].children[0].children[0];
+  const sortOptions = sortOptionsFor(page);
   const relationDropdown = sortOptions.children.find(
     (child) => child.children?.[0]?.textContent === "喜好契合",
   );
@@ -3499,7 +3510,7 @@ test("同步率切换到完成条目数时复用同一主页任务", async () =>
     },
   });
 
-  const sortOptions = page.list.beforeNodes[0].children[0].children[0];
+  const sortOptions = sortOptionsFor(page);
   const relationDropdown = sortOptions.children.find(
     (child) => child.children?.[0]?.textContent === "喜好契合",
   );
@@ -3517,6 +3528,66 @@ test("同步率切换到完成条目数时复用同一主页任务", async () =>
 
   assert.deepEqual(requests, ["a", "b"]);
   assert.deepEqual(page.list.children.map((item) => item.textContent), ["B", "A"]);
+});
+
+test("切换字段但未新增好友时立即更新进行中提示的主按钮名称", async () => {
+  const page = friendPageWith([
+    { href: "/user/a", name: "A" },
+    { href: "/user/b", name: "B" },
+  ]);
+  const now = 100_000;
+  const cachedRecords = {
+    a: {
+      [sorter.completionFieldFor("all")]: { value: 1, fetchedAt: now },
+    },
+    b: {
+      [sorter.completionFieldFor("all")]: { value: 2, fetchedAt: now },
+      relation: { visitor: { syncRate: { value: 10, fetchedAt: now } } },
+    },
+  };
+  let releaseA;
+  const pendingA = new Promise((resolve) => {
+    releaseA = resolve;
+  });
+  const requests = [];
+
+  sorter.initialize({
+    document: page.document,
+    window: {
+      CHOBITS_USERNAME: "visitor",
+      location: { href: "https://bgm.tv/user/viewed/friends" },
+    },
+    storage: friendCacheStorage(cachedRecords),
+    now: () => now,
+    domParser: {
+      parseFromString: () => relationProfileDocument({ syncRate: "50%" }),
+    },
+    fetchImpl: (url) => {
+      requests.push(url);
+      return url.endsWith("/a") ? pendingA : Promise.resolve({
+        ok: true,
+        text: async () => "b",
+      });
+    },
+  });
+
+  const completionButton = dropdownButtonFor(page, "完成条目数");
+  const status = statusFor(page);
+
+  dropdownButtonFor(page, "喜好契合").click();
+  assert.deepEqual(requests, ["/user/a"]);
+  assert.equal(status.textContent, "正在获取“喜好契合” 0/1");
+
+  // 完成条目数（全部）没有缺失或过期好友：只改提示名称，进度数字不变。
+  completionButton.click();
+  assert.deepEqual(requests, ["/user/a"]);
+  assert.equal(status.textContent, "正在获取“完成条目数” 0/1");
+
+  releaseA({ ok: true, text: async () => "a" });
+  await waitForCondition(() =>
+    status.textContent.includes("“完成条目数”获取完成"),
+  );
+  assert.deepEqual(requests, ["/user/a"]);
 });
 
 test("取消大批量扩充后恢复旧主页任务目标", async () => {
@@ -3746,7 +3817,7 @@ test("主页任务按好友用户标识去重重复条目", async () => {
     },
   });
 
-  const sortOptions = page.list.beforeNodes[0].children[0].children[0];
+  const sortOptions = sortOptionsFor(page);
   const relationDropdown = sortOptions.children.find(
     (child) => child.children?.[0]?.textContent === "喜好契合",
   );
@@ -3872,8 +3943,7 @@ test("完成统计范围在刷新期间切换后补取新增缺失好友", async
     },
   });
 
-  const filters = page.list.beforeNodes[0].children[0];
-  const sortOptions = filters.children[0];
+  const sortOptions = sortOptionsFor(page);
   const completionDropdown = sortOptions.children.find(
     (child) => child?.children?.[0]?.textContent === "完成条目数",
   );
@@ -3941,7 +4011,7 @@ test("完成条目数两击全量刷新使用实际范围名称并忽略有效�
     },
   });
 
-  const sortOptions = page.list.beforeNodes[0].children[0].children[0];
+  const sortOptions = sortOptionsFor(page);
   const completionDropdown = sortOptions.children.find(
     (child) => child.children?.[0]?.textContent === "完成条目数",
   );
@@ -4049,7 +4119,7 @@ test("页面增量刷新恰好新增四百个请求时不确认", async () => {
     },
   });
 
-  const sortOptions = page.list.beforeNodes[0].children[0].children[0];
+  const sortOptions = sortOptionsFor(page);
   const completionDropdown = sortOptions.children.find(
     (child) => child.children?.[0]?.textContent === "完成条目数",
   );

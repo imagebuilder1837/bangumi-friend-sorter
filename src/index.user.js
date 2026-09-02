@@ -52,9 +52,10 @@
     COMPLETED: "completed",
     FETCHING: "fetching",
     IDLE: "idle",
+    // 两阶段全量刷新的待命状态：提示再次点击以全量刷新，5 秒后自动清除。
+    AWAITING_FULL_REFRESH: "armed",
+    LOGIN_REQUIRED: "login",
   });
-  const REFRESH_PROMPT_STATUS = "armed";
-  const LOGIN_STATUS = "login";
   const SORT_CHOICES = [
     [SORT.ADDED, "加好友时间"],
     [SORT.NAME, "名称"],
@@ -68,10 +69,6 @@
     [COMPLETION_SCOPE.GAME, "游戏"],
     [COMPLETION_SCOPE.REAL_LIFE, "三次元"],
   ];
-  const RELATION_CHOICES = [
-    ["syncRate", "同步率"],
-    ["commonLikes", "共同喜好数"],
-  ];
   const COMPLETION_CACHE_FIELD_PREFIX = "completion_";
 
   // Normalizes a friend record to its stable cache and sort identity:
@@ -81,7 +78,11 @@
     return typeof identifier === "string" && identifier ? identifier : null;
   }
 
-  const RELATION_METRICS = new Set(["syncRate", "commonLikes"]);
+  const RELATION_CHOICES = [
+    ["syncRate", "同步率"],
+    ["commonLikes", "共同喜好数"],
+  ];
+  const RELATION_METRICS = new Set(RELATION_CHOICES.map(([metric]) => metric));
 
   function isRelationMap(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -232,8 +233,7 @@
         (friend, { relationSelection, sortData }) => {
           const relation = sortData.getRelationField(
             userIdentifierFor(friend),
-            relationSelection.visitorIdentifier,
-            relationSelection.metric,
+            relationSelection,
           );
           return isRelationRecord(relation, relationSelection.metric)
             ? relation.value
@@ -385,7 +385,8 @@
       getField(userIdentifier, field) {
         return records.get(userIdentifier)?.[field];
       },
-      getRelationField(userIdentifier, visitorIdentifier, metric) {
+      getRelationField(userIdentifier, relationSelection) {
+        const { metric, visitorIdentifier } = relationSelection ?? {};
         return records.get(userIdentifier)?.relation?.[visitorIdentifier]?.[
           metric
         ];
@@ -426,17 +427,11 @@
         if (shouldPersist) persist();
         return this;
       },
-      setFields(userIdentifier, values, shouldPersist = true) {
-        const fields = validateFields(values);
-        if (Object.keys(fields).length === 0) return this;
-        records.set(userIdentifier, {
-          ...records.get(userIdentifier),
-          ...fields,
-        });
-        if (shouldPersist) persist();
-        return this;
-      },
     };
+  }
+
+  function relationSelectionFor(relationSelection) {
+    return { metric: RELATION_CHOICES[0][0], ...relationSelection };
   }
 
   function sortFriends(
@@ -465,7 +460,7 @@
           collator,
           completionScope,
           isAscending,
-          relationSelection: { metric: "syncRate", ...relationSelection },
+          relationSelection: relationSelectionFor(relationSelection),
           sortData,
         }),
       );
@@ -474,14 +469,21 @@
     return sorted;
   }
 
-  function findFriendsNeedingActivity(friends, activityByUser, now) {
+  // 增量刷新的统一判据：字段缺失，或距上次获取已超过其来源的有效期。
+  function findFriendsNeedingField(friends, getField, ttlMs, now) {
     return friends.filter((friend) => {
-      const activity = activityByUser.getField(
-        userIdentifierFor(friend),
-        "activity",
-      );
-      return !activity || now - activity.fetchedAt > CACHE_TTL_MS;
+      const field = getField(userIdentifierFor(friend));
+      return !field || now - field.fetchedAt > ttlMs;
     });
+  }
+
+  function findFriendsNeedingActivity(friends, activityByUser, now) {
+    return findFriendsNeedingField(
+      friends,
+      (userIdentifier) => activityByUser.getField(userIdentifier, "activity"),
+      CACHE_TTL_MS,
+      now,
+    );
   }
 
   function remoteTargetFor(criterion, selection) {
@@ -503,7 +505,7 @@
     requestedTarget,
     statusKind,
   ) {
-    const clearPrompt = statusKind === REFRESH_PROMPT_STATUS;
+    const clearPrompt = statusKind === REFRESH_STATUS.AWAITING_FULL_REFRESH;
     const selectAction = (refreshMode = null) => ({
       kind: "select",
       clearPrompt,
@@ -517,7 +519,7 @@
     if (statusKind === REFRESH_STATUS.IDLE) {
       return { kind: "arm", clearPrompt: false, refreshMode: null };
     }
-    if (statusKind === REFRESH_PROMPT_STATUS) {
+    if (statusKind === REFRESH_STATUS.AWAITING_FULL_REFRESH) {
       return {
         kind: "refresh",
         clearPrompt: true,
@@ -1040,13 +1042,13 @@
     scope = COMPLETION_SCOPE.ALL,
     now = Date.now(),
   ) {
-    return friends.filter((friend) => {
-      const completion = completionByUser.getField(
-        userIdentifierFor(friend),
-        completionFieldFor(scope),
-      );
-      return !completion || now - completion.fetchedAt > PROFILE_CACHE_TTL_MS;
-    });
+    return findFriendsNeedingField(
+      friends,
+      (userIdentifier) =>
+        completionByUser.getField(userIdentifier, completionFieldFor(scope)),
+      PROFILE_CACHE_TTL_MS,
+      now,
+    );
   }
 
   function findFriendsNeedingRelation(
@@ -1055,15 +1057,14 @@
     relationSelection,
     now = Date.now(),
   ) {
-    const { metric = "syncRate", visitorIdentifier } = relationSelection ?? {};
-    return friends.filter((friend) => {
-      const relation = relationCache.getRelationField(
-        userIdentifierFor(friend),
-        visitorIdentifier,
-        metric,
-      );
-      return !relation || now - relation.fetchedAt > PROFILE_CACHE_TTL_MS;
-    });
+    const selection = relationSelectionFor(relationSelection);
+    return findFriendsNeedingField(
+      friends,
+      (userIdentifier) =>
+        relationCache.getRelationField(userIdentifier, selection),
+      PROFILE_CACHE_TTL_MS,
+      now,
+    );
   }
 
   const PROFILE_TARGET_POLICIES = Object.freeze({
@@ -1673,7 +1674,7 @@
       }
 
       if (loginStatus) {
-        statusKind = LOGIN_STATUS;
+        statusKind = REFRESH_STATUS.LOGIN_REQUIRED;
         statusElement.textContent = loginStatus.message;
         return;
       }
@@ -1703,7 +1704,8 @@
     }
 
     function clearArmedStatus() {
-      if (transientStatus?.kind !== REFRESH_PROMPT_STATUS) return;
+      if (transientStatus?.kind !== REFRESH_STATUS.AWAITING_FULL_REFRESH)
+        return;
       clearStatusTimeout(statusTimer);
       statusTimer = null;
       transientStatus = null;
@@ -1736,10 +1738,10 @@
         return;
       }
 
-      if (kind !== LOGIN_STATUS && loginStatus) return;
+      if (kind !== REFRESH_STATUS.LOGIN_REQUIRED && loginStatus) return;
       clearStatusTimeout(statusTimer);
       statusTimer = null;
-      if (kind === LOGIN_STATUS) {
+      if (kind === REFRESH_STATUS.LOGIN_REQUIRED) {
         transientStatus = null;
         loginStatus = { message };
       } else {
@@ -2076,8 +2078,12 @@
     const { status } = refresh;
 
     function showLoginRequiredStatus() {
-      if (status.getKind() === LOGIN_STATUS) return;
-      status.set(LOGIN_STATUS, "请登录后使用喜好契合排序", 5_000);
+      if (status.getKind() === REFRESH_STATUS.LOGIN_REQUIRED) return;
+      status.set(
+        REFRESH_STATUS.LOGIN_REQUIRED,
+        "请登录后使用喜好契合排序",
+        5_000,
+      );
     }
 
     const remoteTargetConfigurations = {
@@ -2140,7 +2146,7 @@
       if (action.clearPrompt) status.clear();
       if (action.kind === "arm") {
         status.set(
-          REFRESH_PROMPT_STATUS,
+          REFRESH_STATUS.AWAITING_FULL_REFRESH,
           `5 秒内再次点击“${configuration.armMessageFor(selection)}”以全量刷新`,
           5_000,
         );
@@ -2167,7 +2173,8 @@
     function selectLocalCriterion(criterion) {
       // 本地标准（加好友时间/名称）没有远程目标，不走刷新状态机；
       // 切换时只需清掉可能挂起的全量刷新提示。
-      if (status.getKind() === REFRESH_PROMPT_STATUS) status.clear();
+      if (status.getKind() === REFRESH_STATUS.AWAITING_FULL_REFRESH)
+        status.clear();
 
       currentCriterion = criterion;
       controls.setCurrent(
