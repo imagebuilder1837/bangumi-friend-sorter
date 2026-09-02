@@ -1696,8 +1696,15 @@ test("v3 缓存把喜好契合记录按访问者嵌套保存", () => {
   const syncRecord = { value: 42.5, fetchedAt: 1_000 };
   const likesRecord = { value: 3, fetchedAt: 2_000 };
 
-  cache.setRelationField("visitor", "sai", "syncRate", syncRecord, false);
-  cache.setRelationField("visitor", "sai", "commonLikes", likesRecord);
+  cache.setRelationField(
+    sorter.relationKeyFor("sai", "visitor", "syncRate"),
+    syncRecord,
+    false,
+  );
+  cache.setRelationField(
+    sorter.relationKeyFor("sai", "visitor", "commonLikes"),
+    likesRecord,
+  );
   cache.setField(
     "sai",
     sorter.completionFieldFor("all"),
@@ -1717,8 +1724,14 @@ test("v3 缓存把喜好契合记录按访问者嵌套保存", () => {
       },
     },
   });
-  assert.equal(cache.getRelationField("visitor", "sai", "syncRate"), syncRecord);
-  assert.equal(cache.getRelationField("other", "sai", "syncRate"), undefined);
+  assert.equal(
+    cache.getRelationField(sorter.relationKeyFor("sai", "visitor", "syncRate")),
+    syncRecord,
+  );
+  assert.equal(
+    cache.getRelationField(sorter.relationKeyFor("sai", "other", "syncRate")),
+    undefined,
+  );
 });
 
 test("加载 v3 缓存时把扁平的喜好契合字段迁移为按访问者嵌套", () => {
@@ -1761,9 +1774,14 @@ test("加载 v3 缓存时把扁平的喜好契合字段迁移为按访问者嵌�
     },
   });
   assert.equal(cache.get("broken"), undefined);
-  assert.deepEqual(cache.getRelationField("visitor-a", "sai", "syncRate"), stale);
+  assert.deepEqual(
+    cache.getRelationField(sorter.relationKeyFor("sai", "visitor-a", "syncRate")),
+    stale,
+  );
   assert.equal(
-    cache.getRelationField("visitor-b", "sai", "commonLikes"),
+    cache.getRelationField(
+      sorter.relationKeyFor("sai", "visitor-b", "commonLikes"),
+    ),
     undefined,
   );
 });
@@ -1793,9 +1811,11 @@ test("加载包含无法解码的扁平字段时丢弃该字段并保留其余�
     fieldValidators: sorter.completionCacheFieldValidators(),
   });
 
-  assert.deepEqual(cache.getRelationField("visitor", "sai", "syncRate"), {
-    value: 2,
-    fetchedAt: 2_000,
+  assert.deepEqual(
+    cache.getRelationField(sorter.relationKeyFor("sai", "visitor", "syncRate")),
+    {
+      value: 2,
+      fetchedAt: 2_000,
   });
 });
 
@@ -2609,21 +2629,23 @@ test("喜好契合按访问者隔离并稳定排序可靠零和未知值", () =>
     ["zero", 0],
     ["same-a", 5],
   ]) {
-    cache.setRelationField("visitor-a", userIdentifier, "commonLikes", {
-      value,
-      fetchedAt: now,
-    });
+    cache.setRelationField(
+      sorter.relationKeyFor(userIdentifier, "visitor-a", "commonLikes"),
+      { value, fetchedAt: now },
+    );
   }
-  cache.setRelationField("visitor-b", "unknown", "commonLikes", {
-    value: 99,
-    fetchedAt: now,
-  });
+  cache.setRelationField(
+    sorter.relationKeyFor("unknown", "visitor-b", "commonLikes"),
+    { value: 99, fetchedAt: now },
+  );
 
   assert.deepEqual(
     sorter.sortFriends(friends, {
       criterion: "relation",
-      relationMetric: "commonLikes",
-      relationVisitorIdentifier: "visitor-a",
+      relationSelection: {
+        metric: "commonLikes",
+        visitorIdentifier: "visitor-a",
+      },
       sortData: cache,
       direction: "desc",
     }).map(({ userIdentifier }) => userIdentifier),
@@ -2632,8 +2654,10 @@ test("喜好契合按访问者隔离并稳定排序可靠零和未知值", () =>
   assert.deepEqual(
     sorter.sortFriends(friends, {
       criterion: "relation",
-      relationMetric: "commonLikes",
-      relationVisitorIdentifier: "visitor-a",
+      relationSelection: {
+        metric: "commonLikes",
+        visitorIdentifier: "visitor-a",
+      },
       sortData: cache,
       direction: "asc",
     }).map(({ userIdentifier }) => userIdentifier),
@@ -2642,8 +2666,10 @@ test("喜好契合按访问者隔离并稳定排序可靠零和未知值", () =>
   assert.deepEqual(
     sorter.sortFriends(friends, {
       criterion: "relation",
-      relationMetric: "commonLikes",
-      relationVisitorIdentifier: "visitor-b",
+      relationSelection: {
+        metric: "commonLikes",
+        visitorIdentifier: "visitor-b",
+      },
       sortData: cache,
     }).map(({ userIdentifier }) => userIdentifier),
     ["unknown", "same-b", "high", "zero", "same-a"],
@@ -2657,24 +2683,26 @@ test("同步率排序支持负值并按方向稳定排列", () => {
     { userIdentifier: "zero", originalIndex: 2 },
   ];
   const cache = sorter.createFriendCache(null);
-  cache.setRelationField("visitor", "negative", "syncRate", {
-    value: -3.5,
-    fetchedAt: 1,
-  });
-  cache.setRelationField("visitor", "positive", "syncRate", {
-    value: 2.25,
-    fetchedAt: 1,
-  });
-  cache.setRelationField("visitor", "zero", "syncRate", {
-    value: 0,
-    fetchedAt: 1,
-  });
+  cache.setRelationField(
+    sorter.relationKeyFor("negative", "visitor", "syncRate"),
+    { value: -3.5, fetchedAt: 1 },
+  );
+  cache.setRelationField(
+    sorter.relationKeyFor("positive", "visitor", "syncRate"),
+    { value: 2.25, fetchedAt: 1 },
+  );
+  cache.setRelationField(
+    sorter.relationKeyFor("zero", "visitor", "syncRate"),
+    { value: 0, fetchedAt: 1 },
+  );
 
   assert.deepEqual(
     sorter.sortFriends(friends, {
       criterion: "relation",
-      relationMetric: "syncRate",
-      relationVisitorIdentifier: "visitor",
+      relationSelection: {
+        metric: "syncRate",
+        visitorIdentifier: "visitor",
+      },
       sortData: cache,
       direction: "desc",
     }).map(({ userIdentifier }) => userIdentifier),
@@ -2683,8 +2711,10 @@ test("同步率排序支持负值并按方向稳定排列", () => {
   assert.deepEqual(
     sorter.sortFriends(friends, {
       criterion: "relation",
-      relationMetric: "syncRate",
-      relationVisitorIdentifier: "visitor",
+      relationSelection: {
+        metric: "syncRate",
+        visitorIdentifier: "visitor",
+      },
       sortData: cache,
       direction: "asc",
     }).map(({ userIdentifier }) => userIdentifier),
@@ -2772,25 +2802,24 @@ test("喜好契合缓存按访问者和指标判断七十二小时有效期", ()
     { userIdentifier: "missing" },
   ];
   const cache = sorter.createFriendCache(null);
-  cache.setRelationField("visitor", "fresh", "syncRate", {
-    value: 1.5,
-    fetchedAt: now - hour,
-  });
-  cache.setRelationField("visitor", "boundary", "syncRate", {
-    value: 2,
-    fetchedAt: now - 72 * hour,
-  });
-  cache.setRelationField("visitor", "stale", "syncRate", {
-    value: 3,
-    fetchedAt: now - 72 * hour - 1,
-  });
+  cache.setRelationField(
+    sorter.relationKeyFor("fresh", "visitor", "syncRate"),
+    { value: 1.5, fetchedAt: now - hour },
+  );
+  cache.setRelationField(
+    sorter.relationKeyFor("boundary", "visitor", "syncRate"),
+    { value: 2, fetchedAt: now - 72 * hour },
+  );
+  cache.setRelationField(
+    sorter.relationKeyFor("stale", "visitor", "syncRate"),
+    { value: 3, fetchedAt: now - 72 * hour - 1 },
+  );
 
   assert.deepEqual(
     sorter.findFriendsNeedingRelation(
       friends,
       cache,
-      "visitor",
-      "syncRate",
+      { metric: "syncRate", visitorIdentifier: "visitor" },
       now,
     ).map(({ userIdentifier }) => userIdentifier),
     ["stale", "missing"],
@@ -2799,8 +2828,7 @@ test("喜好契合缓存按访问者和指标判断七十二小时有效期", ()
     sorter.findFriendsNeedingRelation(
       friends,
       cache,
-      "other-visitor",
-      "syncRate",
+      { metric: "syncRate", visitorIdentifier: "other-visitor" },
       now,
     ).map(({ userIdentifier }) => userIdentifier),
     ["fresh", "boundary", "stale", "missing"],

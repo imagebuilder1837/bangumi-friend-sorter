@@ -21,7 +21,9 @@
   "use strict";
 
   const CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
-  const COMPLETION_CACHE_TTL_MS = 72 * 60 * 60 * 1_000;
+  // Completion counts and relation metrics both come from profile pages and
+  // share one validity window, so the TTL is named after the source.
+  const PROFILE_CACHE_TTL_MS = 72 * 60 * 60 * 1_000;
   const PAGE_REQUEST_TIMEOUT_MS = 15_000;
   const SITE_OFFSET_SECONDS = 8 * 60 * 60;
   const CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v3";
@@ -71,7 +73,6 @@
     ["commonLikes", "共同喜好数"],
   ];
   const COMPLETION_CACHE_FIELD_PREFIX = "completion_";
-  const INVALID_STATS_BLOCK = Symbol("invalid-stats-block");
 
   // Normalizes a friend record to its stable cache and sort identity:
   // only a non-empty string identifier counts (see CONTEXT.md, 用户标识).
@@ -168,48 +169,67 @@
     return null;
   }
 
-  function completionRecordFor(source, userIdentifier, scope) {
-    const field = completionFieldFor(scope);
+  // Cache sources speak two protocols: field accessors (createFriendCache)
+  // or a plain per-user record map. Resolve the protocol once per user so the
+  // record accessors below share a single dual-channel read.
+  function cacheViewFor(source, userIdentifier) {
     if (typeof source?.getField === "function") {
-      return source.getField(userIdentifier, field);
+      return {
+        activity: () => source.getField(userIdentifier, "activity"),
+        completion: (field) => source.getField(userIdentifier, field),
+        relation(visitorIdentifier, metric) {
+          if (typeof source.getRelationField === "function") {
+            return source.getRelationField(
+              relationKeyFor(userIdentifier, visitorIdentifier, metric),
+            );
+          }
+          return source.getField(userIdentifier, "relation")?.[
+            visitorIdentifier
+          ]?.[metric];
+        },
+      };
     }
 
     const value = source?.get?.(userIdentifier);
-    return (
-      completionRecordFromValue(value) ||
-      completionRecordFromValue(value?.[field]) ||
-      completionRecordFromValue(value?.[scope])
+    return {
+      activity: () => value?.activity ?? value,
+      completion: (field, scope) =>
+        completionRecordFromValue(value) ||
+        completionRecordFromValue(value?.[field]) ||
+        completionRecordFromValue(value?.[scope]),
+      relation: (visitorIdentifier, metric) =>
+        value?.relation?.[visitorIdentifier]?.[metric],
+    };
+  }
+
+  function activityRecordFor(source, userIdentifier) {
+    return cacheViewFor(source, userIdentifier).activity();
+  }
+
+  function completionRecordFor(source, userIdentifier, scope) {
+    return cacheViewFor(source, userIdentifier).completion(
+      completionFieldFor(scope),
+      scope,
     );
   }
 
-  function relationRecordFor(
-    source,
+  // (用户标识, 访问者标识, 指标) identifies one 喜好契合 record; bundle the
+  // triple into one key so relation accessors take a single argument
+  // (see CONTEXT.md, 喜好契合).
+  function relationKeyFor(
     userIdentifier,
     visitorIdentifier,
     metric = "syncRate",
   ) {
-    if (!visitorIdentifier) return null;
-    if (typeof source?.getRelationField === "function") {
-      return source.getRelationField(visitorIdentifier, userIdentifier, metric);
-    }
-    if (typeof source?.getField === "function") {
-      return source.getField(userIdentifier, "relation")?.[visitorIdentifier]?.[
-        metric
-      ];
-    }
-
-    return source?.get?.(userIdentifier)?.relation?.[visitorIdentifier]?.[
-      metric
-    ];
+    return { metric, userIdentifier, visitorIdentifier };
   }
 
-  function activityRecordFor(source, userIdentifier) {
-    if (typeof source?.getField === "function") {
-      return source.getField(userIdentifier, "activity");
-    }
-
-    const value = source?.get?.(userIdentifier);
-    return value?.activity ?? value;
+  function relationRecordFor(source, relationKey) {
+    if (!relationKey?.visitorIdentifier) return null;
+    return cacheViewFor(source, relationKey.userIdentifier).relation(
+      relationKey.visitorIdentifier,
+      relationKey.metric,
+    );
   }
 
   function compareReliableNumbers(
@@ -231,6 +251,17 @@
     if (leftHasValue) return -1;
     if (rightHasValue) return 1;
     return left.originalIndex - right.originalIndex;
+  }
+
+  // 上次活跃, 完成条目数 and 喜好契合 all rank by a reliable numeric value:
+  // each sort only declares how to read one side's value.
+  function numericValueCompare(readValue) {
+    return (left, right, context) =>
+      compareReliableNumbers(left, right, {
+        isAscending: context.isAscending,
+        leftValue: readValue(left, context),
+        rightValue: readValue(right, context),
+      });
   }
 
   const SORT_CONFIG = Object.freeze({
@@ -266,27 +297,10 @@
         [DIRECTION.ASCENDING]: "从旧到新",
         [DIRECTION.DESCENDING]: "从新到旧",
       }),
-      compare(left, right, { isAscending, sortData }) {
-        const leftActivity = activityRecordFor(
-          sortData,
-          userIdentifierFor(left),
-        );
-        const rightActivity = activityRecordFor(
-          sortData,
-          userIdentifierFor(right),
-        );
-        return compareReliableNumbers(left, right, {
-          isAscending,
-          leftValue:
-            leftActivity?.kind === "active"
-              ? leftActivity.activityAtSeconds
-              : null,
-          rightValue:
-            rightActivity?.kind === "active"
-              ? rightActivity.activityAtSeconds
-              : null,
-        });
-      },
+      compare: numericValueCompare((friend, { sortData }) => {
+        const activity = activityRecordFor(sortData, userIdentifierFor(friend));
+        return activity?.kind === "active" ? activity.activityAtSeconds : null;
+      }),
     },
     [SORT.COMPLETION]: {
       defaultDirection: DIRECTION.DESCENDING,
@@ -294,27 +308,14 @@
         [DIRECTION.ASCENDING]: "从低到高",
         [DIRECTION.DESCENDING]: "从高到低",
       }),
-      compare(left, right, { completionScope, isAscending, sortData }) {
-        const leftCompletion = completionRecordFor(
+      compare: numericValueCompare((friend, { completionScope, sortData }) => {
+        const completion = completionRecordFor(
           sortData,
-          userIdentifierFor(left),
+          userIdentifierFor(friend),
           completionScope,
         );
-        const rightCompletion = completionRecordFor(
-          sortData,
-          userIdentifierFor(right),
-          completionScope,
-        );
-        return compareReliableNumbers(left, right, {
-          isAscending,
-          leftValue: isCompletionRecord(leftCompletion)
-            ? leftCompletion.value
-            : null,
-          rightValue: isCompletionRecord(rightCompletion)
-            ? rightCompletion.value
-            : null,
-        });
-      },
+        return isCompletionRecord(completion) ? completion.value : null;
+      }),
     },
     [SORT.RELATION]: {
       defaultDirection: DIRECTION.DESCENDING,
@@ -322,33 +323,21 @@
         [DIRECTION.ASCENDING]: "从低到高",
         [DIRECTION.DESCENDING]: "从高到低",
       }),
-      compare(
-        left,
-        right,
-        { isAscending, relationMetric, relationVisitorIdentifier, sortData },
-      ) {
-        const leftRelation = relationRecordFor(
-          sortData,
-          userIdentifierFor(left),
-          relationVisitorIdentifier,
-          relationMetric,
-        );
-        const rightRelation = relationRecordFor(
-          sortData,
-          userIdentifierFor(right),
-          relationVisitorIdentifier,
-          relationMetric,
-        );
-        return compareReliableNumbers(left, right, {
-          isAscending,
-          leftValue: isRelationRecord(leftRelation, relationMetric)
-            ? leftRelation.value
-            : null,
-          rightValue: isRelationRecord(rightRelation, relationMetric)
-            ? rightRelation.value
-            : null,
-        });
-      },
+      compare: numericValueCompare(
+        (friend, { relationSelection, sortData }) => {
+          const relation = relationRecordFor(
+            sortData,
+            relationKeyFor(
+              userIdentifierFor(friend),
+              relationSelection.visitorIdentifier,
+              relationSelection.metric,
+            ),
+          );
+          return isRelationRecord(relation, relationSelection.metric)
+            ? relation.value
+            : null;
+        },
+      ),
     },
   });
   const DEFAULT_SORT_CONFIG = Object.freeze({
@@ -494,10 +483,10 @@
       getField(userIdentifier, field) {
         return records.get(userIdentifier)?.[field];
       },
-      getRelationField(visitorIdentifier, userIdentifier, metric) {
-        return records.get(userIdentifier)?.relation?.[visitorIdentifier]?.[
-          metric
-        ];
+      getRelationField(relationKey) {
+        return records.get(relationKey.userIdentifier)?.relation?.[
+          relationKey.visitorIdentifier
+        ]?.[relationKey.metric];
       },
       persist,
       setField(userIdentifier, field, value, shouldPersist = true) {
@@ -511,13 +500,8 @@
         if (shouldPersist) persist();
         return this;
       },
-      setRelationField(
-        visitorIdentifier,
-        userIdentifier,
-        metric,
-        value,
-        shouldPersist = true,
-      ) {
+      setRelationField(relationKey, value, shouldPersist = true) {
+        const { metric, userIdentifier, visitorIdentifier } = relationKey || {};
         if (!visitorIdentifier || !isRelationRecord(value, metric)) {
           return this;
         }
@@ -559,8 +543,7 @@
       }),
       direction,
       completionScope = COMPLETION_SCOPE.ALL,
-      relationMetric = "syncRate",
-      relationVisitorIdentifier,
+      relationSelection,
     } = {},
   ) {
     const sorted = [...friends];
@@ -568,13 +551,14 @@
 
     const sortConfig = SORT_CONFIG[criterion];
     if (sortConfig?.compare) {
+      // Each compare destructures only the context slice it sorts by; the
+      // visitor-scoped relation parts travel together as one selection.
       sorted.sort((left, right) =>
         sortConfig.compare(left, right, {
           collator,
           completionScope,
           isAscending,
-          relationMetric,
-          relationVisitorIdentifier,
+          relationSelection: { metric: "syncRate", ...relationSelection },
           sortData,
         }),
       );
@@ -935,7 +919,7 @@
           }
           target = nextTarget;
           if (
-            newItems.length > 400 &&
+            needsLargeRequestConfirmation(newItems.length) &&
             options.confirmRequest &&
             !options.confirmRequest(confirmMessage(newItems.length, nextTarget))
           ) {
@@ -1050,6 +1034,21 @@
     });
   }
 
+  // Batch refresh helpers share one shape: fetch each friend's page, persist
+  // the cache once at the end, and report how many friends failed.
+  async function runFriendPageRefresh(
+    friends,
+    { cache, fetchPage, onProgress, onSuccess },
+  ) {
+    const result = await runPageFetchTask(friends, {
+      fetchPage,
+      onProgress,
+      onSuccess,
+    });
+    cache.persist();
+    return { failures: result.failures };
+  }
+
   function parseCompletionCount(block) {
     const descriptions = [...(block?.querySelectorAll?.(".desc") || [])];
     const completionDescriptions = descriptions.filter(
@@ -1074,11 +1073,16 @@
     return null;
   }
 
+  // Reading a 完成统计范围 block is a three-way outcome: exactly one block,
+  // no block at all, or an ambiguous duplicate set.
   function statsBlockFor(container, scope) {
-    const selector = `#userStats_${scope}`;
-    const blocks = [...(container?.querySelectorAll?.(selector) || [])];
-    if (blocks.length > 1) return INVALID_STATS_BLOCK;
-    return blocks[0] || null;
+    const blocks = [
+      ...(container?.querySelectorAll?.(`#userStats_${scope}`) || []),
+    ];
+    if (blocks.length > 1) return { kind: "ambiguous" };
+    return blocks[0]
+      ? { block: blocks[0], kind: "found" }
+      : { kind: "missing" };
   }
 
   function parseSyncRate(value) {
@@ -1125,21 +1129,21 @@
     }
 
     const aggregate = statsBlockFor(container, COMPLETION_SCOPE.ALL);
-    if (aggregate === INVALID_STATS_BLOCK || !aggregate) {
+    if (aggregate.kind !== "found") {
       return null;
     }
-    const aggregateValue = parseCompletionCount(aggregate);
+    const aggregateValue = parseCompletionCount(aggregate.block);
     if (aggregateValue === null) return null;
 
     const completionValues = { [COMPLETION_SCOPE.ALL]: aggregateValue };
     for (const [scope] of COMPLETION_CHOICES.slice(1)) {
-      const block = statsBlockFor(container, scope);
-      if (block === INVALID_STATS_BLOCK) return null;
-      if (!block) {
+      const stats = statsBlockFor(container, scope);
+      if (stats.kind === "ambiguous") return null;
+      if (stats.kind === "missing") {
         completionValues[scope] = 0;
         continue;
       }
-      const value = parseCompletionCount(block);
+      const value = parseCompletionCount(stats.block);
       if (value !== null) completionValues[scope] = value;
     }
 
@@ -1169,27 +1173,23 @@
         userIdentifierFor(friend),
         scope,
       );
-      return (
-        !completion || now - completion.fetchedAt > COMPLETION_CACHE_TTL_MS
-      );
+      return !completion || now - completion.fetchedAt > PROFILE_CACHE_TTL_MS;
     });
   }
 
   function findFriendsNeedingRelation(
     friends,
     relationCache,
-    visitorIdentifier,
-    metric = "syncRate",
+    relationSelection,
     now = Date.now(),
   ) {
+    const { metric = "syncRate", visitorIdentifier } = relationSelection ?? {};
     return friends.filter((friend) => {
       const relation = relationRecordFor(
         relationCache,
-        userIdentifierFor(friend),
-        visitorIdentifier,
-        metric,
+        relationKeyFor(userIdentifierFor(friend), visitorIdentifier, metric),
       );
-      return !relation || now - relation.fetchedAt > COMPLETION_CACHE_TTL_MS;
+      return !relation || now - relation.fetchedAt > PROFILE_CACHE_TTL_MS;
     });
   }
 
@@ -1216,8 +1216,7 @@
         findFriendsNeedingRelation(
           friends,
           cache,
-          visitorIdentifier,
-          target.selection,
+          { metric: target.selection, visitorIdentifier },
           now,
         ),
     }),
@@ -1328,9 +1327,7 @@
     if (!visitorIdentifier) return;
     for (const [metric, value] of Object.entries(record.relation || {})) {
       cache.setRelationField(
-        visitorIdentifier,
-        userIdentifierFor(friend),
-        metric,
+        relationKeyFor(userIdentifierFor(friend), visitorIdentifier, metric),
         { value, fetchedAt: record.fetchedAt },
         false,
       );
@@ -1338,9 +1335,11 @@
   }
 
   async function refreshProfilePages(friends, options) {
-    const result = await runPageFetchTask(friends, {
+    return runFriendPageRefresh(friends, {
+      cache: options.cache,
       fetchPage: (friend) =>
         fetchProfile(friend, options.fetchImpl, options.domParser, options.now),
+      onProgress: options.onProgress,
       onSuccess(friend, record) {
         saveProfileRecord(
           options.cache,
@@ -1349,10 +1348,7 @@
           record,
         );
       },
-      onProgress: options.onProgress,
     });
-    options.cache.persist();
-    return { failures: result.failures };
   }
 
   function readFriends(list, baseUrl = window.location.href) {
@@ -1727,7 +1723,8 @@
   }
 
   async function refreshActivities(friends, options) {
-    const result = await runPageFetchTask(friends, {
+    return runFriendPageRefresh(friends, {
+      cache: options.cache,
       fetchPage: (friend) =>
         fetchActivity(
           friend,
@@ -1735,6 +1732,7 @@
           options.domParser,
           options.now,
         ),
+      onProgress: options.onProgress,
       onSuccess(friend, record) {
         options.cache.setField(
           userIdentifierFor(friend),
@@ -1743,57 +1741,11 @@
           false,
         );
       },
-      onProgress: options.onProgress,
     });
-    options.cache.persist();
-    return { failures: result.failures };
   }
 
   function profileRecordHasTarget(record, target) {
     return profileTargetPolicyFor(target)?.hasTarget(record, target) ?? false;
-  }
-
-  function createRefreshCoordinator({
-    confirmMessage,
-    confirmRequest,
-    getDependencies,
-    scheduler,
-  }) {
-    return {
-      start({
-        fetchItem,
-        getPending,
-        isSuccess = (record, outcome) => outcome.kind === "success",
-        keyFor,
-        lifecycle = {},
-        target,
-        taskType,
-      }) {
-        if (scheduler.isGloballyStopped() || !getDependencies()) return null;
-
-        const pending = getPending();
-        if (pending.length === 0 && !scheduler.getTask(taskType)) return null;
-        const { task } = scheduler.enqueue(
-          taskType,
-          pending,
-          {
-            confirmMessage,
-            confirmRequest,
-            fetch: (item) => {
-              const dependencies = getDependencies();
-              if (!dependencies) return { kind: "network-error" };
-              return fetchItem(item, dependencies);
-            },
-            isSuccess,
-            keyFor,
-            lifecycle,
-            target,
-          },
-          { foreground: true },
-        );
-        return task;
-      },
-    };
   }
 
   function browserStorage(pageWindow = window) {
@@ -2103,6 +2055,7 @@
     });
     const confirmRequest =
       runtime.confirm ?? pageWindow.confirm?.bind(pageWindow) ?? (() => false);
+    const getDependencies = () => pageFetchDependencies(runtime, pageWindow);
 
     function profileLabelFor(target) {
       return profileTargetPolicyFor(target)?.label ?? target?.kind ?? "";
@@ -2154,72 +2107,93 @@
       },
     };
 
-    const refreshCoordinator = createRefreshCoordinator({
-      confirmMessage: (count) =>
-        `本次新增获取的好友数量过多（${count} 人），是否继续？`,
-      confirmRequest,
-      getDependencies: () => pageFetchDependencies(runtime, pageWindow),
-      scheduler,
-    });
+    // Starts a foreground scheduler task for one refresh mode; guarded so a
+    // stopped scheduler or missing fetch dependencies never enqueue work.
+    function startRefresh({
+      fetchItem,
+      getPending,
+      isSuccess = (record, outcome) => outcome.kind === "success",
+      keyFor,
+      lifecycle = {},
+      target,
+      taskType,
+    }) {
+      if (scheduler.isGloballyStopped() || !getDependencies()) return null;
 
-    const activityRefresh = {
-      start(mode) {
-        return refreshCoordinator.start({
-          fetchItem: (friend, dependencies) =>
-            fetchActivity(
-              friend,
-              dependencies.fetchImpl,
-              dependencies.domParser,
-              now,
-            ),
-          getPending: () =>
-            mode === "full"
-              ? friends
-              : findFriendsNeedingActivity(friends, cache, now()),
-          keyFor: userIdentifierFor,
-          lifecycle: activityLifecycle,
-          target: mode,
-          taskType: "activity",
-        });
-      },
-    };
-
-    const profileRefresh = {
-      start(target, mode = "incremental") {
-        return refreshCoordinator.start({
-          fetchItem: (friend, dependencies) =>
-            fetchProfile(
-              friend,
-              dependencies.fetchImpl,
-              dependencies.domParser,
-              now,
-            ),
-          getPending: () =>
-            mode === "full"
-              ? friends
-              : profileTargetPolicyFor(target).findPending({
-                  cache,
-                  friends,
-                  now: now(),
-                  target,
-                  visitorIdentifier,
-                }),
-          isSuccess: (record, outcome, nextTarget) =>
-            outcome.kind === "success" &&
-            profileRecordHasTarget(record, nextTarget),
-          keyFor: userIdentifierFor,
-          lifecycle: profileLifecycle,
+      const pending = getPending();
+      if (pending.length === 0 && !scheduler.getTask(taskType)) return null;
+      const { task } = scheduler.enqueue(
+        taskType,
+        pending,
+        {
+          confirmMessage: (count) =>
+            `本次新增获取的好友数量过多（${count} 人），是否继续？`,
+          confirmRequest,
+          fetch: (item) => {
+            const dependencies = getDependencies();
+            if (!dependencies) return { kind: "network-error" };
+            return fetchItem(item, dependencies);
+          },
+          isSuccess,
+          keyFor,
+          lifecycle,
           target,
-          taskType: "profile",
-        });
-      },
-    };
+        },
+        { foreground: true },
+      );
+      return task;
+    }
 
-    return {
-      startActivity: (mode) => activityRefresh.start(mode),
-      startProfile: (target, mode) => profileRefresh.start(target, mode),
-      status,
-    };
+    function startActivity(mode) {
+      return startRefresh({
+        fetchItem: (friend, dependencies) =>
+          fetchActivity(
+            friend,
+            dependencies.fetchImpl,
+            dependencies.domParser,
+            now,
+          ),
+        getPending: () =>
+          mode === "full"
+            ? friends
+            : findFriendsNeedingActivity(friends, cache, now()),
+        keyFor: userIdentifierFor,
+        lifecycle: activityLifecycle,
+        target: mode,
+        taskType: "activity",
+      });
+    }
+
+    function startProfile(target, mode = "incremental") {
+      return startRefresh({
+        fetchItem: (friend, dependencies) =>
+          fetchProfile(
+            friend,
+            dependencies.fetchImpl,
+            dependencies.domParser,
+            now,
+          ),
+        getPending: () =>
+          mode === "full"
+            ? friends
+            : profileTargetPolicyFor(target).findPending({
+                cache,
+                friends,
+                now: now(),
+                target,
+                visitorIdentifier,
+              }),
+        isSuccess: (record, outcome, nextTarget) =>
+          outcome.kind === "success" &&
+          profileRecordHasTarget(record, nextTarget),
+        keyFor: userIdentifierFor,
+        lifecycle: profileLifecycle,
+        target,
+        taskType: "profile",
+      });
+    }
+
+    return { startActivity, startProfile, status };
   }
 
   function createFriendSortController({
@@ -2259,8 +2233,10 @@
         collator,
         direction: directionByCriterion.get(currentCriterion),
         completionScope,
-        relationMetric,
-        relationVisitorIdentifier: visitorIdentifier,
+        relationSelection: {
+          metric: relationMetric,
+          visitorIdentifier,
+        },
       });
     }
 
@@ -2496,6 +2472,7 @@
     parseProfileDocument,
     parseTimelineDocument,
     relationFieldFor,
+    relationKeyFor,
     refreshProfilePages,
     refreshActivities,
     runPageFetchTask,
