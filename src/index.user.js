@@ -213,10 +213,7 @@
         [DIRECTION.DESCENDING]: "从新到旧",
       }),
       compare: numericValueCompare((friend, { friendCache }) => {
-        const activity = friendCache.getField(
-          userIdentifierFor(friend),
-          "activity",
-        );
+        const activity = friendCache.activityFor(userIdentifierFor(friend));
         return activity?.kind === "active" ? activity.activityAtSeconds : null;
       }),
     },
@@ -228,9 +225,9 @@
       }),
       compare: numericValueCompare(
         (friend, { completionScope, friendCache }) => {
-          const completion = friendCache.getField(
+          const completion = friendCache.completionFor(
             userIdentifierFor(friend),
-            completionFieldFor(completionScope),
+            completionScope,
           );
           return isCompletionRecord(completion) ? completion.value : null;
         },
@@ -244,7 +241,7 @@
       }),
       compare: numericValueCompare(
         (friend, { relationSelection, friendCache }) => {
-          const relation = friendCache.getRelationField(
+          const relation = friendCache.relationFor(
             userIdentifierFor(friend),
             relationSelection,
           );
@@ -379,62 +376,124 @@
 
     remove(LEGACY_CACHE_STORAGE_KEY);
 
-    return {
-      entries: () => records.entries(),
-      get: (userIdentifier) => records.get(userIdentifier),
-      getField(userIdentifier, field) {
-        return records.get(userIdentifier)?.[field];
-      },
-      getRelationField(userIdentifier, relationSelection) {
-        const { metric, visitorIdentifier } = relationSelection ?? {};
-        return records.get(userIdentifier)?.relation?.[visitorIdentifier]?.[
-          metric
-        ];
-      },
-      persist,
-      // Task batches pass { persist: false } per field and persist once
-      // when the task finishes; direct writers keep the persisting default.
-      setField(
-        userIdentifier,
-        field,
-        value,
-        { persist: shouldPersist = true } = {},
-      ) {
-        const validator = validatorFor(field);
-        if (typeof validator !== "function" || !validator(value)) {
-          return this;
-        }
-        const fields = records.get(userIdentifier) || {};
-        fields[field] = value;
-        records.set(userIdentifier, fields);
-        if (shouldPersist) persist();
-        return this;
-      },
-      setRelationField(
-        userIdentifier,
-        visitorIdentifier,
-        metric,
-        value,
-        { persist: shouldPersist = true } = {},
-      ) {
-        if (!visitorIdentifier || !isRelationRecord(value, metric)) {
-          return this;
-        }
-        const fields = records.get(userIdentifier) || {};
-        records.set(userIdentifier, {
-          ...fields,
-          relation: {
-            ...fields.relation,
-            [visitorIdentifier]: {
-              ...fields.relation?.[visitorIdentifier],
-              [metric]: value,
-            },
+    function fieldFor(userIdentifier, field) {
+      return records.get(userIdentifier)?.[field];
+    }
+
+    function relationRecordFor(userIdentifier, relationSelection) {
+      const { metric, visitorIdentifier } = relationSelection ?? {};
+      return records.get(userIdentifier)?.relation?.[visitorIdentifier]?.[
+        metric
+      ];
+    }
+
+    function setField(userIdentifier, field, value) {
+      const validator = validatorFor(field);
+      if (typeof validator !== "function" || !validator(value)) return;
+      const fields = records.get(userIdentifier) || {};
+      fields[field] = value;
+      records.set(userIdentifier, fields);
+    }
+
+    function setRelationField(
+      userIdentifier,
+      visitorIdentifier,
+      metric,
+      value,
+    ) {
+      if (!visitorIdentifier || !isRelationRecord(value, metric)) return;
+      const fields = records.get(userIdentifier) || {};
+      records.set(userIdentifier, {
+        ...fields,
+        relation: {
+          ...fields.relation,
+          [visitorIdentifier]: {
+            ...fields.relation?.[visitorIdentifier],
+            [metric]: value,
           },
+        },
+      });
+    }
+
+    const cache = {
+      activityFor(userIdentifier) {
+        return fieldFor(userIdentifier, "activity");
+      },
+      completionFor(userIdentifier, scope) {
+        return fieldFor(userIdentifier, completionFieldFor(scope));
+      },
+      relationFor(userIdentifier, relationSelection) {
+        return relationRecordFor(userIdentifier, relationSelection);
+      },
+      friendsNeedingRefresh(
+        friends,
+        target,
+        { mode = "incremental", visitorIdentifier } = {},
+      ) {
+        if (mode === "full") return [...friends];
+        const targetReaders = {
+          [SORT.ACTIVITY]: {
+            read: (userIdentifier) => cache.activityFor(userIdentifier),
+            ttlMs: CACHE_TTL_MS,
+          },
+          [SORT.COMPLETION]: {
+            read: (userIdentifier) =>
+              cache.completionFor(userIdentifier, target?.scope),
+            ttlMs: PROFILE_CACHE_TTL_MS,
+          },
+          [SORT.RELATION]: {
+            read: (userIdentifier) =>
+              cache.relationFor(userIdentifier, {
+                metric: target?.metric,
+                visitorIdentifier,
+              }),
+            ttlMs: PROFILE_CACHE_TTL_MS,
+          },
+        };
+        const policy = targetReaders[target?.kind];
+        if (!policy) return [];
+        const currentTime = now();
+        return friends.filter((friend) => {
+          const record = policy.read(userIdentifierFor(friend));
+          return !record || currentTime - record.fetchedAt > policy.ttlMs;
         });
-        if (shouldPersist) persist();
-        return this;
+      },
+      beginRefresh({ visitorIdentifier } = {}) {
+        let completed = false;
+        return {
+          accept(userIdentifier, result) {
+            if (completed || !userIdentifier || !result) return this;
+            if (result.activity) {
+              setField(userIdentifier, "activity", result.activity);
+            }
+            for (const [scope, value] of Object.entries(
+              result.completion || {},
+            )) {
+              setField(userIdentifier, completionFieldFor(scope), {
+                value,
+                fetchedAt: result.fetchedAt,
+              });
+            }
+            if (visitorIdentifier) {
+              for (const [metric, value] of Object.entries(
+                result.relation || {},
+              )) {
+                setRelationField(userIdentifier, visitorIdentifier, metric, {
+                  value,
+                  fetchedAt: result.fetchedAt,
+                });
+              }
+            }
+            return this;
+          },
+          complete() {
+            if (!completed) persist();
+            completed = true;
+          },
+        };
       },
     };
+    return cache;
   }
 
   function relationSelectionFor(relationSelection) {
@@ -476,23 +535,6 @@
     }
 
     return sorted;
-  }
-
-  // 增量刷新的统一判据：字段缺失，或距上次获取已超过其来源的有效期。
-  function findFriendsNeedingField(friends, getField, ttlMs, now) {
-    return friends.filter((friend) => {
-      const field = getField(userIdentifierFor(friend));
-      return !field || now - field.fetchedAt > ttlMs;
-    });
-  }
-
-  function findFriendsNeedingActivity(friends, activityByUser, now) {
-    return findFriendsNeedingField(
-      friends,
-      (userIdentifier) => activityByUser.getField(userIdentifier, "activity"),
-      CACHE_TTL_MS,
-      now,
-    );
   }
 
   // Remote targets are one shape apart from a single selection field:
@@ -781,8 +823,7 @@
       const keyFor = options.keyFor ?? ((item) => item);
       const confirmMessage = options.confirmMessage ?? (() => "");
       const isSuccess =
-        options.isSuccess ??
-        ((_record, outcome) => outcome.kind === "success");
+        options.isSuccess ?? ((_record, outcome) => outcome.kind === "success");
       const lifecycle = options.lifecycle;
       const queue = [];
       const queuedKeys = new Set();
@@ -1063,39 +1104,8 @@
 
     const parsed = { kind: "success" };
     if (completionValues) parsed.completion = completionValues;
-    if (relation !== null) parsed.parsedRelation = relation;
+    if (relation !== null) parsed.relation = relation;
     return parsed;
-  }
-
-  function findFriendsNeedingCompletion(
-    friends,
-    completionByUser,
-    scope = COMPLETION_SCOPE.ALL,
-    now = Date.now(),
-  ) {
-    return findFriendsNeedingField(
-      friends,
-      (userIdentifier) =>
-        completionByUser.getField(userIdentifier, completionFieldFor(scope)),
-      PROFILE_CACHE_TTL_MS,
-      now,
-    );
-  }
-
-  function findFriendsNeedingRelation(
-    friends,
-    relationCache,
-    relationSelection,
-    now = Date.now(),
-  ) {
-    const selection = relationSelectionFor(relationSelection);
-    return findFriendsNeedingField(
-      friends,
-      (userIdentifier) =>
-        relationCache.getRelationField(userIdentifier, selection),
-      PROFILE_CACHE_TTL_MS,
-      now,
-    );
   }
 
   const PROFILE_TARGET_POLICIES = Object.freeze({
@@ -1105,25 +1115,16 @@
         const value = record?.completion?.[target.scope];
         return Number.isSafeInteger(value) && value >= 0;
       },
-      findPending: ({ cache, friends, now, target }) =>
-        findFriendsNeedingCompletion(friends, cache, target.scope, now),
     }),
     [SORT.RELATION]: Object.freeze({
       label: "喜好契合",
       hasTarget: (record, target) => {
-        const value = record?.parsedRelation?.[target.metric];
+        const value = record?.relation?.[target.metric];
         return isRelationRecord(
           { value, fetchedAt: record?.fetchedAt },
           target.metric,
         );
       },
-      findPending: ({ cache, friends, now, target, visitorIdentifier }) =>
-        findFriendsNeedingRelation(
-          friends,
-          cache,
-          { metric: target.metric, visitorIdentifier },
-          now,
-        ),
     }),
   });
 
@@ -1214,36 +1215,10 @@
         if (parsed.kind === "invalid") return { kind: "parse-error" };
         const record = { fetchedAt };
         if (parsed.completion) record.completion = parsed.completion;
-        if (parsed.parsedRelation) {
-          record.parsedRelation = parsed.parsedRelation;
-        }
+        if (parsed.relation) record.relation = parsed.relation;
         return { kind: "success", record };
       },
     );
-  }
-
-  // The parsed profile record's relation part is flat ({metric: value}); the
-  // cache's relation field is nested by visitor. `parsedRelation` keeps the
-  // two shapes apart.
-  function saveProfileRecord(cache, visitorIdentifier, friend, record) {
-    for (const [scope, value] of Object.entries(record.completion || {})) {
-      cache.setField(
-        userIdentifierFor(friend),
-        completionFieldFor(scope),
-        { value, fetchedAt: record.fetchedAt },
-        { persist: false },
-      );
-    }
-    if (!visitorIdentifier) return;
-    for (const [metric, value] of Object.entries(record.parsedRelation || {})) {
-      cache.setRelationField(
-        userIdentifierFor(friend),
-        visitorIdentifier,
-        metric,
-        { value, fetchedAt: record.fetchedAt },
-        { persist: false },
-      );
-    }
   }
 
   function readFriends(
@@ -1909,7 +1884,6 @@
   function createRefreshLifecycle({
     applySort,
     labelFor,
-    persist,
     progressReporter,
     status,
     taskType,
@@ -1924,7 +1898,6 @@
       onFinished({ failures, globallyStopped, target }) {
         status.clearProgress(taskType);
         applySort();
-        persist?.();
         if (globallyStopped) {
           status.showRateLimit();
           return;
@@ -2003,38 +1976,55 @@
         `正在获取“${profileLabelFor(target)}” ${completed}/${total}`,
     });
 
-    const activityLifecycle = createRefreshLifecycle({
+    function cacheLifecycle({
+      applySort,
+      labelFor,
+      progressReporter,
+      projectResult = (record) => record,
+      taskType,
+      visitorIdentifier: batchVisitorIdentifier,
+    }) {
+      const base = createRefreshLifecycle({
+        applySort,
+        labelFor,
+        progressReporter,
+        status,
+        taskType,
+      });
+      let batch = null;
+      return {
+        ...base,
+        onFetching(progress) {
+          batch = cache.beginRefresh({
+            visitorIdentifier: batchVisitorIdentifier,
+          });
+          base.onFetching?.(progress);
+        },
+        onFinished(result) {
+          batch?.complete();
+          batch = null;
+          base.onFinished?.(result);
+        },
+        onSuccess(friend, record) {
+          batch?.accept(userIdentifierFor(friend), projectResult(record));
+        },
+      };
+    }
+
+    const activityLifecycle = cacheLifecycle({
       applySort: applyActivitySort,
       labelFor: () => "上次活跃",
-      persist: () => cache.persist(),
       progressReporter: showActivityProgress,
-      status,
+      projectResult: (activity) => ({ activity }),
       taskType: "activity",
-      onSuccess: (friend, record) =>
-        cache.setField(userIdentifierFor(friend), "activity", record, {
-          persist: false,
-        }),
     });
-
-    // The profile task persists the cache in onFinished and saves
-    // completion/relation fields in onSuccess via saveProfileRecord.
-    const profileBaseLifecycle = createRefreshLifecycle({
+    const profileLifecycle = cacheLifecycle({
       applySort: applyProfileSort,
       labelFor: profileLabelFor,
       progressReporter: showProfileProgress,
-      status,
       taskType: "profile",
+      visitorIdentifier,
     });
-    const profileLifecycle = {
-      ...profileBaseLifecycle,
-      onFinished(result) {
-        cache.persist();
-        profileBaseLifecycle.onFinished?.(result);
-      },
-      onSuccess(friend, record) {
-        saveProfileRecord(cache, visitorIdentifier, friend, record);
-      },
-    };
 
     // Starts a foreground scheduler task for one refresh mode; guarded so a
     // stopped scheduler or missing fetch dependencies never enqueue work.
@@ -2083,9 +2073,11 @@
             now,
           ),
         getPending: () =>
-          mode === "full"
-            ? friends
-            : findFriendsNeedingActivity(friends, cache, now()),
+          cache.friendsNeedingRefresh(
+            friends,
+            { kind: SORT.ACTIVITY },
+            { mode },
+          ),
         keyFor: userIdentifierFor,
         lifecycle: activityLifecycle,
         target: mode,
@@ -2103,15 +2095,10 @@
             now,
           ),
         getPending: () =>
-          mode === "full"
-            ? friends
-            : profileTargetPolicyFor(target).findPending({
-                cache,
-                friends,
-                now: now(),
-                target,
-                visitorIdentifier,
-              }),
+          cache.friendsNeedingRefresh(friends, target, {
+            mode,
+            visitorIdentifier,
+          }),
         isSuccess: (record, outcome, nextTarget) =>
           outcome.kind === "success" &&
           profileRecordHasTarget(record, nextTarget),
@@ -2382,12 +2369,8 @@
     COMPLETION_SCOPE,
     createFriendCache,
     createSortBar,
-    completionFieldFor,
     currentVisitorIdentifier,
     directionLabelsFor,
-    findFriendsNeedingCompletion,
-    findFriendsNeedingActivity,
-    findFriendsNeedingRelation,
     fetchProfile,
     initialize,
     isCompletionRecord,

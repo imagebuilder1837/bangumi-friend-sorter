@@ -156,6 +156,15 @@ function friendCacheStorage(records) {
   };
 }
 
+function refreshCache(cache, entries, options) {
+  const batch = cache.beginRefresh(options);
+  for (const [userIdentifier, result] of entries) {
+    batch.accept(userIdentifier, result);
+  }
+  batch.complete();
+  return cache;
+}
+
 function refreshResponseFor(url) {
   return {
     ok: true,
@@ -426,15 +435,42 @@ test("上次活跃支持从新到旧和从旧到新，未知活跃时间始终�
     { userIdentifier: "newer-a", displayName: "较新甲", originalIndex: 3 },
     { userIdentifier: "newer-b", displayName: "较新乙", originalIndex: 4 },
   ];
-  const activities = sorter.createFriendCache(null);
-  for (const [userIdentifier, record] of [
-    ["older", { kind: "active", activityAtSeconds: 1, fetchedAt: 4_000 }],
-    ["empty", { kind: "empty", fetchedAt: 4_000 }],
-    ["newer-a", { kind: "active", activityAtSeconds: 2, fetchedAt: 4_000 }],
-    ["newer-b", { kind: "active", activityAtSeconds: 2, fetchedAt: 4_000 }],
-  ]) {
-    activities.setField(userIdentifier, "activity", record);
-  }
+  const activities = refreshCache(
+    sorter.createFriendCache(null),
+    [
+      [
+        "older",
+        {
+          activity: {
+            kind: "active",
+            activityAtSeconds: 1,
+            fetchedAt: 4_000,
+          },
+        },
+      ],
+      ["empty", { activity: { kind: "empty", fetchedAt: 4_000 } }],
+      [
+        "newer-a",
+        {
+          activity: {
+            kind: "active",
+            activityAtSeconds: 2,
+            fetchedAt: 4_000,
+          },
+        },
+      ],
+      [
+        "newer-b",
+        {
+          activity: {
+            kind: "active",
+            activityAtSeconds: 2,
+            fetchedAt: 4_000,
+          },
+        },
+      ],
+    ],
+  );
 
   assert.deepEqual(
     sorter.sortFriends(friends, {
@@ -571,18 +607,45 @@ test("仅为缺失或超过二十四小时的上次活跃缓存安排请求", ()
     { userIdentifier: "stale" },
     { userIdentifier: "missing" },
   ];
-  const activities = sorter.createFriendCache(null);
-  for (const [userIdentifier, record] of [
-    ["fresh-active", { kind: "active", activityAtSeconds: 10, fetchedAt: now - hour }],
-    ["fresh-empty", { kind: "empty", fetchedAt: now - hour }],
-    ["boundary", { kind: "active", activityAtSeconds: 20, fetchedAt: now - 24 * hour }],
-    ["stale", { kind: "active", activityAtSeconds: 30, fetchedAt: now - 24 * hour - 1 }],
-  ]) {
-    activities.setField(userIdentifier, "activity", record);
-  }
+  const activities = sorter.createFriendCache(null, { now: () => now });
+  refreshCache(activities, [
+    [
+      "fresh-active",
+      {
+        activity: {
+          kind: "active",
+          activityAtSeconds: 10,
+          fetchedAt: now - hour,
+        },
+      },
+    ],
+    ["fresh-empty", { activity: { kind: "empty", fetchedAt: now - hour } }],
+    [
+      "boundary",
+      {
+        activity: {
+          kind: "active",
+          activityAtSeconds: 20,
+          fetchedAt: now - 24 * hour,
+        },
+      },
+    ],
+    [
+      "stale",
+      {
+        activity: {
+          kind: "active",
+          activityAtSeconds: 30,
+          fetchedAt: now - 24 * hour - 1,
+        },
+      },
+    ],
+  ]);
 
   assert.deepEqual(
-    sorter.findFriendsNeedingActivity(friends, activities, now).map(({ userIdentifier }) => userIdentifier),
+    activities
+      .friendsNeedingRefresh(friends, { kind: "activity" })
+      .map(({ userIdentifier }) => userIdentifier),
     ["stale", "missing"],
   );
 });
@@ -1793,10 +1856,9 @@ test("持久存储不可用时上次活跃缓存仍在当前页面内工作", ()
   const cache = sorter.createFriendCache(unavailableStorage);
   const record = { kind: "active", activityAtSeconds: 1, fetchedAt: 2_000 };
 
-  cache.setField("sai", "activity", record);
+  refreshCache(cache, [["sai", { activity: record }]]);
 
-  assert.equal(cache.getField("sai", "activity"), record);
-  assert.deepEqual([...cache.entries()], [["sai", { activity: record }]]);
+  assert.equal(cache.activityFor("sai"), record);
 });
 
 test("升级缓存版本时迁移有效的 v2 上次活跃记录到 v3", () => {
@@ -1820,7 +1882,7 @@ test("升级缓存版本时迁移有效的 v2 上次活跃记录到 v3", () => {
 
   const cache = sorter.createFriendCache(storage, { now: () => 3_000 });
 
-  assert.deepEqual(cache.getField("sai", "activity"), record);
+  assert.deepEqual(cache.activityFor("sai"), record);
   assert.deepEqual(writes, [[
     "bangumi-friend-sorter:activity-cache:v3",
     { version: 3, records: { sai: { activity: record } } },
@@ -1858,10 +1920,9 @@ test("v2 上次活跃记录迁移遵守二十四小时有效期边界", () => {
 
   const cache = sorter.createFriendCache(storage, { now: () => now });
 
-  assert.deepEqual([...cache.entries()], [
-    ["fresh", { activity: records.fresh }],
-    ["boundary", { activity: records.boundary }],
-  ]);
+  assert.deepEqual(cache.activityFor("fresh"), records.fresh);
+  assert.deepEqual(cache.activityFor("boundary"), records.boundary);
+  assert.equal(cache.activityFor("stale"), undefined);
 });
 
 test("v3 缓存不完整时仍合并尚未迁移的 v2 上次活跃记录", () => {
@@ -1889,7 +1950,7 @@ test("v3 缓存不完整时仍合并尚未迁移的 v2 上次活跃记录", () =
 
   const cache = sorter.createFriendCache(storage, { now: () => 3_000 });
 
-  assert.deepEqual(cache.get("sai"), { activity });
+  assert.deepEqual(cache.activityFor("sai"), activity);
   assert.deepEqual(writes, [[
     "bangumi-friend-sorter:activity-cache:v3",
     { version: 3, records: { sai: { activity } } },
@@ -1903,7 +1964,7 @@ test("v3 缓存独立校验每个好友的完成字段", () => {
     fetchedAt: 2_000,
   };
   const completion = { value: 87, fetchedAt: 3_000 };
-  const completionField = sorter.completionFieldFor("all");
+  const completionField = "completion_all";
   const storage = {
     getItem(key) {
       if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
@@ -1922,16 +1983,13 @@ test("v3 缓存独立校验每个好友的完成字段", () => {
 
   const cache = sorter.createFriendCache(storage);
 
-  assert.deepEqual(cache.get("sai"), { activity, [completionField]: completion });
-  assert.deepEqual(cache.get("broken"), { activity });
-  assert.deepEqual(cache.getField("sai", completionField), completion);
-  assert.deepEqual([...cache.entries()], [
-    ["sai", { activity, [completionField]: completion }],
-    ["broken", { activity }],
-  ]);
+  assert.deepEqual(cache.activityFor("sai"), activity);
+  assert.deepEqual(cache.completionFor("sai", "all"), completion);
+  assert.deepEqual(cache.activityFor("broken"), activity);
+  assert.equal(cache.completionFor("broken", "all"), undefined);
 });
 
-test("v3 缓存把喜好契合记录按访问者嵌套保存", () => {
+test("好友缓存批次接纳领域结果并在完成时只持久化一次", () => {
   const writes = [];
   const storage = {
     getItem: () => null,
@@ -1941,45 +1999,96 @@ test("v3 缓存把喜好契合记录按访问者嵌套保存", () => {
     removeItem() {},
   };
   const cache = sorter.createFriendCache(storage);
-  const syncRecord = { value: 42.5, fetchedAt: 1_000 };
-  const likesRecord = { value: 3, fetchedAt: 2_000 };
+  const batch = cache.beginRefresh({ visitorIdentifier: "visitor" });
 
-  cache.setRelationField("sai", "visitor", "syncRate", syncRecord, {
-    persist: false,
-  });
-  cache.setRelationField("sai", "visitor", "commonLikes", likesRecord);
-  cache.setField(
-    "sai",
-    sorter.completionFieldFor("all"),
-    { value: 9, fetchedAt: 3_000 },
-    false,
-  );
-  cache.persist();
-
-  assert.deepEqual(writes.at(-1)[1], {
-    version: 3,
-    records: {
-      sai: {
-        completion_all: { value: 9, fetchedAt: 3_000 },
-        relation: {
-          visitor: { syncRate: syncRecord, commonLikes: likesRecord },
-        },
-      },
+  batch.accept("sai", {
+    activity: {
+      kind: "active",
+      activityAtSeconds: 1_000,
+      fetchedAt: 2_000,
     },
   });
-  assert.equal(
-    cache.getRelationField("sai", {
+  batch.accept("sai", {
+    completion: { all: 9 },
+    fetchedAt: 3_000,
+    relation: { commonLikes: 4, syncRate: 42.5 },
+  });
+
+  assert.deepEqual(cache.activityFor("sai"), {
+    kind: "active",
+    activityAtSeconds: 1_000,
+    fetchedAt: 2_000,
+  });
+  assert.deepEqual(cache.completionFor("sai", "all"), {
+    value: 9,
+    fetchedAt: 3_000,
+  });
+  assert.deepEqual(
+    cache.relationFor("sai", {
+      metric: "syncRate",
       visitorIdentifier: "visitor",
-      metric: "syncRate",
     }),
-    syncRecord,
+    { value: 42.5, fetchedAt: 3_000 },
   );
-  assert.equal(
-    cache.getRelationField("sai", {
-      visitorIdentifier: "other",
-      metric: "syncRate",
-    }),
-    undefined,
+  assert.equal(writes.length, 0);
+
+  batch.complete();
+
+  assert.equal(writes.length, 1);
+});
+
+test("好友缓存按领域目标和刷新模式决定待请求好友", () => {
+  const hour = 60 * 60 * 1_000;
+  const now = 100 * hour;
+  const friends = ["fresh", "boundary", "stale", "missing"].map(
+    (userIdentifier) => ({ userIdentifier }),
+  );
+  const records = {
+    fresh: {
+      activity: { kind: "empty", fetchedAt: now - hour },
+      completion_all: { value: 1, fetchedAt: now - hour },
+      relation: {
+        visitor: { syncRate: { value: 1, fetchedAt: now - hour } },
+      },
+    },
+    boundary: {
+      activity: { kind: "empty", fetchedAt: now - 24 * hour },
+      completion_all: { value: 1, fetchedAt: now - 72 * hour },
+      relation: {
+        visitor: { syncRate: { value: 1, fetchedAt: now - 72 * hour } },
+      },
+    },
+    stale: {
+      activity: { kind: "empty", fetchedAt: now - 24 * hour - 1 },
+      completion_all: { value: 1, fetchedAt: now - 72 * hour - 1 },
+      relation: {
+        visitor: { syncRate: { value: 1, fetchedAt: now - 72 * hour - 1 } },
+      },
+    },
+  };
+  const cache = sorter.createFriendCache(friendCacheStorage(records), {
+    now: () => now,
+  });
+  const identifiers = (target, options) =>
+    cache
+      .friendsNeedingRefresh(friends, target, options)
+      .map(({ userIdentifier }) => userIdentifier);
+
+  assert.deepEqual(identifiers({ kind: "activity" }), ["stale", "missing"]);
+  assert.deepEqual(
+    identifiers({ kind: "completion", scope: "all" }),
+    ["stale", "missing"],
+  );
+  assert.deepEqual(
+    identifiers(
+      { kind: "relation", metric: "syncRate" },
+      { visitorIdentifier: "visitor" },
+    ),
+    ["stale", "missing"],
+  );
+  assert.deepEqual(
+    identifiers({ kind: "activity" }, { mode: "full" }),
+    ["fresh", "boundary", "stale", "missing"],
   );
 });
 
@@ -2005,7 +2114,7 @@ test("升级缓存版本时删除旧版缓存而不迁移分钟级结果", () =>
 
   const cache = sorter.createFriendCache(storage);
 
-  assert.deepEqual([...cache.entries()], []);
+  assert.equal(cache.activityFor("sai"), undefined);
   assert.deepEqual(removedKeys, ["bangumi-friend-sorter:activity-cache:v1"]);
 });
 
@@ -2021,9 +2130,9 @@ test("损坏的缓存 JSON 降级为当前页面内存缓存", () => {
   const cache = sorter.createFriendCache(storage);
   const record = { kind: "active", activityAtSeconds: 1, fetchedAt: 2_000 };
 
-  cache.setField("sai", "activity", record);
+  refreshCache(cache, [["sai", { activity: record }]]);
 
-  assert.equal(cache.getField("sai", "activity"), record);
+  assert.equal(cache.activityFor("sai"), record);
 });
 
 test("请求响应头的时间按整秒传给活跃时刻解析并写入整数 Unix 秒缓存", async () => {
@@ -2047,7 +2156,7 @@ test("请求响应头的时间按整秒传给活跃时刻解析并写入整数 U
   refresh.startActivity("incremental");
   await finished;
 
-  assert.deepEqual(cache.getField("sai", "activity"), {
+  assert.deepEqual(cache.activityFor("sai"), {
     kind: "active",
     activityAtSeconds: Date.UTC(2026, 7, 26, 9, 42, 34) / 1_000,
     fetchedAt: responseTime,
@@ -2072,7 +2181,7 @@ test("时间胶囊返回四零四时计入失败且不覆盖缓存", async () =>
   await finished;
 
   assert.equal(statusElement.textContent, "“上次活跃”获取完成，1 人失败");
-  assert.equal(cache.getField("missing", "activity"), undefined);
+  assert.equal(cache.activityFor("missing"), undefined);
   assert.deepEqual(progress, [[0, 1], [1, 1]]);
 });
 
@@ -2080,7 +2189,7 @@ test("用户主页返回四零四时计入失败且保留旧缓存", async () =>
   const now = 100_000;
   const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
   const oldRecord = {
-    [sorter.completionFieldFor("all")]: { value: 7, fetchedAt: staleFetchedAt },
+    completion_all: { value: 7, fetchedAt: staleFetchedAt },
     relation: {
       visitor: { syncRate: { value: 55, fetchedAt: staleFetchedAt } },
     },
@@ -2105,14 +2214,24 @@ test("用户主页返回四零四时计入失败且保留旧缓存", async () =>
 
   assert.equal(statusElement.textContent, "“完成条目数”获取完成，1 人失败");
   assert.deepEqual(progress, [[0, 1], [1, 1]]);
-  assert.deepEqual(cache.get("friend"), oldRecord);
+  assert.deepEqual(
+    cache.completionFor("friend", "all"),
+    oldRecord.completion_all,
+  );
+  assert.deepEqual(
+    cache.relationFor("friend", {
+      metric: "syncRate",
+      visitorIdentifier: "visitor",
+    }),
+    oldRecord.relation.visitor.syncRate,
+  );
 });
 
 test("无效用户主页计入失败且保留旧缓存", async () => {
   const now = 100_000;
   const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
   const oldRecord = {
-    [sorter.completionFieldFor("all")]: { value: 7, fetchedAt: staleFetchedAt },
+    completion_all: { value: 7, fetchedAt: staleFetchedAt },
     relation: {
       visitor: { syncRate: { value: 55, fetchedAt: staleFetchedAt } },
     },
@@ -2134,14 +2253,24 @@ test("无效用户主页计入失败且保留旧缓存", async () => {
   await finished;
 
   assert.equal(statusElement.textContent, "“完成条目数”获取完成，1 人失败");
-  assert.deepEqual(cache.get("friend"), oldRecord);
+  assert.deepEqual(
+    cache.completionFor("friend", "all"),
+    oldRecord.completion_all,
+  );
+  assert.deepEqual(
+    cache.relationFor("friend", {
+      metric: "syncRate",
+      visitorIdentifier: "visitor",
+    }),
+    oldRecord.relation.visitor.syncRate,
+  );
 });
 
 test("用户主页请求超过十五秒时计入失败且保留旧缓存", async () => {
   const now = 100_000;
   const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
   const oldRecord = {
-    [sorter.completionFieldFor("all")]: { value: 7, fetchedAt: staleFetchedAt },
+    completion_all: { value: 7, fetchedAt: staleFetchedAt },
   };
   const cache = sorter.createFriendCache(
     friendCacheStorage({ friend: oldRecord }),
@@ -2192,7 +2321,10 @@ test("用户主页请求超过十五秒时计入失败且保留旧缓存", async
     await finished;
     assert.equal(requestSignal.aborted, true);
     assert.equal(statusElement.textContent, "“完成条目数”获取完成，1 人失败");
-    assert.deepEqual(cache.get("friend"), oldRecord);
+    assert.deepEqual(
+      cache.completionFor("friend", "all"),
+      oldRecord.completion_all,
+    );
   } finally {
     globalThis.setTimeout = originalSetTimeout;
     globalThis.clearTimeout = originalClearTimeout;
@@ -2237,8 +2369,8 @@ test("时间胶囊刷新任务通过请求结果、缓存写入和进度回调�
     activityAtSeconds: Date.UTC(2026, 7, 26, 9, 42, 34) / 1_000,
     fetchedAt: responseTime,
   };
-  assert.deepEqual(cache.getField("sai", "activity"), expectedActivity);
-  assert.deepEqual(cache.getField("tom", "activity"), expectedActivity);
+  assert.deepEqual(cache.activityFor("sai"), expectedActivity);
+  assert.deepEqual(cache.activityFor("tom"), expectedActivity);
   assert.deepEqual(
     progress.sort(([left], [right]) => left - right),
     [[0, 2], [1, 2], [2, 2]],
@@ -2605,30 +2737,30 @@ test("主页解析同步率和共同喜好数，缺失字段不转换为零", ()
     sorter.parseProfileDocument(
       relationProfileDocument({ syncRate: "-3.5%", commonLikes: 0 }),
     ),
-    { kind: "success", parsedRelation: { syncRate: -3.5, commonLikes: 0 } },
+    { kind: "success", relation: { syncRate: -3.5, commonLikes: 0 } },
   );
   assert.deepEqual(
     sorter.parseProfileDocument(relationProfileDocument({ syncRate: "2.25%" })),
-    { kind: "success", parsedRelation: { syncRate: 2.25 } },
+    { kind: "success", relation: { syncRate: 2.25 } },
   );
   assert.deepEqual(
     sorter.parseProfileDocument(
       relationProfileDocument({ syncRate: "2.25%", commonLikes: "-3" }),
     ),
-    { kind: "success", parsedRelation: { syncRate: 2.25 } },
+    { kind: "success", relation: { syncRate: 2.25 } },
   );
   assert.deepEqual(
     sorter.parseProfileDocument(
       relationProfileDocument({ syncRate: "2.25%", commonLikes: "1.5" }),
     ),
-    { kind: "success", parsedRelation: { syncRate: 2.25 } },
+    { kind: "success", relation: { syncRate: 2.25 } },
   );
   const beyondSafeInteger = Number.MAX_SAFE_INTEGER + 1;
   assert.deepEqual(
     sorter.parseProfileDocument(
       relationProfileDocument({ commonLikes: beyondSafeInteger }),
     ),
-    { kind: "success", parsedRelation: { commonLikes: beyondSafeInteger } },
+    { kind: "success", relation: { commonLikes: beyondSafeInteger } },
   );
 });
 
@@ -2769,18 +2901,15 @@ test("完成条目数按当前范围从高到低或从低到高稳定排序", ()
     { userIdentifier: "zero", originalIndex: 3 },
     { userIdentifier: "same-a", originalIndex: 4 },
   ];
-  const values = sorter.createFriendCache(null);
-  for (const [userIdentifier, value] of [
-    ["same-b", 5],
-    ["high", 10],
-    ["zero", 0],
-    ["same-a", 5],
-  ]) {
-    values.setField(userIdentifier, sorter.completionFieldFor("all"), {
-      value,
-      fetchedAt: 1,
-    });
-  }
+  const values = refreshCache(
+    sorter.createFriendCache(null),
+    [
+      ["same-b", { completion: { all: 5 }, fetchedAt: 1 }],
+      ["high", { completion: { all: 10 }, fetchedAt: 1 }],
+      ["zero", { completion: { all: 0 }, fetchedAt: 1 }],
+      ["same-a", { completion: { all: 5 }, fetchedAt: 1 }],
+    ],
+  );
 
   assert.deepEqual(
     sorter.sortFriends(friends, {
@@ -2814,21 +2943,21 @@ test("喜好契合按访问者隔离并稳定排序可靠零和未知值", () =>
     { userIdentifier: "same-a", originalIndex: 4 },
   ];
   const cache = sorter.createFriendCache(null);
-  for (const [userIdentifier, value] of [
-    ["same-b", 5],
-    ["high", 10],
-    ["zero", 0],
-    ["same-a", 5],
-  ]) {
-    cache.setRelationField(userIdentifier, "visitor-a", "commonLikes", {
-      value,
-      fetchedAt: now,
-    });
-  }
-  cache.setRelationField("unknown", "visitor-b", "commonLikes", {
-    value: 99,
-    fetchedAt: now,
-  });
+  refreshCache(
+    cache,
+    [
+      ["same-b", { relation: { commonLikes: 5 }, fetchedAt: now }],
+      ["high", { relation: { commonLikes: 10 }, fetchedAt: now }],
+      ["zero", { relation: { commonLikes: 0 }, fetchedAt: now }],
+      ["same-a", { relation: { commonLikes: 5 }, fetchedAt: now }],
+    ],
+    { visitorIdentifier: "visitor-a" },
+  );
+  refreshCache(
+    cache,
+    [["unknown", { relation: { commonLikes: 99 }, fetchedAt: now }]],
+    { visitorIdentifier: "visitor-b" },
+  );
 
   assert.deepEqual(
     sorter.sortFriends(friends, {
@@ -2875,25 +3004,17 @@ test("同步率排序支持负值并按方向稳定排列", () => {
     { userIdentifier: "same-b", originalIndex: 3 },
     { userIdentifier: "zero", originalIndex: 4 },
   ];
-  const cache = sorter.createFriendCache(null);
-  cache.setRelationField("negative", "visitor", "syncRate", {
-    value: -3.5,
-    fetchedAt: 1,
-  });
-  cache.setRelationField("positive", "visitor", "syncRate", {
-    value: 2.25,
-    fetchedAt: 1,
-  });
-  cache.setRelationField("zero", "visitor", "syncRate", {
-    value: 0,
-    fetchedAt: 1,
-  });
-  for (const userIdentifier of ["same-a", "same-b"]) {
-    cache.setRelationField(userIdentifier, "visitor", "syncRate", {
-      value: 1,
-      fetchedAt: 1,
-    });
-  }
+  const cache = refreshCache(
+    sorter.createFriendCache(null),
+    [
+      ["negative", { relation: { syncRate: -3.5 }, fetchedAt: 1 }],
+      ["positive", { relation: { syncRate: 2.25 }, fetchedAt: 1 }],
+      ["zero", { relation: { syncRate: 0 }, fetchedAt: 1 }],
+      ["same-a", { relation: { syncRate: 1 }, fetchedAt: 1 }],
+      ["same-b", { relation: { syncRate: 1 }, fetchedAt: 1 }],
+    ],
+    { visitorIdentifier: "visitor" },
+  );
 
   assert.deepEqual(
     sorter.sortFriends(friends, {
@@ -2977,27 +3098,32 @@ test("完成统计缓存的七十二小时边界只请求缺失或过期范围",
     { userIdentifier: "stale" },
     { userIdentifier: "missing" },
   ];
-  const values = sorter.createFriendCache(null);
+  const values = sorter.createFriendCache(null, { now: () => now });
   for (const [userIdentifier, value] of [
     ["fresh", 1],
     ["boundary", 2],
     ["stale", 3],
   ]) {
-    values.setField(userIdentifier, sorter.completionFieldFor("all"), {
-      value,
-      fetchedAt:
-        userIdentifier === "fresh"
-          ? now - hour
-          : userIdentifier === "boundary"
-            ? now - 72 * hour
-            : now - 72 * hour - 1,
-    });
+    refreshCache(values, [
+      [
+        userIdentifier,
+        {
+          completion: { all: value },
+          fetchedAt:
+            userIdentifier === "fresh"
+              ? now - hour
+              : userIdentifier === "boundary"
+                ? now - 72 * hour
+                : now - 72 * hour - 1,
+        },
+      ],
+    ]);
   }
 
   assert.deepEqual(
-    sorter.findFriendsNeedingCompletion(friends, values, "all", now).map(
-      ({ userIdentifier }) => userIdentifier,
-    ),
+    values
+      .friendsNeedingRefresh(friends, { kind: "completion", scope: "all" })
+      .map(({ userIdentifier }) => userIdentifier),
     ["stale", "missing"],
   );
 });
@@ -3011,36 +3137,34 @@ test("喜好契合缓存按访问者和指标判断七十二小时有效期", ()
     { userIdentifier: "stale" },
     { userIdentifier: "missing" },
   ];
-  const cache = sorter.createFriendCache(null);
-  cache.setRelationField("fresh", "visitor", "syncRate", {
-    value: 1.5,
-    fetchedAt: now - hour,
-  });
-  cache.setRelationField("boundary", "visitor", "syncRate", {
-    value: 2,
-    fetchedAt: now - 72 * hour,
-  });
-  cache.setRelationField("stale", "visitor", "syncRate", {
-    value: 3,
-    fetchedAt: now - 72 * hour - 1,
-  });
+  const cache = refreshCache(
+    sorter.createFriendCache(null, { now: () => now }),
+    [
+      ["fresh", { relation: { syncRate: 1.5 }, fetchedAt: now - hour }],
+      ["boundary", { relation: { syncRate: 2 }, fetchedAt: now - 72 * hour }],
+      ["stale", { relation: { syncRate: 3 }, fetchedAt: now - 72 * hour - 1 }],
+    ],
+    { visitorIdentifier: "visitor" },
+  );
 
   assert.deepEqual(
-    sorter.findFriendsNeedingRelation(
-      friends,
-      cache,
-      { metric: "syncRate", visitorIdentifier: "visitor" },
-      now,
-    ).map(({ userIdentifier }) => userIdentifier),
+    cache
+      .friendsNeedingRefresh(
+        friends,
+        { kind: "relation", metric: "syncRate" },
+        { visitorIdentifier: "visitor" },
+      )
+      .map(({ userIdentifier }) => userIdentifier),
     ["stale", "missing"],
   );
   assert.deepEqual(
-    sorter.findFriendsNeedingRelation(
-      friends,
-      cache,
-      { metric: "syncRate", visitorIdentifier: "other-visitor" },
-      now,
-    ).map(({ userIdentifier }) => userIdentifier),
+    cache
+      .friendsNeedingRefresh(
+        friends,
+        { kind: "relation", metric: "syncRate" },
+        { visitorIdentifier: "other-visitor" },
+      )
+      .map(({ userIdentifier }) => userIdentifier),
     ["fresh", "boundary", "stale", "missing"],
   );
 });
@@ -3197,14 +3321,22 @@ test("同一主页响应分别刷新完成统计，失败范围保留旧缓存",
   refresh.startProfile({ kind: "completion", scope: "all" });
   await finished;
 
-  assert.deepEqual(cache.get("sai"), {
-    completion_all: { value: 20, fetchedAt: now },
-    completion_1: oldBook,
-    completion_2: { value: 8, fetchedAt: now },
-    completion_3: { value: 6, fetchedAt: now },
-    completion_4: { value: 4, fetchedAt: now },
-    completion_6: { value: 2, fetchedAt: now },
-  });
+  assert.deepEqual(
+    Object.fromEntries(
+      ["all", "1", "2", "3", "4", "6"].map((scope) => [
+        scope,
+        cache.completionFor("sai", scope),
+      ]),
+    ),
+    {
+      all: { value: 20, fetchedAt: now },
+      1: oldBook,
+      2: { value: 8, fetchedAt: now },
+      3: { value: 6, fetchedAt: now },
+      4: { value: 4, fetchedAt: now },
+      6: { value: 2, fetchedAt: now },
+    },
+  );
   assert.equal(writes.length, 1);
 });
 
@@ -3592,11 +3724,11 @@ test("主页同步率与共同喜好数切换复用任务、去重请求并按�
     value: 20,
     fetchedAt: now,
   });
-  assert.deepEqual(writes.at(-1)[1].records.a[sorter.completionFieldFor("all")], {
+  assert.deepEqual(writes.at(-1)[1].records.a.completion_all, {
     value: 1,
     fetchedAt: now,
   });
-  assert.deepEqual(writes.at(-1)[1].records.b[sorter.completionFieldFor("all")], {
+  assert.deepEqual(writes.at(-1)[1].records.b.completion_all, {
     value: 2,
     fetchedAt: now,
   });
@@ -3690,10 +3822,10 @@ test("切换字段但未新增好友时立即更新进行中提示的主按钮�
   const now = 100_000;
   const cachedRecords = {
     a: {
-      [sorter.completionFieldFor("all")]: { value: 1, fetchedAt: now },
+      completion_all: { value: 1, fetchedAt: now },
     },
     b: {
-      [sorter.completionFieldFor("all")]: { value: 2, fetchedAt: now },
+      completion_all: { value: 2, fetchedAt: now },
       relation: { visitor: { syncRate: { value: 10, fetchedAt: now } } },
     },
   };
