@@ -149,8 +149,8 @@ function refreshResponseFor(url) {
   };
 }
 
-async function waitForCondition(predicate) {
-  for (let attempt = 0; attempt < 40 && !predicate(); attempt += 1) {
+async function waitForCondition(predicate, maxAttempts = 40) {
+  for (let attempt = 0; attempt < maxAttempts && !predicate(); attempt += 1) {
     await new Promise((resolve) => setImmediate(resolve));
   }
   assert.equal(predicate(), true);
@@ -1022,12 +1022,6 @@ test("没有待请求好友的远程目标不会暂停后台任务", async () =>
     pending.delete(url);
     resolve(responseFor(url));
   };
-  const waitFor = async (predicate) => {
-    for (let attempt = 0; attempt < 20 && !predicate(); attempt += 1) {
-      await new Promise((resolve) => setImmediate(resolve));
-    }
-    assert.equal(predicate(), true);
-  };
   const records = Object.fromEntries(
     ["a", "b", "c", "d", "e"].map((userIdentifier) => [
       userIdentifier,
@@ -1074,14 +1068,14 @@ test("没有待请求好友的远程目标不会暂停后台任务", async () =>
   assert.equal(started.filter((url) => !url.endsWith("/timeline")).length, 0);
 
   release("/user/a/timeline");
-  await waitFor(
+  await waitForCondition(
     () => started.filter((url) => url.endsWith("/timeline")).length === 5,
   );
 
   for (const userIdentifier of ["b", "c", "d", "e"]) {
     release(`/user/${userIdentifier}/timeline`);
   }
-  await waitFor(() => pending.size === 0);
+  await waitForCondition(() => pending.size === 0);
 });
 
 test("初始化在时间胶囊和用户主页任务之间切换并恢复暂停队列", async () => {
@@ -1104,13 +1098,6 @@ test("初始化在时间胶囊和用户主页任务之间切换并恢复暂停�
     pending.delete(url);
     resolve(responseFor(url));
   };
-  const waitFor = async (predicate) => {
-    for (let attempt = 0; attempt < 20 && !predicate(); attempt += 1) {
-      await new Promise((resolve) => setImmediate(resolve));
-    }
-    assert.equal(predicate(), true);
-  };
-
   sorter.initialize({
     document: page.document,
     window: {
@@ -1147,21 +1134,21 @@ test("初始化在时间胶囊和用户主页任务之间切换并恢复暂停�
   assert.equal(started.filter((url) => !url.endsWith("/timeline")).length, 0);
 
   release("/user/a/timeline");
-  await waitFor(
+  await waitForCondition(
     () => started.filter((url) => !url.endsWith("/timeline")).length === 1,
   );
   sortButtons[2].click();
   release("/user/b/timeline");
-  await waitFor(() => started.includes("/user/e/timeline"));
+  await waitForCondition(() => started.includes("/user/e/timeline"));
   completionDropdown.children[0].click();
   release("/user/a");
-  await waitFor(
+  await waitForCondition(
     () => started.filter((url) => !url.endsWith("/timeline")).length === 2,
   );
 
   for (const userIdentifier of ["b", "c", "d"]) {
     release(`/user/${userIdentifier}`);
-    await waitFor(
+    await waitForCondition(
       () =>
         started.filter((url) => !url.endsWith("/timeline")).length ===
         ["b", "c", "d"].indexOf(userIdentifier) + 3,
@@ -1172,7 +1159,7 @@ test("初始化在时间胶囊和用户主页任务之间切换并恢复暂停�
   for (const userIdentifier of ["c", "d", "e"]) {
     release(`/user/${userIdentifier}/timeline`);
   }
-  await waitFor(() => pending.size === 0);
+  await waitForCondition(() => pending.size === 0);
 });
 
 test("页面初始化全局最多四并发且限流会停止两类页面任务", async () => {
@@ -1207,9 +1194,9 @@ test("页面初始化全局最多四并发且限流会停止两类页面任务",
   assert.equal(started.length, 4);
 
   pending.get(started[0])({ ok: false, status: 429 });
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await waitForCondition(
+    () => sortOptionsFor(page).children.at(-1).textContent === "请求受限，已停止全部获取",
+  );
 
   assert.equal(started.length, 4);
   assert.equal(sortOptionsFor(page).children.at(-1).textContent, "请求受限，已停止全部获取");
@@ -1312,16 +1299,12 @@ test("本地排序不改变当前远程任务的前台优先级", async () => {
   mainSortControl(page, "上次活跃").click();
   dropdownButtonFor(page, "完成条目数").click();
   release("/user/a/timeline");
-  for (let attempt = 0; attempt < 20 && !started.includes("/user/a"); attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await waitForCondition(() => started.includes("/user/a"));
   assert.equal(started.at(-1), "/user/a");
 
   mainSortControl(page, "名称").click();
   release("/user/b/timeline");
-  for (let attempt = 0; attempt < 20 && started.length < 6; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await waitForCondition(() => started.length >= 6);
   assert.equal(started[5], "/user/b");
 
   for (let attempt = 0; attempt < 20 && pending.size > 0; attempt += 1) {
@@ -1342,13 +1325,6 @@ test("主页连续五次服务端错误后停止并恢复暂停的时间胶囊�
   );
   const started = [];
   const pending = new Map();
-  const waitFor = async (predicate) => {
-    for (let attempt = 0; attempt < 20 && !predicate(); attempt += 1) {
-      await new Promise((resolve) => setImmediate(resolve));
-    }
-    assert.equal(predicate(), true);
-  };
-
   sorter.initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/viewed/friends" } },
@@ -1374,18 +1350,18 @@ test("主页连续五次服务端错误后停止并恢复暂停的时间胶囊�
     headers: { get: () => null },
     text: async () => "timeline",
   });
-  await waitFor(() => pending.has("/user/a"));
+  await waitForCondition(() => pending.has("/user/a"));
 
   // Resolve failures one at a time because the three in-flight timeline
   // requests leave one global slot for the foreground profile task.
   for (const userIdentifier of identifiers) {
     const url = `/user/${userIdentifier}`;
-    await waitFor(() => pending.has(url));
+    await waitForCondition(() => pending.has(url));
     const resolve = pending.get(url);
     pending.delete(url);
     resolve({ ok: false, status: 500 });
   }
-  await waitFor(() => started.includes("/user/e/timeline"));
+  await waitForCondition(() => started.includes("/user/e/timeline"));
 
   assert.equal(
     sortOptionsFor(page).children.at(-1).textContent,
@@ -1673,6 +1649,119 @@ test("时间胶囊返回四零四时计入失败且不覆盖缓存", async () =>
   assert.deepEqual(result, { failures: 1 });
   assert.equal(cacheWrites, 0);
   assert.deepEqual(progress, [[1, 1]]);
+});
+
+test("用户主页返回四零四时计入失败且保留旧缓存", async () => {
+  const now = 100_000;
+  const oldRecord = {
+    [sorter.completionFieldFor("all")]: { value: 7, fetchedAt: now - 1 },
+    [sorter.relationFieldFor("visitor", "syncRate")]: {
+      value: 55,
+      fetchedAt: now - 1,
+    },
+  };
+  const cache = sorter.createFriendCache(
+    friendCacheStorage({ friend: oldRecord }),
+    { fieldValidators: sorter.completionCacheFieldValidators() },
+  );
+  const progress = [];
+
+  const result = await sorter.refreshProfilePages([{ userIdentifier: "friend" }], {
+    cache,
+    visitorIdentifier: "visitor",
+    domParser: {},
+    fetchImpl: async () => ({ ok: false, status: 404 }),
+    now: () => now,
+    onProgress: (completed, total) => progress.push([completed, total]),
+  });
+
+  assert.deepEqual(result, { failures: 1 });
+  assert.deepEqual(progress, [[1, 1]]);
+  assert.deepEqual(cache.get("friend"), oldRecord);
+});
+
+test("无效用户主页计入失败且保留旧缓存", async () => {
+  const now = 100_000;
+  const oldRecord = {
+    [sorter.completionFieldFor("all")]: { value: 7, fetchedAt: now - 1 },
+    [sorter.relationFieldFor("visitor", "syncRate")]: {
+      value: 55,
+      fetchedAt: now - 1,
+    },
+  };
+  const cache = sorter.createFriendCache(
+    friendCacheStorage({ friend: oldRecord }),
+    { fieldValidators: sorter.completionCacheFieldValidators() },
+  );
+  const progress = [];
+
+  const result = await sorter.refreshProfilePages([{ userIdentifier: "friend" }], {
+    cache,
+    visitorIdentifier: "visitor",
+    domParser: { parseFromString: () => ({ querySelector: () => null }) },
+    fetchImpl: async () => ({ ok: true, text: async () => "invalid profile" }),
+    now: () => now,
+    onProgress: (completed, total) => progress.push([completed, total]),
+  });
+
+  assert.deepEqual(result, { failures: 1 });
+  assert.deepEqual(progress, [[1, 1]]);
+  assert.deepEqual(cache.get("friend"), oldRecord);
+});
+
+test("用户主页请求超过十五秒时计入失败且保留旧缓存", async () => {
+  const now = 100_000;
+  const oldRecord = {
+    [sorter.completionFieldFor("all")]: { value: 7, fetchedAt: now - 1 },
+  };
+  const cache = sorter.createFriendCache(
+    friendCacheStorage({ friend: oldRecord }),
+    { fieldValidators: sorter.completionCacheFieldValidators() },
+  );
+  const scheduled = [];
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  let requestSignal;
+
+  globalThis.setTimeout = (callback, delay) => {
+    scheduled.push({ callback, delay });
+    return scheduled.length;
+  };
+  globalThis.clearTimeout = () => {};
+
+  try {
+    const refresh = sorter.refreshProfilePages([{ userIdentifier: "friend" }], {
+      cache,
+      domParser: {},
+      fetchImpl: (_url, { signal }) => {
+        requestSignal = signal;
+        return new Promise((resolve, reject) => {
+          if (signal.aborted) {
+            reject(new Error("request aborted"));
+            return;
+          }
+          signal.addEventListener(
+            "abort",
+            () => reject(new Error("request aborted")),
+            { once: true },
+          );
+        });
+      },
+      now: () => now,
+      onProgress() {},
+    });
+
+    assert.equal(scheduled.length, 1);
+    assert.equal(scheduled[0].delay, 15_000);
+    scheduled[0].callback();
+
+    assert.deepEqual(await refresh, { failures: 1 });
+    assert.equal(requestSignal.aborted, true);
+    assert.deepEqual(cache.get("friend"), oldRecord);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
 });
 
 test("页面获取任务通过请求结果、成功回调和进度回调驱动", async () => {
@@ -2317,6 +2406,88 @@ test("喜好契合按访问者隔离并稳定排序可靠零和未知值", () =>
   );
 });
 
+test("同步率排序支持负值并按方向稳定排列", () => {
+  const friends = [
+    { userIdentifier: "negative", originalIndex: 0 },
+    { userIdentifier: "positive", originalIndex: 1 },
+    { userIdentifier: "zero", originalIndex: 2 },
+  ];
+  const cache = sorter.createFriendCache(null);
+  cache.setRelationField("visitor", "negative", "syncRate", {
+    value: -3.5,
+    fetchedAt: 1,
+  });
+  cache.setRelationField("visitor", "positive", "syncRate", {
+    value: 2.25,
+    fetchedAt: 1,
+  });
+  cache.setRelationField("visitor", "zero", "syncRate", {
+    value: 0,
+    fetchedAt: 1,
+  });
+
+  assert.deepEqual(
+    sorter.sortFriends(friends, {
+      criterion: "relation",
+      relationMetric: "syncRate",
+      relationVisitorIdentifier: "visitor",
+      sortData: cache,
+      direction: "desc",
+    }).map(({ userIdentifier }) => userIdentifier),
+    ["positive", "zero", "negative"],
+  );
+  assert.deepEqual(
+    sorter.sortFriends(friends, {
+      criterion: "relation",
+      relationMetric: "syncRate",
+      relationVisitorIdentifier: "visitor",
+      sortData: cache,
+      direction: "asc",
+    }).map(({ userIdentifier }) => userIdentifier),
+    ["negative", "zero", "positive"],
+  );
+});
+
+test("过期同步率仍参与即时排序并触发刷新", async () => {
+  const now = 100_000;
+  const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
+  const syncField = sorter.relationFieldFor("visitor", "syncRate");
+  const pending = new Map();
+  const requests = [];
+  const page = initializeRefreshPage({
+    entries: [
+      { href: "/user/low", name: "低" },
+      { href: "/user/high", name: "高" },
+    ],
+    now,
+    records: {
+      low: { [syncField]: { value: -5, fetchedAt: staleFetchedAt } },
+      high: { [syncField]: { value: 80, fetchedAt: staleFetchedAt } },
+    },
+    domParser: {
+      parseFromString: () => relationProfileDocument({ syncRate: "0%" }),
+    },
+    fetchImpl: (url) => {
+      requests.push(url);
+      return new Promise((resolve) => pending.set(url, resolve));
+    },
+  });
+
+  dropdownButtonFor(page, "喜好契合").click();
+
+  assert.deepEqual(page.list.children.map(({ textContent }) => textContent), [
+    "高",
+    "低",
+  ]);
+  assert.deepEqual(requests, ["/user/low", "/user/high"]);
+
+  for (const [url, resolve] of [...pending]) {
+    pending.delete(url);
+    resolve(refreshResponseFor(url));
+  }
+  await waitForCondition(() => statusFor(page).textContent.includes("获取完成"));
+});
+
 test("完成统计缓存的七十二小时边界只请求缺失或过期范围", () => {
   const hour = 60 * 60 * 1_000;
   const now = 100 * hour;
@@ -2937,12 +3108,8 @@ test("主页同步率与共同喜好数切换复用任务、去重请求并按�
   relationMenu.children[1].click();
   releaseA({ ok: true, text: async () => "a" });
 
-  for (let attempt = 0; attempt < 20 && requests.length < 2; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  for (let attempt = 0; attempt < 20 && writes.length < 1; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await waitForCondition(() => requests.length >= 2);
+  await waitForCondition(() => writes.length >= 1);
 
   assert.deepEqual(requests, ["a", "b"]);
   assert.ok(progress.some(([completed, total]) => completed === 0 && total === 2));
@@ -3041,12 +3208,8 @@ test("同步率切换到完成条目数时复用同一主页任务", async () =>
   assert.deepEqual(requests, ["a", "b"]);
   releaseA({ ok: true, text: async () => "a" });
 
-  for (let attempt = 0; attempt < 20 && requests.length < 2; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  for (let attempt = 0; attempt < 20 && page.list.children[0].textContent !== "B"; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await waitForCondition(() => requests.length >= 2);
+  await waitForCondition(() => page.list.children[0].textContent === "B");
 
   assert.deepEqual(requests, ["a", "b"]);
   assert.deepEqual(page.list.children.map((item) => item.textContent), ["B", "A"]);
@@ -3104,12 +3267,8 @@ test("取消大批量扩充后恢复旧主页任务目标", async () => {
   ]);
   releaseFirst({ ok: true, text: async () => "profile" });
 
-  for (let attempt = 0; attempt < 20 && status.textContent === ""; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  for (let attempt = 0; attempt < 20 && !status.textContent.includes("获取完成"); attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await waitForCondition(() => status.textContent !== "");
+  await waitForCondition(() => status.textContent.includes("获取完成"));
 
   assert.deepEqual(requests, ["/user/friend-0"]);
   assert.equal(status.textContent, "“喜好契合”获取完成，1 人失败");
@@ -3281,9 +3440,7 @@ test("主页任务按好友用户标识去重重复条目", async () => {
     (child) => child.children?.[0]?.textContent === "喜好契合",
   );
   relationDropdown.children[0].click();
-  for (let attempt = 0; attempt < 20 && requests.length < 1; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await waitForCondition(() => requests.length >= 1);
 
   assert.deepEqual(requests, ["/user/a"]);
 });
@@ -3417,12 +3574,8 @@ test("完成统计范围在刷新期间切换后补取新增缺失好友", async
   completionMenu.children[2].click();
   releaseA(responseFor("a"));
 
-  for (let attempt = 0; attempt < 10 && requests.length < 2; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  for (let attempt = 0; attempt < 10 && writes.length === 0; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await waitForCondition(() => requests.length >= 2);
+  await waitForCondition(() => writes.length > 0);
 
   assert.deepEqual(requests, ["a", "b"]);
   assert.deepEqual(writes.at(-1).records.b, {
@@ -3493,15 +3646,66 @@ test("完成条目数两击全量刷新使用实际范围名称并忽略有效�
   completionButton.click();
   assert.equal(status.textContent, "5 秒内再次点击“全部”以全量刷新");
   completionButton.click();
-  for (let attempt = 0; attempt < 20 && !status.textContent.includes("获取完成"); attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await waitForCondition(() => status.textContent.includes("获取完成"));
   assert.deepEqual(requests, ["/user/a", "/user/b"]);
   assert.equal(status.textContent, "“完成条目数”获取完成");
   assert.deepEqual(page.list.children.map(({ textContent }) => textContent), [
     "A",
     "B",
   ]);
+});
+
+test("取消全量刷新后必须重新两击才会再次触发", () => {
+  const entries = Array.from({ length: 401 }, (_, index) => ({
+    href: `/user/friend-${index}`,
+    name: `好友${index}`,
+  }));
+  const now = 100_000;
+  const syncField = sorter.relationFieldFor("visitor", "syncRate");
+  const records = Object.fromEntries(
+    entries.map(({ href }) => [
+      href.split("/").pop(),
+      { [syncField]: { value: 10, fetchedAt: now } },
+    ]),
+  );
+  const requests = [];
+  const confirmations = [];
+  const page = initializeRefreshPage({
+    entries,
+    now,
+    records,
+    domParser: {
+      parseFromString: () => relationProfileDocument({ syncRate: "50%" }),
+    },
+    fetchImpl: (url) => {
+      requests.push(url);
+      return Promise.resolve({ ok: true, text: async () => "profile" });
+    },
+    confirm: (message) => {
+      confirmations.push(message);
+      return false;
+    },
+  });
+
+  const relationButton = dropdownButtonFor(page, "喜好契合");
+  const status = statusFor(page);
+  const confirmationMessage =
+    "本次新增获取的好友数量过多（401 人），是否继续？";
+
+  relationButton.click();
+  relationButton.click();
+  assert.equal(status.textContent, "5 秒内再次点击“同步率”以全量刷新");
+  relationButton.click();
+  assert.deepEqual(confirmations, [confirmationMessage]);
+  assert.equal(status.textContent, "");
+  assert.deepEqual(requests, []);
+
+  relationButton.click();
+  assert.equal(status.textContent, "5 秒内再次点击“同步率”以全量刷新");
+  relationButton.click();
+  assert.deepEqual(confirmations, [confirmationMessage, confirmationMessage]);
+  assert.equal(status.textContent, "");
+  assert.deepEqual(requests, []);
 });
 
 test("页面增量刷新恰好新增四百个请求时不确认", async () => {
@@ -3536,9 +3740,7 @@ test("页面增量刷新恰好新增四百个请求时不确认", async () => {
     (child) => child.children?.[0]?.textContent === "完成条目数",
   );
   completionDropdown.children[0].click();
-  for (let attempt = 0; attempt < 500 && requests.length < 400; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await waitForCondition(() => requests.length >= 400, 500);
 
   assert.equal(requests.length, 400);
   assert.deepEqual(confirmations, []);

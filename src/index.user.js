@@ -74,8 +74,7 @@
   const INVALID_STATS_BLOCK = Symbol("invalid-stats-block");
 
   function userIdentifierFor(friend) {
-    // Accept the pre-v3 friend shape while using the glossary term everywhere new.
-    return friend.userIdentifier ?? friend.userId;
+    return friend.userIdentifier;
   }
 
   function isActivityRecord(value) {
@@ -1134,9 +1133,12 @@
     const uid = positiveIntegerIdentifier(pageWindow?.CHOBITS_UID);
     if (uid) return uid;
 
-    const username = pageWindow?.CHOBITS_USERNAME;
-    if (typeof username === "string" && username.trim()) {
-      return username.trim();
+    const visitorIdentifierCandidate = pageWindow?.CHOBITS_USERNAME;
+    if (
+      typeof visitorIdentifierCandidate === "string" &&
+      visitorIdentifierCandidate.trim()
+    ) {
+      return visitorIdentifierCandidate.trim();
     }
 
     const selectors = [
