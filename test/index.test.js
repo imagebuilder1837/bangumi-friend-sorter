@@ -103,6 +103,11 @@ function friendPageWith(entries) {
     container.append(strong);
     const item = new Element("li");
     item.textContent = name;
+    // 浏览器可见性语义的模拟（ADR 0002）：内联 display:none 即不可见。
+    item.style = { display: "" };
+    item.checkVisibility = function () {
+      return this.style.display !== "none";
+    };
     item.querySelector = (selector) => {
       if (selector === 'a.avatar[href*="/user/"]') return anchor;
       if (selector === ".userContainer strong") return strong;
@@ -4879,6 +4884,131 @@ test("排序栏重复渲染相同展示顺序时不重排列表，且意图回�
   assert.equal(statusFor(page).textContent, "“名称”获取完成");
   assert.equal(page.list.children.at(-1), sentinel);
   assert.deepEqual(page.list.children.slice(0, 2).map(rankFor), ["#1", "#2"]);
+});
+
+// 模拟外部筛选组件切换可见性的入口：隐藏与恢复好友项。
+function setFriendVisible(item, visible) {
+  item.style.display = visible ? "" : "none";
+}
+
+test("名次只对可见好友连续编号，隐藏好友项不参与名次", () => {
+  const page = friendPageWith([
+    { href: "/user/a", name: "A" },
+    { href: "/user/b", name: "B" },
+    { href: "/user/c", name: "C" },
+  ]);
+  const sortBar = sortBarUnderTest(page);
+  const ordered = [
+    { originalIndex: 0 },
+    { originalIndex: 1 },
+    { originalIndex: 2 },
+  ];
+
+  // 无隐藏时与既有语义一致：全部连续编号。
+  sortBar.render(renderState({ orderedFriends: ordered }));
+  assert.deepEqual(page.list.children.map(rankFor), ["#1", "#2", "#3"]);
+
+  // 隐藏中间项后，可见好友重新编号，隐藏项徽章保留旧文本不擦除。
+  setFriendVisible(page.list.children[1], false);
+  sortBar.render(renderState({ orderedFriends: ordered }));
+  assert.equal(rankFor(page.list.children[0]), "#1");
+  assert.equal(rankFor(page.list.children[2]), "#2");
+  assert.equal(rankFor(page.list.children[1]), "#2");
+
+  // 恢复可见后名次恢复连续编号。
+  setFriendVisible(page.list.children[1], true);
+  sortBar.render(renderState({ orderedFriends: ordered }));
+  assert.deepEqual(page.list.children.map(rankFor), ["#1", "#2", "#3"]);
+});
+
+// 注入用的 MutationObserver 替身：记录观察目标与选项，暴露回调供测试
+// 手动触发属性变化后的重排路径。
+function fakeMutationObserverClass() {
+  const instances = [];
+  class FakeMutationObserver {
+    constructor(callback) {
+      this.callback = callback;
+      instances.push(this);
+    }
+    observe(target, options) {
+      this.observedTarget = target;
+      this.observedOptions = options;
+    }
+  }
+  return { instances, FakeMutationObserver };
+}
+
+test("外部筛选切换后名次经可见性观察自动重排", () => {
+  const page = friendPageWith([
+    { href: "/user/a", name: "A" },
+    { href: "/user/b", name: "B" },
+    { href: "/user/c", name: "C" },
+  ]);
+  const { instances, FakeMutationObserver } = fakeMutationObserverClass();
+  const sortBar = sorter.createSortBar(page.document, {
+    list: page.list,
+    mutationObserver: FakeMutationObserver,
+  });
+  sortBar.bind({ selectCriterion: () => {}, selectDirection: () => {} });
+  sortBar.mount();
+  const ordered = [
+    { originalIndex: 0 },
+    { originalIndex: 1 },
+    { originalIndex: 2 },
+  ];
+  sortBar.render(renderState({ orderedFriends: ordered }));
+  assert.deepEqual(page.list.children.map(rankFor), ["#1", "#2", "#3"]);
+
+  // 观察范围符合 ADR 0002：列表子树的 style/class 属性变化。
+  assert.equal(instances.length, 1);
+  assert.equal(instances[0].observedTarget, page.list);
+  assert.deepEqual(instances[0].observedOptions, {
+    attributes: true,
+    attributeFilter: ["style", "class"],
+    subtree: true,
+  });
+
+  // 模拟 friend-tag 的筛选切换：属性变化后回调重放最近一次渲染，
+  // 可见好友重新编号，隐藏项徽章保留旧文本。
+  setFriendVisible(page.list.children[1], false);
+  instances[0].callback();
+  assert.equal(rankFor(page.list.children[0]), "#1");
+  assert.equal(rankFor(page.list.children[2]), "#2");
+  assert.equal(rankFor(page.list.children[1]), "#2");
+
+  // 可见性未变的重复回调幂等退出，名次保持正确。
+  instances[0].callback();
+  assert.deepEqual(
+    [page.list.children[0], page.list.children[2]].map(rankFor),
+    ["#1", "#2"],
+  );
+
+  // 恢复可见后名次恢复连续编号。
+  setFriendVisible(page.list.children[1], true);
+  instances[0].callback();
+  assert.deepEqual(page.list.children.map(rankFor), ["#1", "#2", "#3"]);
+});
+
+test("页面初始化把可见性观察器接到好友列表上", () => {
+  const page = friendPageWith([
+    { href: "/user/a", name: "A" },
+    { href: "/user/b", name: "B" },
+  ]);
+  const { instances, FakeMutationObserver } = fakeMutationObserverClass();
+  sorter.initialize({
+    document: page.document,
+    window: {
+      CHOBITS_USERNAME: "visitor",
+      location: { href: "https://bgm.tv/user/viewed/friends" },
+    },
+    storage: friendCacheStorage({}),
+    now: () => 1_000,
+    setTimeout: () => 1,
+    clearTimeout() {},
+    mutationObserver: FakeMutationObserver,
+  });
+  assert.equal(instances.length, 1);
+  assert.equal(instances[0].observedTarget, page.list);
 });
 
 test("完成条目数菜单悬停时打开、移开时关闭", () => {

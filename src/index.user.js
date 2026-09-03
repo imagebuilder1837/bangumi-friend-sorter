@@ -1422,6 +1422,16 @@
     else button.removeAttribute("aria-current");
   }
 
+  // 可见好友的判定交给浏览器的 checkVisibility，覆盖所有隐藏途径；
+  // 不可用时回退到内联 display 检查，兼容以 style.display 隐藏条目的
+  // 组件（如好友标签筛选，见 ADR 0002）。
+  function isEntryVisible(element) {
+    if (typeof element.checkVisibility === "function") {
+      return element.checkVisibility();
+    }
+    return element.style?.display !== "none";
+  }
+
   // 排序栏 deep module：排序交互与呈现的唯一边界。`bind` 一次性接收领域
   // 意图回调（选择排序目标、切换方向），`render` 幂等地接收可呈现状态；
   // 菜单、按钮、方向文案、状态提示、名次、ARIA、输入模态、焦点与展开
@@ -1432,7 +1442,7 @@
   // 接口约定：bind 必须在首次 render 前恰好调用一次（相对 mount 的先后
   // 不限）；render 接收完整的可呈现状态，重复调用安全，展示顺序不变时
   // 跳过重排与名次更新。
-  function createSortBar(pageDocument, { list }) {
+  function createSortBar(pageDocument, { list, mutationObserver } = {}) {
     const bar = pageDocument.createElement("div");
     // Reuse the site's #browserTools frame, including its horizontal borders.
     bar.id = "browserTools";
@@ -1691,19 +1701,19 @@
     }
 
     let lastOrderElements = null;
+    let lastVisibleElements = null;
+    // 最近一次收到的可呈现状态：可见性观察回调重放它以重排名次。
+    let lastState = null;
 
     // 幂等呈现：当前选择、方向文案、菜单选中态、刷新状态提示与好友名次
     // 都由这一次渲染更新。展示顺序与上次相同（例如只有状态提示变化）时
-    // 跳过重排，保持既有 DOM 操作量级。首次渲染与当前 DOM 顺序比较：
-    // 条目已就位（页面默认顺序）时只标注名次、不移动列表项，与重构前
-    // 初始化只加徽章的操作量级一致。调用方始终传入完整的可呈现状态。
-    function render({
-      criterion,
-      direction,
-      selection,
-      statusMessage,
-      orderedFriends,
-    }) {
+    // 跳过重排，保持既有 DOM 操作量级。名次只对可见好友（见 CONTEXT.md）
+    // 连续编号：可见集合变化而顺序未变时只重写名次、不移动列表项，
+    // 隐藏项徽章保留旧文本。调用方始终传入完整的可呈现状态。
+    function render(state) {
+      lastState = state;
+      const { criterion, direction, selection, statusMessage, orderedFriends } =
+        state;
       for (const [value, button] of buttons) {
         setAriaCurrent(button, value === criterion);
       }
@@ -1732,17 +1742,45 @@
 
       const renderEntries = orderedFriends.map(entryFor);
       const elements = renderEntries.map((entry) => entry.element);
+      const visibleEntries = renderEntries.filter((entry) =>
+        isEntryVisible(entry.element),
+      );
+      const visibleElements = visibleEntries.map((entry) => entry.element);
       const currentElements = lastOrderElements ?? Array.from(list.children);
       const orderChanged =
         currentElements.length !== elements.length ||
         currentElements.some((element, index) => element !== elements[index]);
-      const firstRender = !lastOrderElements;
+      const ranksChanged =
+        lastVisibleElements === null ||
+        lastVisibleElements.length !== visibleElements.length ||
+        lastVisibleElements.some(
+          (element, index) => element !== visibleElements[index],
+        );
       lastOrderElements = elements;
-      // 已就位的重复渲染连名次都不重写；首渲染必须补齐初始名次。
-      if (!orderChanged && !firstRender) return;
-      renderEntries.forEach((entry, index) => {
-        if (orderChanged) list.append(entry.element);
+      lastVisibleElements = visibleElements;
+      // 已就位且可见集合未变的重复渲染连名次都不重写；首渲染由
+      // lastVisibleElements 为空触发，补齐初始名次。
+      if (!orderChanged && !ranksChanged) return;
+      if (orderChanged) {
+        for (const entry of renderEntries) list.append(entry.element);
+      }
+      visibleEntries.forEach((entry, index) => {
         rankBadgeFor(entry).textContent = `#${index + 1}`;
+      });
+    }
+
+    // 可见性观察（ADR 0002）：任何组件切换好友项的 style/class 都视为
+    // 可能的筛选变化，回调重放最近一次渲染；可见集合未变时渲染幂等
+    // 退出，零 DOM 写入。首渲染前无状态可重放，静默忽略。无
+    // MutationObserver（测试环境或极端浏览器）时不观察，名次仅在后续
+    // 渲染时修正，属可接受的降级。
+    if (typeof mutationObserver === "function") {
+      new mutationObserver(() => {
+        if (lastState) render(lastState);
+      }).observe(list, {
+        attributes: true,
+        attributeFilter: ["style", "class"],
+        subtree: true,
       });
     }
 
@@ -2543,7 +2581,13 @@
       pageWindow,
     );
     const collator = nameCollator();
-    const sortBar = createSortBar(pageDocument, { list });
+    const sortBar = createSortBar(pageDocument, {
+      list,
+      // 浏览器注入可见性观察器（ADR 0002）；测试可注入替身，缺省时
+      // 排序栏静默降级为仅在后续渲染中修正名次。
+      mutationObserver:
+        runtime.mutationObserver ?? pageWindow.MutationObserver,
+    });
     if (!sortBar.mount()) return;
     // 生产 HTTP adapter 在装配时创建；测试可以直接注入返回规范化领域结果
     // 的 mock adapter，不伪造 HTTP Response 或 DOM。
