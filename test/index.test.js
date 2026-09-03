@@ -245,33 +245,45 @@ function initializeRefreshPage({
   return page;
 }
 
-// Drives the production refresh orchestration (createFriendRefreshTasks) so
-// tests exercise the same lifecycle the sorter bar uses at runtime.
-function createRefreshHarness({
+// Drives the production remote-sort session (createFriendSortSession) with a
+// recording sort-bar substitute, so tests exercise the same boundary the page
+// uses at runtime and never touch the private task registry or state machine.
+function createSessionHarness({
   cache,
   friends,
   runtime,
   visitorIdentifier = "visitor",
 }) {
-  let lastMessage = "";
+  let lastState = null;
   let resolveFinished;
   const finished = new Promise((resolve) => {
     resolveFinished = resolve;
   });
-  const refresh = sorter.createFriendRefreshTasks({
-    applyActivitySort: () => resolveFinished(),
-    applyProfileSort: () => resolveFinished(),
+  const session = sorter.createFriendSortSession({
     cache,
+    collator: new Intl.Collator(undefined, {
+      numeric: true,
+      sensitivity: "base",
+    }),
     friends,
     now: runtime.now ?? (() => 1_000),
     pageWindow: {},
-    present: (message) => {
-      lastMessage = message;
-    },
     runtime,
+    sortBar: {
+      render(state) {
+        lastState = state;
+        if (/获取完成|请求受限/.test(state.statusMessage)) resolveFinished();
+      },
+    },
     visitorIdentifier,
   });
-  return { finished, lastMessage: () => lastMessage, refresh };
+  session.start();
+  return {
+    finished,
+    lastMessage: () => lastState?.statusMessage ?? "",
+    lastState: () => lastState,
+    session,
+  };
 }
 
 function directionButtonsFor(page) {
@@ -2166,7 +2178,7 @@ test("请求响应头的时间按整秒传给活跃时刻解析并写入整数 U
   const document = timelineDocumentFromFixture("timeline-active-seconds.html");
   const responseTime = Date.UTC(2026, 7, 26, 9, 43, 36);
   const cache = sorter.createFriendCache(null);
-  const { finished, refresh } = createRefreshHarness({
+  const { finished, session } = createSessionHarness({
     cache,
     friends: [{ userIdentifier: "sai" }],
     runtime: {
@@ -2180,7 +2192,7 @@ test("请求响应头的时间按整秒传给活跃时刻解析并写入整数 U
     },
   });
 
-  refresh.startActivity("incremental");
+  session.choose("activity");
   await finished;
 
   assert.deepEqual(cache.activityFor("sai"), {
@@ -2193,7 +2205,7 @@ test("请求响应头的时间按整秒传给活跃时刻解析并写入整数 U
 test("时间胶囊返回四零四时计入失败且不覆盖缓存", async () => {
   const progress = [];
   const cache = sorter.createFriendCache(null);
-  const { finished, lastMessage, refresh } = createRefreshHarness({
+  const { finished, lastMessage, session } = createSessionHarness({
     cache,
     friends: [{ userIdentifier: "missing" }],
     runtime: {
@@ -2204,7 +2216,7 @@ test("时间胶囊返回四零四时计入失败且不覆盖缓存", async () =>
     },
   });
 
-  refresh.startActivity("incremental");
+  session.choose("activity");
   await finished;
 
   assert.equal(lastMessage(), "“上次活跃”获取完成，1 人失败");
@@ -2226,7 +2238,7 @@ test("用户主页返回四零四时计入失败且保留旧缓存", async () =>
     friendCacheStorage({ friend: oldRecord }),
   );
   const progress = [];
-  const { finished, lastMessage, refresh } = createRefreshHarness({
+  const { finished, lastMessage, session } = createSessionHarness({
     cache,
     friends: [{ userIdentifier: "friend" }],
     runtime: {
@@ -2237,7 +2249,7 @@ test("用户主页返回四零四时计入失败且保留旧缓存", async () =>
     },
   });
 
-  refresh.startProfile({ kind: "completion", scope: "all" });
+  session.choose("completion", "all");
   await finished;
 
   assert.equal(lastMessage(), "“完成条目数”获取完成，1 人失败");
@@ -2268,7 +2280,7 @@ test("无效用户主页计入失败且保留旧缓存", async () => {
   const cache = sorter.createFriendCache(
     friendCacheStorage({ friend: oldRecord }),
   );
-  const { finished, lastMessage, refresh } = createRefreshHarness({
+  const { finished, lastMessage, session } = createSessionHarness({
     cache,
     friends: [{ userIdentifier: "friend" }],
     runtime: {
@@ -2278,7 +2290,7 @@ test("无效用户主页计入失败且保留旧缓存", async () => {
     },
   });
 
-  refresh.startProfile({ kind: "completion", scope: "all" });
+  session.choose("completion", "all");
   await finished;
 
   assert.equal(lastMessage(), "“完成条目数”获取完成，1 人失败");
@@ -2318,7 +2330,7 @@ test("用户主页请求超过十五秒时计入失败且保留旧缓存", async
   globalThis.clearTimeout = () => {};
 
   try {
-    const { finished, lastMessage, refresh } = createRefreshHarness({
+    const { finished, lastMessage, session } = createSessionHarness({
       cache,
       friends: [{ userIdentifier: "friend" }],
       runtime: {
@@ -2343,7 +2355,7 @@ test("用户主页请求超过十五秒时计入失败且保留旧缓存", async
       },
     });
 
-    refresh.startProfile({ kind: "completion", scope: "all" });
+    session.choose("completion", "all");
 
     assert.equal(scheduled.length, 1);
     assert.equal(scheduled[0].delay, 15_000);
@@ -2367,7 +2379,7 @@ test("时间胶囊刷新任务通过请求结果、缓存写入和进度回调�
   const progress = [];
   const responseTime = Date.UTC(2026, 7, 26, 9, 43, 36);
   const cache = sorter.createFriendCache(null);
-  const { finished, lastMessage, refresh } = createRefreshHarness({
+  const { finished, lastMessage, session } = createSessionHarness({
     cache,
     friends: [{ userIdentifier: "sai" }, { userIdentifier: "tom" }],
     runtime: {
@@ -2391,7 +2403,7 @@ test("时间胶囊刷新任务通过请求结果、缓存写入和进度回调�
     },
   });
 
-  refresh.startActivity("incremental");
+  session.choose("activity");
   await finished;
 
   assert.deepEqual(requested.sort(), ["/user/sai/timeline", "/user/tom/timeline"]);
@@ -2407,6 +2419,73 @@ test("时间胶囊刷新任务通过请求结果、缓存写入和进度回调�
     [[0, 2], [1, 2], [2, 2]],
   );
   assert.equal(lastMessage(), "“上次活跃”获取完成");
+});
+
+// 会话级测试：旧任务的迟到结果不覆盖切换后的排序选择，只把结果写进缓存。
+test("会话切换排序目标后旧任务的迟到结果不覆盖当前排序", async () => {
+  const responseTime = Date.UTC(2026, 7, 26, 9, 43, 36);
+  const cache = sorter.createFriendCache(null);
+  let releaseFetches;
+  const fetchesReleased = new Promise((resolve) => {
+    releaseFetches = resolve;
+  });
+  const { finished, lastMessage, lastState, session } = createSessionHarness({
+    cache,
+    friends: [{ userIdentifier: "sai" }, { userIdentifier: "tom" }],
+    runtime: {
+      domParser: {
+        parseFromString: () =>
+          timelineDocumentFromFixture("timeline-active-seconds.html"),
+      },
+      fetchImpl: async () => {
+        await fetchesReleased;
+        return {
+          ok: true,
+          headers: {
+            get: (name) =>
+              name === "date" ? new Date(responseTime).toUTCString() : null,
+          },
+          text: async () => "fixture",
+        };
+      },
+      now: () => responseTime,
+    },
+  });
+
+  session.choose("activity");
+  session.choose("name");
+  const nameOrder = lastState().orderedFriends.map(
+    (friend) => friend.userIdentifier,
+  );
+  releaseFetches();
+  await finished;
+
+  assert.equal(lastState().criterion, "name");
+  assert.deepEqual(
+    lastState().orderedFriends.map((friend) => friend.userIdentifier),
+    nameOrder,
+  );
+  assert.equal(lastMessage(), "“上次活跃”获取完成");
+  const expectedActivity = {
+    kind: "active",
+    activityAtSeconds: Date.UTC(2026, 7, 26, 9, 42, 34) / 1_000,
+    fetchedAt: responseTime,
+  };
+  assert.deepEqual(cache.activityFor("sai"), expectedActivity);
+  assert.deepEqual(cache.activityFor("tom"), expectedActivity);
+});
+
+// 会话级测试：无效排序目标、无效方向与重复启动都是 programmer error。
+test("会话对未知排序目标、未知方向与重复启动同步抛出", () => {
+  const { session } = createSessionHarness({
+    cache: sorter.createFriendCache(null),
+    friends: [],
+    runtime: {},
+  });
+
+  assert.throws(() => session.choose("bogus"), /未知的排序目标/);
+  assert.throws(() => session.changeDirection("bogus"), /未知的排序方向/);
+  assert.throws(() => session.start(), /只能启动一次/);
 });
 
 test("页面初始化可以注入获取任务所需的运行时依赖", async () => {
@@ -3424,7 +3503,7 @@ test("同一主页响应分别刷新完成统计，失败范围保留旧缓存",
   };
   const cache = sorter.createFriendCache(storage);
 
-  const { finished, refresh } = createRefreshHarness({
+  const { finished, session } = createSessionHarness({
     cache,
     friends: [{ userIdentifier: "sai" }],
     runtime: {
@@ -3434,7 +3513,7 @@ test("同一主页响应分别刷新完成统计，失败范围保留旧缓存",
     },
   });
 
-  refresh.startProfile({ kind: "completion", scope: "all" });
+  session.choose("completion", "all");
   await finished;
 
   assert.deepEqual(
@@ -3474,7 +3553,7 @@ test("重复分类块只保留该范围旧缓存，其余范围和契合字段�
   };
   const cache = sorter.createFriendCache(storage);
 
-  const { finished, lastMessage, refresh } = createRefreshHarness({
+  const { finished, lastMessage, session } = createSessionHarness({
     cache,
     friends: [{ userIdentifier: "sai" }],
     runtime: {
@@ -3486,7 +3565,7 @@ test("重复分类块只保留该范围旧缓存，其余范围和契合字段�
     },
   });
 
-  refresh.startProfile({ kind: "completion", scope: "all" });
+  session.choose("completion", "all");
   await finished;
 
   assert.deepEqual(
