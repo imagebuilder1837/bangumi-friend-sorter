@@ -2548,7 +2548,6 @@
     initialize,
     needsLargeRequestConfirmation,
     nextBatchState,
-    nextRemoteSelectionAction,
     parseProfileDocument,
     parseTimelineDocument,
     sortFriends,

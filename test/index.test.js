@@ -945,77 +945,6 @@ test("上次活跃刷新完成后沿用刷新期间选择的方向", async () =>
   }
 });
 
-test("远程排序目标点击使用统一的待命和刷新动作", () => {
-  assert.deepEqual(
-    sorter.nextRemoteSelectionAction(null, { kind: "activity" }, "idle"),
-    { kind: "select", clearPrompt: false, refreshMode: "incremental" },
-  );
-  assert.deepEqual(
-    sorter.nextRemoteSelectionAction(
-      { kind: "activity" },
-      { kind: "activity" },
-      "idle",
-    ),
-    { kind: "arm", clearPrompt: false, refreshMode: null },
-  );
-  assert.deepEqual(
-    sorter.nextRemoteSelectionAction(
-      { kind: "activity" },
-      { kind: "activity" },
-      "armed",
-    ),
-    { kind: "refresh", clearPrompt: true, refreshMode: "full" },
-  );
-  assert.deepEqual(
-    sorter.nextRemoteSelectionAction(
-      { kind: "activity" },
-      { kind: "activity" },
-      "fetching",
-    ),
-    { kind: "ignore" },
-  );
-  assert.deepEqual(
-    sorter.nextRemoteSelectionAction(
-      { kind: "activity" },
-      { kind: "activity" },
-      "completed",
-    ),
-    { kind: "ignore" },
-  );
-  assert.deepEqual(
-    sorter.nextRemoteSelectionAction(
-      { kind: "completion", scope: "all" },
-      { kind: "relation", metric: "syncRate" },
-      "fetching",
-    ),
-    { kind: "select", clearPrompt: false, refreshMode: "incremental" },
-  );
-  assert.deepEqual(
-    sorter.nextRemoteSelectionAction(
-      { kind: "completion", scope: "all" },
-      null,
-      "armed",
-    ),
-    { kind: "select", clearPrompt: true, refreshMode: null },
-  );
-  assert.deepEqual(
-    sorter.nextRemoteSelectionAction(
-      null,
-      { kind: "relation", metric: "syncRate" },
-      "completed",
-    ),
-    { kind: "select", clearPrompt: false, refreshMode: "incremental" },
-  );
-  assert.deepEqual(
-    sorter.nextRemoteSelectionAction(
-      { kind: "relation", metric: "syncRate" },
-      { kind: "relation", metric: "commonLikes" },
-      "idle",
-    ),
-    { kind: "select", clearPrompt: false, refreshMode: "incremental" },
-  );
-});
-
 test("从时间胶囊首条动态读取活跃时刻", () => {
   const document = timelineDocumentFromFixture("timeline-active.html");
 
@@ -4117,6 +4046,62 @@ test("切换字段但未新增好友时立即更新进行中提示的主按钮�
     status.textContent.includes("“完成条目数”获取完成"),
   );
   assert.deepEqual(requests, ["/user/a"]);
+});
+
+test("获取中重复选择同一远程目标被忽略且不打断进行中任务", async () => {
+  const page = friendPageWith([
+    { href: "/user/a", name: "A" },
+    { href: "/user/b", name: "B" },
+  ]);
+  const now = 100_000;
+  let releaseA;
+  const pendingA = new Promise((resolve) => {
+    releaseA = resolve;
+  });
+  const requests = [];
+
+  sorter.initialize({
+    document: page.document,
+    window: {
+      CHOBITS_USERNAME: "visitor",
+      location: { href: "https://bgm.tv/user/viewed/friends" },
+    },
+    storage: friendCacheStorage({
+      b: { relation: { visitor: { syncRate: { value: 10, fetchedAt: now } } } },
+    }),
+    now: () => now,
+    domParser: {
+      parseFromString: () => relationProfileDocument({ syncRate: "50%" }),
+    },
+    fetchImpl: (url) => {
+      requests.push(url);
+      return url.endsWith("/a")
+        ? pendingA
+        : Promise.resolve({ ok: true, text: async () => "b" });
+    },
+  });
+
+  const relationButton = dropdownButtonFor(page, "喜好契合");
+  const status = statusFor(page);
+
+  relationButton.click();
+  assert.deepEqual(requests, ["/user/a"]);
+  assert.equal(status.textContent, "正在获取“喜好契合” 0/1");
+
+  // 获取中再次选择同一目标：忽略，不新增请求也不清掉进行中提示。
+  relationButton.click();
+  assert.deepEqual(requests, ["/user/a"]);
+  assert.equal(status.textContent, "正在获取“喜好契合” 0/1");
+
+  releaseA({ ok: true, text: async () => "a" });
+  await waitForCondition(() =>
+    status.textContent.includes("“喜好契合”获取完成"),
+  );
+  assert.deepEqual(requests, ["/user/a"]);
+  assert.deepEqual(page.list.children.map((item) => item.textContent), [
+    "A",
+    "B",
+  ]);
 });
 
 test("取消大批量扩充后恢复旧主页任务目标", async () => {
