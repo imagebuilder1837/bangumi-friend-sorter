@@ -1702,7 +1702,9 @@
 
     // 幂等呈现：当前选择、方向文案、菜单选中态、刷新状态提示与好友名次
     // 都由这一次渲染更新。展示顺序与上次相同（例如只有状态提示变化）时
-    // 跳过重排，保持既有 DOM 操作量级。调用方始终传入完整的可呈现状态。
+    // 跳过重排，保持既有 DOM 操作量级。首次渲染与当前 DOM 顺序比较：
+    // 条目已就位（页面默认顺序）时只标注名次、不移动列表项，与重构前
+    // 初始化只加徽章的操作量级一致。调用方始终传入完整的可呈现状态。
     function render({
       criterion,
       direction,
@@ -1738,14 +1740,16 @@
 
       const renderEntries = orderedFriends.map(entryFor);
       const elements = renderEntries.map((entry) => entry.element);
+      const currentElements = lastOrderElements ?? Array.from(list.children);
       const orderChanged =
-        !lastOrderElements ||
-        lastOrderElements.length !== elements.length ||
-        lastOrderElements.some((element, index) => element !== elements[index]);
-      if (!orderChanged) return;
+        currentElements.length !== elements.length ||
+        currentElements.some((element, index) => element !== elements[index]);
+      const firstRender = !lastOrderElements;
       lastOrderElements = elements;
+      // 已就位的重复渲染连名次都不重写；首渲染必须补齐初始名次。
+      if (!orderChanged && !firstRender) return;
       renderEntries.forEach((entry, index) => {
-        list.append(entry.element);
+        if (orderChanged) list.append(entry.element);
         rankBadgeFor(entry).textContent = `#${index + 1}`;
       });
     }
@@ -2058,38 +2062,38 @@
   // Bridges one page task's lifecycle to a friend-cache refresh batch: the
   // batch opens when the task starts fetching, accepts each friend's result
   // and commits once when the task finishes. Callers never touch persistence.
-  function createCacheBatchLifecycle({ cache, status }) {
-    return ({
+  function createCacheBatchLifecycle({
+    applySort,
+    cache,
+    labelFor,
+    progressReporter,
+    projectResult,
+    status,
+    taskType,
+    visitorIdentifier,
+  }) {
+    const base = createRefreshLifecycle({
       applySort,
       labelFor,
       progressReporter,
-      projectResult,
+      status,
       taskType,
-      visitorIdentifier,
-    }) => {
-      const base = createRefreshLifecycle({
-        applySort,
-        labelFor,
-        progressReporter,
-        status,
-        taskType,
-      });
-      let batch = null;
-      return {
-        ...base,
-        onFetching(progress) {
-          batch = cache.beginRefresh({ visitorIdentifier });
-          base.onFetching?.(progress);
-        },
-        onFinished(result) {
-          batch?.complete();
-          batch = null;
-          base.onFinished?.(result);
-        },
-        onSuccess(friend, record) {
-          batch?.accept(userIdentifierFor(friend), projectResult(record));
-        },
-      };
+    });
+    let batch = null;
+    return {
+      ...base,
+      onFetching(progress) {
+        batch = cache.beginRefresh({ visitorIdentifier });
+        base.onFetching?.(progress);
+      },
+      onFinished(result) {
+        batch?.complete();
+        batch = null;
+        base.onFinished?.(result);
+      },
+      onSuccess(friend, record) {
+        batch?.accept(userIdentifierFor(friend), projectResult(record));
+      },
     };
   }
 
@@ -2175,12 +2179,13 @@
       return result;
     }
 
-    const cacheLifecycle = createCacheBatchLifecycle({ cache, status });
-    const lifecycle = cacheLifecycle({
+    const lifecycle = createCacheBatchLifecycle({
       applySort,
+      cache,
       labelFor: profileFieldLabelFor,
       progressReporter,
       projectResult: cacheResultFor,
+      status,
       taskType: PROFILE_TASK_TYPE,
       visitorIdentifier,
     });
@@ -2213,6 +2218,14 @@
   // 择触发的全量刷新、登录前置条件、请求先后关系与提示优先级，并编排好
   // 友缓存、活跃任务、主页字段任务、排序函数与排序栏。任务登记表、状态
   // 机与排序栏内部节点均不向外暴露。
+  // 接口约定：start 必须最先调用且恰好一次（重复启动抛错），它按网页
+  // 默认顺序完成首次呈现；此后 choose 与 changeDirection 是仅有的排序
+  // 命令入口，未知目标、子选项或方向立即抛错（programmer error），不
+  // 修改任何状态。不变量：展示顺序只在排序输入（目标、方向、子选项）
+  // 或条件重排后变化，状态提示等纯呈现更新复用上一次排序结果；任务
+  // 结束后只有目标仍是当前目标时才重排，迟到结果不覆盖已切换的选择。
+  // 错误模式：远程目标缺少登录访客标识时不抛错，转入登录前置提示；
+  // 调度器已停止或无待请求好友的刷新静默忽略，返回 null。
   function createFriendSortSession({
     cache,
     collator,
@@ -2260,12 +2273,13 @@
       }
     }
 
-    const cacheLifecycle = createCacheBatchLifecycle({ cache, status });
-    const activityLifecycle = cacheLifecycle({
+    const activityLifecycle = createCacheBatchLifecycle({
       applySort: applyActivitySort,
+      cache,
       labelFor: () => "上次活跃",
       progressReporter: showActivityProgress,
       projectResult: (activity) => ({ activity }),
+      status,
       taskType: ACTIVITY_TASK_TYPE,
     });
 

@@ -4763,6 +4763,42 @@ function sortBarUnderTest(page, { onSelectCriterion = () => {} } = {}) {
   return sortBar;
 }
 
+test("首次渲染条目已就位时只标注名次，不移动列表项", () => {
+  const page = friendPageWith([
+    { href: "/user/a", name: "A" },
+    { href: "/user/b", name: "B" },
+  ]);
+  const sortBar = sortBarUnderTest(page);
+  const appendedNodes = [];
+  const originalAppend = page.list.append.bind(page.list);
+  page.list.append = (...nodes) => {
+    appendedNodes.push(...nodes);
+    return originalAppend(...nodes);
+  };
+
+  sortBar.render({
+    criterion: "added",
+    direction: "asc",
+    selection: "all",
+    statusMessage: "",
+    orderedFriends: [{ originalIndex: 0 }, { originalIndex: 1 }],
+  });
+  assert.deepEqual(appendedNodes, []);
+  assert.deepEqual(page.list.children.map(rankFor), ["#1", "#2"]);
+
+  // 展示顺序变化时仍然移动条目并更新名次。
+  sortBar.render({
+    criterion: "added",
+    direction: "desc",
+    selection: "all",
+    statusMessage: "",
+    orderedFriends: [{ originalIndex: 1 }, { originalIndex: 0 }],
+  });
+  assert.deepEqual(appendedNodes, [page.list.children[0], page.list.children[1]]);
+  assert.equal(page.list.children[0].textContent, "B");
+  assert.equal(page.list.children[1].textContent, "A");
+});
+
 test("排序栏重复渲染相同展示顺序时不重排列表，且意图回调只能绑定一次", () => {
   const page = friendPageWith([
     { href: "/user/a", name: "A" },
