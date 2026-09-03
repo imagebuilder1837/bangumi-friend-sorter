@@ -316,6 +316,28 @@ function menuItemFor(page, label, itemText) {
   );
 }
 
+// sortBar.render 的默认状态：测试按需覆盖单个字段，避免五字段字面量重复。
+function renderState(overrides = {}) {
+  return {
+    criterion: "added",
+    direction: "asc",
+    selection: "all",
+    statusMessage: "",
+    orderedFriends: [],
+    ...overrides,
+  };
+}
+
+// 六个完成统计范围的缓存快照：只经由缓存领域读取获取，不触碰原始载荷。
+function completionSnapshotFor(cache, userIdentifier) {
+  return Object.fromEntries(
+    ["all", "1", "2", "3", "4", "6"].map((scope) => [
+      scope,
+      cache.completionFor(userIdentifier, scope),
+    ]),
+  );
+}
+
 // Fake timer wheel shared by status-timing tests: advance fires due timers in
 // due order and yields to the microtask queue afterwards.
 function fakeTimers(startTime = 0) {
@@ -724,13 +746,7 @@ test("排序栏通过 bind 回传意图并经 render 更新方向文案", () => 
   );
   const directionButtons = directionButtonsFor(page);
 
-  sortBar.render({
-    criterion: "name",
-    direction: "desc",
-    selection: "all",
-    statusMessage: "",
-    orderedFriends: [],
-  });
+  sortBar.render(renderState({ criterion: "name", direction: "desc" }));
   assert.deepEqual(directionButtons.map(({ textContent }) => textContent), [
     "升序",
     "降序",
@@ -743,13 +759,7 @@ test("排序栏通过 bind 回传意图并经 render 更新方向文案", () => 
   assert.deepEqual(directions, ["asc"]);
   assert.deepEqual(selections, [["activity", undefined]]);
 
-  sortBar.render({
-    criterion: "activity",
-    direction: "asc",
-    selection: "all",
-    statusMessage: "",
-    orderedFriends: [],
-  });
+  sortBar.render(renderState({ criterion: "activity", direction: "asc" }));
   assert.deepEqual(directionButtons.map(({ textContent }) => textContent), [
     "从旧到新",
     "从新到旧",
@@ -3039,12 +3049,11 @@ function duplicateCategoryProfileDocument() {
   };
 }
 
-test("重复分类块只使该范围结果无效，不抹去其他范围与契合指标", () => {
+test("重复分类块使完成统计解析失败，契合指标照常成功", () => {
   assert.deepEqual(
     sorter.parseProfileDocument(duplicateCategoryProfileDocument()),
     {
       kind: "success",
-      completion: { all: 20, "1": 3, "3": 0, "4": 0, "6": 0 },
       relation: { syncRate: 12, commonLikes: 5 },
     },
   );
@@ -3060,15 +3069,8 @@ test("主页请求记录按字段携带成功、缺失或无效结果", async ()
 
   assert.equal(outcome.kind, "success");
   assert.equal(outcome.record.fetchedAt, 5_000);
-  assert.deepEqual(outcome.record.fields.completion.all, {
-    kind: "success",
-    value: 20,
-  });
-  assert.deepEqual(outcome.record.fields.completion["2"], { kind: "invalid" });
-  assert.deepEqual(outcome.record.fields.completion["3"], {
-    kind: "success",
-    value: 0,
-  });
+  // 重复分类块是结构矛盾：完成统计整体解析失败，契合指标照常携带结果。
+  assert.equal(outcome.record.fields.completion, null);
   assert.deepEqual(outcome.record.fields.relation.syncRate, {
     kind: "success",
     value: 12,
@@ -3538,12 +3540,7 @@ test("同一主页响应分别刷新完成统计，失败范围保留旧缓存",
   await finished;
 
   assert.deepEqual(
-    Object.fromEntries(
-      ["all", "1", "2", "3", "4", "6"].map((scope) => [
-        scope,
-        cache.completionFor("sai", scope),
-      ]),
-    ),
+    completionSnapshotFor(cache, "sai"),
     {
       all: { value: 20, fetchedAt: now },
       1: oldBook,
@@ -3556,7 +3553,7 @@ test("同一主页响应分别刷新完成统计，失败范围保留旧缓存",
   assert.equal(writes.length, 1);
 });
 
-test("重复分类块只保留该范围旧缓存，其余范围和契合字段照常写入", async () => {
+test("某个完成范围解析无效只保留该范围旧缓存，其余范围和契合字段照常写入", async () => {
   const now = 10_000;
   const oldAnimation = { value: 77, fetchedAt: now - 1 };
   const writes = [];
@@ -3578,7 +3575,8 @@ test("重复分类块只保留该范围旧缓存，其余范围和契合字段�
     cache,
     friends: [{ userIdentifier: "sai" }],
     runtime: {
-      // 重复分类块只使动画范围无效：其余范围与契合字段照常成功。
+      // 单个分类块存在但解析失败只使动画范围无效：其余范围与契合字段
+      // 照常成功（重复分类块则是结构矛盾，整个完成统计解析失败）。
       http: {
         fetchProfile: async () => ({
           kind: "success",
@@ -3609,12 +3607,7 @@ test("重复分类块只保留该范围旧缓存，其余范围和契合字段�
   await finished;
 
   assert.deepEqual(
-    Object.fromEntries(
-      ["all", "1", "2", "3", "4", "6"].map((scope) => [
-        scope,
-        cache.completionFor("sai", scope),
-      ]),
-    ),
+    completionSnapshotFor(cache, "sai"),
     {
       all: { value: 20, fetchedAt: now },
       1: { value: 3, fetchedAt: now },
@@ -3657,13 +3650,9 @@ test("完成条目数菜单按范围回调并只表达当前子项的无障碍�
     "游戏",
     "三次元",
   ]);
-  sortBar.render({
-    criterion: "completion",
-    direction: "desc",
-    selection: "2",
-    statusMessage: "",
-    orderedFriends: [],
-  });
+  sortBar.render(
+    renderState({ criterion: "completion", direction: "desc", selection: "2" }),
+  );
   assert.equal(toggle.getAttribute("aria-current"), "true");
   assert.equal(
     menuItemFor(page, "完成条目数", "动画").getAttribute("aria-current"),
@@ -3695,13 +3684,13 @@ test("喜好契合菜单按指标回调并直接点击默认选择同步率", ()
     "同步率",
     "共同喜好数",
   ]);
-  sortBar.render({
-    criterion: "relation",
-    direction: "desc",
-    selection: "commonLikes",
-    statusMessage: "",
-    orderedFriends: [],
-  });
+  sortBar.render(
+    renderState({
+      criterion: "relation",
+      direction: "desc",
+      selection: "commonLikes",
+    }),
+  );
   assert.equal(toggle.getAttribute("aria-current"), "true");
   assert.equal(
     menuItemFor(page, "喜好契合", "共同喜好数").getAttribute("aria-current"),
@@ -4455,6 +4444,8 @@ test("初始化将排序栏挂在主内容列之前并使用完成条目数方�
     querySelector: (selector) => (selector === ".columns" ? columns : null),
     insertBefore(node, before) {
       this.children.splice(this.children.indexOf(before), 0, node);
+      // 与 list.before 一样登记到 beforeNodes，让既有契约助手能定位排序栏。
+      page.list.beforeNodes.push(node);
     },
   };
   page.list.closest = (selector) =>
@@ -4478,22 +4469,17 @@ test("初始化将排序栏挂在主内容列之前并使用完成条目数方�
     }),
   });
 
-  const bar = wrapper.children[0];
-  const filters = bar.children[0];
-  const sortOptions = filters.children[0];
-  const dropdown = sortOptions.children.find(
-    (child) => child?.children?.[0]?.textContent === "完成条目数",
-  );
-  dropdown.children
-    .find((child) => child.getAttribute("aria-haspopup") === "true")
-    .click();
+  dropdownButtonFor(page, "完成条目数").click();
   await new Promise((resolve) => setImmediate(resolve));
-  const directionButtons = filters.children[1].children.filter(
-    (child) => child?.tagName === "button",
-  );
+  const directionButtons = directionButtonsFor(page);
 
-  assert.equal(bar.dataset.friendSorter, "");
-  assert.equal(wrapper.children[1], columns);
+  assert.equal(mountedSortBar(page).dataset.friendSorter, "");
+  // 排序栏挂在主内容列之前，不依赖内部节点序号。
+  assert.equal(
+    wrapper.children.indexOf(mountedSortBar(page)) <
+      wrapper.children.indexOf(columns),
+    true,
+  );
   assert.deepEqual(directionButtons.map(({ textContent }) => textContent), [
     "从低到高",
     "从高到低",
@@ -4581,12 +4567,7 @@ test("完成统计范围在刷新期间切换后补取新增缺失好友", async
   assert.deepEqual(requests, ["a", "b"]);
   const reloaded = sorter.createFriendCache(storage, { now: () => now });
   assert.deepEqual(
-    Object.fromEntries(
-      ["all", "1", "2", "3", "4", "6"].map((scope) => [
-        scope,
-        reloaded.completionFor("b", scope),
-      ]),
-    ),
+    completionSnapshotFor(reloaded, "b"),
     {
       all: { value: 2, fetchedAt: now },
       1: { value: 20, fetchedAt: now },
@@ -4776,24 +4757,21 @@ test("首次渲染条目已就位时只标注名次，不移动列表项", () =>
     return originalAppend(...nodes);
   };
 
-  sortBar.render({
-    criterion: "added",
-    direction: "asc",
-    selection: "all",
-    statusMessage: "",
-    orderedFriends: [{ originalIndex: 0 }, { originalIndex: 1 }],
-  });
+  sortBar.render(
+    renderState({
+      orderedFriends: [{ originalIndex: 0 }, { originalIndex: 1 }],
+    }),
+  );
   assert.deepEqual(appendedNodes, []);
   assert.deepEqual(page.list.children.map(rankFor), ["#1", "#2"]);
 
   // 展示顺序变化时仍然移动条目并更新名次。
-  sortBar.render({
-    criterion: "added",
-    direction: "desc",
-    selection: "all",
-    statusMessage: "",
-    orderedFriends: [{ originalIndex: 1 }, { originalIndex: 0 }],
-  });
+  sortBar.render(
+    renderState({
+      direction: "desc",
+      orderedFriends: [{ originalIndex: 1 }, { originalIndex: 0 }],
+    }),
+  );
   assert.deepEqual(appendedNodes, [page.list.children[0], page.list.children[1]]);
   assert.equal(page.list.children[0].textContent, "B");
   assert.equal(page.list.children[1].textContent, "A");
@@ -4811,23 +4789,13 @@ test("排序栏重复渲染相同展示顺序时不重排列表，且意图回�
   );
 
   const ordered = [{ originalIndex: 0 }, { originalIndex: 1 }];
-  sortBar.render({
-    criterion: "added",
-    direction: "asc",
-    selection: "all",
-    statusMessage: "",
-    orderedFriends: ordered,
-  });
+  sortBar.render(renderState({ orderedFriends: ordered }));
   assert.deepEqual(page.list.children.map(rankFor), ["#1", "#2"]);
 
   // 传入逆序记录时按网页默认顺序位置重排条目，名次跟随展示顺序。
-  sortBar.render({
-    criterion: "added",
-    direction: "desc",
-    selection: "all",
-    statusMessage: "",
-    orderedFriends: [...ordered].reverse(),
-  });
+  sortBar.render(
+    renderState({ direction: "desc", orderedFriends: [...ordered].reverse() }),
+  );
   assert.equal(page.list.children[0].textContent, "B");
   assert.equal(page.list.children[1].textContent, "A");
   assert.deepEqual(page.list.children.slice(0, 2).map(rankFor), ["#1", "#2"]);
@@ -4835,13 +4803,13 @@ test("排序栏重复渲染相同展示顺序时不重排列表，且意图回�
   // 同一展示顺序的重复渲染（例如只有状态提示变化）不得重排好友列表。
   const sentinel = page.document.createElement("span");
   page.list.append(sentinel);
-  sortBar.render({
-    criterion: "added",
-    direction: "desc",
-    selection: "all",
-    statusMessage: "“名称”获取完成",
-    orderedFriends: [...ordered].reverse(),
-  });
+  sortBar.render(
+    renderState({
+      direction: "desc",
+      statusMessage: "“名称”获取完成",
+      orderedFriends: [...ordered].reverse(),
+    }),
+  );
   assert.equal(statusFor(page).textContent, "“名称”获取完成");
   assert.equal(page.list.children.at(-1), sentinel);
   assert.deepEqual(page.list.children.slice(0, 2).map(rankFor), ["#1", "#2"]);

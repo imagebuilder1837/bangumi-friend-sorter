@@ -1137,8 +1137,9 @@
         outcomes[scope] =
           value === null ? { kind: "invalid" } : successOutcome(value);
       } else {
-        // 重复的分类块只使自己的范围无效。
-        outcomes[scope] = { kind: "invalid" };
+        // 重复的分类块属于结构矛盾：与既有行为一致，整个完成统计
+        // 解析失败；契合指标不受影响。
+        return null;
       }
     }
     return outcomes;
