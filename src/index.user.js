@@ -91,11 +91,22 @@
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       return false;
     }
-    return Object.values(value).every((metrics) =>
-      Object.entries(metrics || {}).every(
-        ([metric, record]) =>
-          RELATION_METRICS.has(metric) && isRelationRecord(record, metric),
-      ),
+    const visitors = Object.values(value);
+    return (
+      visitors.length > 0 &&
+      visitors.every((metrics) => {
+        if (!metrics || typeof metrics !== "object" || Array.isArray(metrics)) {
+          return false;
+        }
+        const entries = Object.entries(metrics);
+        return (
+          entries.length > 0 &&
+          entries.every(
+            ([metric, record]) =>
+              RELATION_METRICS.has(metric) && isRelationRecord(record, metric),
+          )
+        );
+      })
     );
   }
 
@@ -428,7 +439,7 @@
       friendsNeedingRefresh(
         friends,
         target,
-        { mode = "incremental", visitorIdentifier } = {},
+        { mode = "incremental" } = {},
       ) {
         if (mode === "full") return [...friends];
         const targetReaders = {
@@ -445,7 +456,7 @@
             read: (userIdentifier) =>
               cache.relationFor(userIdentifier, {
                 metric: target?.metric,
-                visitorIdentifier,
+                visitorIdentifier: target?.visitorIdentifier,
               }),
             ttlMs: PROFILE_CACHE_TTL_MS,
           },
@@ -2086,6 +2097,10 @@
     }
 
     function startProfile(target, mode = "incremental") {
+      const cacheTarget =
+        target.kind === SORT.RELATION
+          ? { ...target, visitorIdentifier }
+          : target;
       return startRefresh({
         fetchItem: (friend, dependencies) =>
           fetchProfile(
@@ -2095,10 +2110,7 @@
             now,
           ),
         getPending: () =>
-          cache.friendsNeedingRefresh(friends, target, {
-            mode,
-            visitorIdentifier,
-          }),
+          cache.friendsNeedingRefresh(friends, cacheTarget, { mode }),
         isSuccess: (record, outcome, nextTarget) =>
           outcome.kind === "success" &&
           profileRecordHasTarget(record, nextTarget),

@@ -156,6 +156,10 @@ function friendCacheStorage(records) {
   };
 }
 
+function storedCompletion(value, fetchedAt) {
+  return { completion_all: { value, fetchedAt } };
+}
+
 function refreshCache(cache, entries, options) {
   const batch = cache.beginRefresh(options);
   for (const [userIdentifier, result] of entries) {
@@ -1461,7 +1465,7 @@ test("没有待请求好友的远程目标不会暂停后台任务", async () =>
   const records = Object.fromEntries(
     ["a", "b", "c", "d", "e"].map((userIdentifier) => [
       userIdentifier,
-      { completion_all: { value: 1, fetchedAt: now } },
+      storedCompletion(1, now),
     ]),
   );
 
@@ -1989,6 +1993,31 @@ test("v3 缓存独立校验每个好友的完成字段", () => {
   assert.equal(cache.completionFor("broken", "all"), undefined);
 });
 
+test("v3 缓存丢弃访问者层级损坏的喜好契合字段", () => {
+  const activity = { kind: "empty", fetchedAt: 1_000 };
+  const writes = [];
+  const storage = {
+    getItem(key) {
+      if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
+      return JSON.stringify({
+        version: 3,
+        records: {
+          sai: { activity, relation: { visitor: null } },
+        },
+      });
+    },
+    setItem(_key, value) {
+      writes.push(JSON.parse(value));
+    },
+    removeItem() {},
+  };
+  const cache = sorter.createFriendCache(storage);
+
+  cache.beginRefresh().complete();
+
+  assert.deepEqual(writes.at(-1).records, { sai: { activity } });
+});
+
 test("好友缓存批次接纳领域结果并在完成时只持久化一次", () => {
   const writes = [];
   const storage = {
@@ -2046,21 +2075,21 @@ test("好友缓存按领域目标和刷新模式决定待请求好友", () => {
   const records = {
     fresh: {
       activity: { kind: "empty", fetchedAt: now - hour },
-      completion_all: { value: 1, fetchedAt: now - hour },
+      ...storedCompletion(1, now - hour),
       relation: {
         visitor: { syncRate: { value: 1, fetchedAt: now - hour } },
       },
     },
     boundary: {
       activity: { kind: "empty", fetchedAt: now - 24 * hour },
-      completion_all: { value: 1, fetchedAt: now - 72 * hour },
+      ...storedCompletion(1, now - 72 * hour),
       relation: {
         visitor: { syncRate: { value: 1, fetchedAt: now - 72 * hour } },
       },
     },
     stale: {
       activity: { kind: "empty", fetchedAt: now - 24 * hour - 1 },
-      completion_all: { value: 1, fetchedAt: now - 72 * hour - 1 },
+      ...storedCompletion(1, now - 72 * hour - 1),
       relation: {
         visitor: { syncRate: { value: 1, fetchedAt: now - 72 * hour - 1 } },
       },
@@ -2081,8 +2110,11 @@ test("好友缓存按领域目标和刷新模式决定待请求好友", () => {
   );
   assert.deepEqual(
     identifiers(
-      { kind: "relation", metric: "syncRate" },
-      { visitorIdentifier: "visitor" },
+      {
+        kind: "relation",
+        metric: "syncRate",
+        visitorIdentifier: "visitor",
+      },
     ),
     ["stale", "missing"],
   );
@@ -2188,8 +2220,9 @@ test("时间胶囊返回四零四时计入失败且不覆盖缓存", async () =>
 test("用户主页返回四零四时计入失败且保留旧缓存", async () => {
   const now = 100_000;
   const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
+  const oldCompletion = { value: 7, fetchedAt: staleFetchedAt };
   const oldRecord = {
-    completion_all: { value: 7, fetchedAt: staleFetchedAt },
+    ...storedCompletion(oldCompletion.value, oldCompletion.fetchedAt),
     relation: {
       visitor: { syncRate: { value: 55, fetchedAt: staleFetchedAt } },
     },
@@ -2216,7 +2249,7 @@ test("用户主页返回四零四时计入失败且保留旧缓存", async () =>
   assert.deepEqual(progress, [[0, 1], [1, 1]]);
   assert.deepEqual(
     cache.completionFor("friend", "all"),
-    oldRecord.completion_all,
+    oldCompletion,
   );
   assert.deepEqual(
     cache.relationFor("friend", {
@@ -2230,8 +2263,9 @@ test("用户主页返回四零四时计入失败且保留旧缓存", async () =>
 test("无效用户主页计入失败且保留旧缓存", async () => {
   const now = 100_000;
   const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
+  const oldCompletion = { value: 7, fetchedAt: staleFetchedAt };
   const oldRecord = {
-    completion_all: { value: 7, fetchedAt: staleFetchedAt },
+    ...storedCompletion(oldCompletion.value, oldCompletion.fetchedAt),
     relation: {
       visitor: { syncRate: { value: 55, fetchedAt: staleFetchedAt } },
     },
@@ -2255,7 +2289,7 @@ test("无效用户主页计入失败且保留旧缓存", async () => {
   assert.equal(statusElement.textContent, "“完成条目数”获取完成，1 人失败");
   assert.deepEqual(
     cache.completionFor("friend", "all"),
-    oldRecord.completion_all,
+    oldCompletion,
   );
   assert.deepEqual(
     cache.relationFor("friend", {
@@ -2269,9 +2303,11 @@ test("无效用户主页计入失败且保留旧缓存", async () => {
 test("用户主页请求超过十五秒时计入失败且保留旧缓存", async () => {
   const now = 100_000;
   const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
-  const oldRecord = {
-    completion_all: { value: 7, fetchedAt: staleFetchedAt },
-  };
+  const oldCompletion = { value: 7, fetchedAt: staleFetchedAt };
+  const oldRecord = storedCompletion(
+    oldCompletion.value,
+    oldCompletion.fetchedAt,
+  );
   const cache = sorter.createFriendCache(
     friendCacheStorage({ friend: oldRecord }),
   );
@@ -2323,7 +2359,7 @@ test("用户主页请求超过十五秒时计入失败且保留旧缓存", async
     assert.equal(statusElement.textContent, "“完成条目数”获取完成，1 人失败");
     assert.deepEqual(
       cache.completionFor("friend", "all"),
-      oldRecord.completion_all,
+      oldCompletion,
     );
   } finally {
     globalThis.setTimeout = originalSetTimeout;
@@ -3151,8 +3187,11 @@ test("喜好契合缓存按访问者和指标判断七十二小时有效期", ()
     cache
       .friendsNeedingRefresh(
         friends,
-        { kind: "relation", metric: "syncRate" },
-        { visitorIdentifier: "visitor" },
+        {
+          kind: "relation",
+          metric: "syncRate",
+          visitorIdentifier: "visitor",
+        },
       )
       .map(({ userIdentifier }) => userIdentifier),
     ["stale", "missing"],
@@ -3161,8 +3200,11 @@ test("喜好契合缓存按访问者和指标判断七十二小时有效期", ()
     cache
       .friendsNeedingRefresh(
         friends,
-        { kind: "relation", metric: "syncRate" },
-        { visitorIdentifier: "other-visitor" },
+        {
+          kind: "relation",
+          metric: "syncRate",
+          visitorIdentifier: "other-visitor",
+        },
       )
       .map(({ userIdentifier }) => userIdentifier),
     ["fresh", "boundary", "stale", "missing"],
@@ -3821,11 +3863,9 @@ test("切换字段但未新增好友时立即更新进行中提示的主按钮�
   ]);
   const now = 100_000;
   const cachedRecords = {
-    a: {
-      completion_all: { value: 1, fetchedAt: now },
-    },
+    a: storedCompletion(1, now),
     b: {
-      completion_all: { value: 2, fetchedAt: now },
+      ...storedCompletion(2, now),
       relation: { visitor: { syncRate: { value: 10, fetchedAt: now } } },
     },
   };
@@ -4193,7 +4233,7 @@ test("完成统计范围在刷新期间切换后补取新增缺失好友", async
       return JSON.stringify({
         version: 3,
         records: {
-          b: { completion_all: { value: 5, fetchedAt: now } },
+          b: storedCompletion(5, now),
         },
       });
     },
@@ -4270,8 +4310,8 @@ test("完成条目数两击全量刷新使用实际范围名称并忽略有效�
         return JSON.stringify({
           version: 3,
           records: {
-            a: { completion_all: { value: 1, fetchedAt: now } },
-            b: { completion_all: { value: 2, fetchedAt: now } },
+            a: storedCompletion(1, now),
+            b: storedCompletion(2, now),
           },
         });
       },
