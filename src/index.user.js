@@ -87,26 +87,18 @@
   ];
   const RELATION_METRICS = new Set(RELATION_CHOICES.map(([metric]) => metric));
 
+  // 空的访问者映射或空的访问者条目按原样接受：这类形状只来自外部损坏
+  // 的存储载荷（脚本自身永不写出），整体拒绝会让混合映射中其他访问者
+  // 的有效数据一并丢失；只有未知指标或无效的指标记录使整个映射判为损坏。
   function isRelationMap(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       return false;
     }
-    const visitors = Object.values(value);
-    return (
-      visitors.length > 0 &&
-      visitors.every((metrics) => {
-        if (!metrics || typeof metrics !== "object" || Array.isArray(metrics)) {
-          return false;
-        }
-        const entries = Object.entries(metrics);
-        return (
-          entries.length > 0 &&
-          entries.every(
-            ([metric, record]) =>
-              RELATION_METRICS.has(metric) && isRelationRecord(record, metric),
-          )
-        );
-      })
+    return Object.values(value).every((metrics) =>
+      Object.entries(metrics || {}).every(
+        ([metric, record]) =>
+          RELATION_METRICS.has(metric) && isRelationRecord(record, metric),
+      ),
     );
   }
 
@@ -789,12 +781,6 @@
     const maxConcurrency = Math.max(1, Math.floor(concurrency));
     const tasks = new Map();
     let foregroundType = null;
-    // True once the designated foreground task has queued work: set when a
-    // foreground enqueue is accepted, or when setForeground designates a task
-    // that already exists. A designated foreground task without queued work
-    // yet keeps background tasks idle so they cannot start before the
-    // foreground task does.
-    let foregroundHasQueuedWork = false;
     let inFlight = 0;
     let globallyStopped = false;
 
@@ -812,11 +798,6 @@
       const foreground = foregroundType && tasks.get(foregroundType);
       if (foreground?.canSchedule()) return foreground;
       if (foreground?.hasInFlight()) return null;
-      // Foreground task ended or not yet created, and the designated
-      // foreground task has not queued work yet: hold background tasks back.
-      if (foregroundType && !foreground && !foregroundHasQueuedWork) {
-        return null;
-      }
       return [...tasks.values()].find((task) => task.canSchedule()) || null;
     }
 
@@ -852,8 +833,10 @@
     }
 
     function createTask(type, options) {
-      const keyFor = options.keyFor ?? ((item) => item);
-      const confirmMessage = options.confirmMessage ?? (() => "");
+      // startForegroundTask is the only production caller and always
+      // supplies keyFor, confirmMessage and target; no defaults here.
+      const keyFor = options.keyFor;
+      const confirmMessage = options.confirmMessage;
       const isSuccess =
         options.isSuccess ?? ((_record, outcome) => outcome.kind === "success");
       const lifecycle = options.lifecycle;
@@ -863,7 +846,7 @@
       let completed = 0;
       let total = 0;
       let inFlightForTask = 0;
-      let target = options.target ?? null;
+      let target = options.target;
       let batchState = { consecutiveServerFailures: 0, stopped: false };
       let started = false;
       let finished = false;
@@ -1002,9 +985,6 @@
       }
       if (foreground && accepted) {
         foregroundType = type;
-        foregroundHasQueuedWork = true;
-      } else if (added > 0 && type === foregroundType) {
-        foregroundHasQueuedWork = true;
       }
       pump();
       return { added, task };
@@ -1017,13 +997,6 @@
         foregroundType && tasks.has(foregroundType) ? foregroundType : null,
       getTask: (type) => tasks.get(type) || null,
       isGloballyStopped: () => globallyStopped,
-      setForeground(type) {
-        foregroundType = type || null;
-        foregroundHasQueuedWork = Boolean(
-          foregroundType && tasks.has(foregroundType),
-        );
-        pump();
-      },
       stopAll,
     };
   }
@@ -1567,7 +1540,10 @@
           }
         });
         button.addEventListener("keydown", (event) => {
-          focusModality = "keyboard";
+          // 按键不接管焦点：只有键盘创建或来源不明的焦点才改记键盘模态，
+          // 鼠标点击创建的焦点不因后续按键改变归属，指针离开时仍按
+          // ADR-0001 释放。
+          if (focusModality !== "mouse") focusModality = "keyboard";
           // 键盘创建的焦点按 ADR-0001 持久保留，Esc 不主动释放焦点。
           if (event.key !== "Enter" && event.key !== " ") return;
           event.preventDefault?.();
@@ -2319,7 +2295,7 @@
       visitorIdentifier,
     });
 
-    function startActivity(mode) {
+    function startActivity(target, mode) {
       return startForegroundTask({
         confirmRequest,
         fetch: http && ((friend) => http.fetchActivity(friend)),
@@ -2331,7 +2307,7 @@
           { mode },
         ),
         scheduler,
-        target: mode,
+        target,
         taskType: ACTIVITY_TASK_TYPE,
       });
     }
@@ -2418,7 +2394,7 @@
       [SORT.ACTIVITY]: {
         armMessageFor: () => "上次活跃",
         requiresVisitor: false,
-        startRefresh: (_target, mode) => startActivity(mode),
+        startRefresh: (target, mode) => startActivity(target, mode),
       },
       [SORT.RELATION]: {
         armMessageFor: (selection) =>

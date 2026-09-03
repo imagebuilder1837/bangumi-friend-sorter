@@ -1077,15 +1077,22 @@ test("页面任务调度器在全局四槽位内优先前台任务且不取消�
       pending.set(`${type}:${item}`, resolve);
     });
   const taskOptions = (type) => ({
+    confirmMessage: () => "",
     fetch: fetchPage(type),
     isSuccess: () => true,
+    keyFor: (item) => item,
     lifecycle: {},
   });
 
-  scheduler.setForeground("activity");
-  scheduler.enqueue("activity", ["a1", "a2", "a3", "a4", "a5"], taskOptions("activity"));
-  scheduler.setForeground("profile");
-  scheduler.enqueue("profile", ["p1", "p2"], taskOptions("profile"));
+  scheduler.enqueue(
+    "activity",
+    ["a1", "a2", "a3", "a4", "a5"],
+    taskOptions("activity"),
+    { foreground: true },
+  );
+  scheduler.enqueue("profile", ["p1", "p2"], taskOptions("profile"), {
+    foreground: true,
+  });
 
   assert.deepEqual(started, [
     "activity:a1",
@@ -1132,19 +1139,23 @@ test("前台队列耗尽但仍有在途请求时不会恢复后台任务", async
   const pending = new Map();
   const started = [];
   const options = (type) => ({
+    confirmMessage: () => "",
     fetch: (item) =>
       new Promise((resolve) => {
         started.push(`${type}:${item}`);
         pending.set(`${type}:${item}`, resolve);
       }),
     isSuccess: () => true,
+    keyFor: (item) => item,
     lifecycle: {},
   });
 
-  scheduler.setForeground("activity");
-  scheduler.enqueue("activity", ["a1", "a2", "a3"], options("activity"));
-  scheduler.setForeground("profile");
-  scheduler.enqueue("profile", ["p1", "p2"], options("profile"));
+  scheduler.enqueue("activity", ["a1", "a2", "a3"], options("activity"), {
+    foreground: true,
+  });
+  scheduler.enqueue("profile", ["p1", "p2"], options("profile"), {
+    foreground: true,
+  });
 
   pending.get("activity:a1")({ kind: "success" });
   await new Promise((resolve) => setImmediate(resolve));
@@ -1192,8 +1203,10 @@ test("全量刷新扩充进行中的同页面类型任务且不重试已尝试�
       pending.set(item, resolve);
     });
   const options = (target) => ({
+    confirmMessage: () => "",
     fetch,
     isSuccess: (record, outcome) => outcome.kind === "success" && record,
+    keyFor: (item) => item,
     lifecycle: {
       onFinished: (result) => finished.push(result),
     },
@@ -1202,8 +1215,9 @@ test("全量刷新扩充进行中的同页面类型任务且不重试已尝试�
 
   // Incremental task: p1's field parse fails; p2 stays in flight so the
   // task survives until the full-refresh expansion arrives.
-  scheduler.setForeground("profile");
-  scheduler.enqueue("profile", ["p1", "p2"], options("syncRate"));
+  scheduler.enqueue("profile", ["p1", "p2"], options("syncRate"), {
+    foreground: true,
+  });
   pending.get("p1")({ kind: "parse-error" });
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(started, ["p1", "p2"]);
@@ -1240,15 +1254,21 @@ test("页面任务调度器收到 429 时停止所有任务并统计未尝试好
   const fetchPage = (type) => (item) =>
     new Promise((resolve) => pending.set(`${type}:${item}`, resolve));
   const options = (type) => ({
+    confirmMessage: () => "",
     fetch: fetchPage(type),
     isSuccess: (record, outcome) => outcome.kind === "success" && record,
+    keyFor: (item) => item,
     lifecycle: {
       onFinished: (result) => finished.push([type, result]),
     },
   });
 
-  scheduler.setForeground("activity");
-  scheduler.enqueue("activity", ["a1", "a2", "a3", "a4", "a5"], options("activity"));
+  scheduler.enqueue(
+    "activity",
+    ["a1", "a2", "a3", "a4", "a5"],
+    options("activity"),
+    { foreground: true },
+  );
   scheduler.enqueue("profile", ["p1", "p2"], options("profile"));
   pending.get("activity:a1")({ kind: "http-error", status: 429 });
   await new Promise((resolve) => setImmediate(resolve));
@@ -1283,19 +1303,25 @@ test("页面任务连续五次服务端失败后停止自身并恢复另一页�
   const started = [];
   const finished = [];
   const options = (type) => ({
+    confirmMessage: () => "",
     fetch: (item) =>
       new Promise((resolve) => {
         started.push(`${type}:${item}`);
         pending.set(`${type}:${item}`, resolve);
       }),
     isSuccess: (record, outcome) => outcome.kind === "success" && record,
+    keyFor: (item) => item,
     lifecycle: {
       onFinished: (result) => finished.push([type, result]),
     },
   });
 
-  scheduler.setForeground("activity");
-  scheduler.enqueue("activity", ["a1", "a2", "a3", "a4", "a5", "a6"], options("activity"));
+  scheduler.enqueue(
+    "activity",
+    ["a1", "a2", "a3", "a4", "a5", "a6"],
+    options("activity"),
+    { foreground: true },
+  );
   scheduler.enqueue("profile", ["p1"], options("profile"));
   for (const item of ["a1", "a2", "a3", "a4", "a5"]) {
     pending.get(`activity:${item}`)({ kind: "http-error", status: 500 });
@@ -1325,19 +1351,21 @@ test("403 计入服务端失败且成功响应重置连续失败计数", async (
   const pending = new Map();
   const started = [];
   const finished = [];
-  scheduler.setForeground("activity");
   scheduler.enqueue(
     "activity",
     ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9"],
     {
+      confirmMessage: () => "",
       fetch: (item) =>
         new Promise((resolve) => {
           started.push(item);
           pending.set(item, resolve);
         }),
       isSuccess: (record, outcome) => outcome.kind === "success" && record,
+      keyFor: (item) => item,
       lifecycle: { onFinished: (result) => finished.push(result) },
     },
+    { foreground: true },
   );
   const respond = async (item, outcome) => {
     pending.get(item)(outcome);
@@ -1369,22 +1397,24 @@ test("停止任务在残余请求完成前重新入队不会留下不可调度�
   const pending = new Map();
   const finished = [];
   const options = {
+    confirmMessage: () => "",
     fetch: (item) =>
       new Promise((resolve) => {
         started.push(item);
         pending.set(item, resolve);
       }),
     isSuccess: () => false,
+    keyFor: (item) => item,
     lifecycle: {
       onFinished: (result) => finished.push(result),
     },
   };
 
-  scheduler.setForeground("profile");
   scheduler.enqueue(
     "profile",
     ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9"],
     options,
+    { foreground: true },
   );
   assert.deepEqual(started, ["a1", "a2", "a3", "a4"]);
 
@@ -1961,8 +1991,11 @@ test("v3 缓存独立校验每个好友的完成字段", () => {
   assert.equal(cache.completionFor("broken", "all"), undefined);
 });
 
-test("v3 缓存丢弃访问者层级损坏的喜好契合字段", () => {
+test("v3 缓存原样保留访问者层级为空的存量契合指标映射", () => {
   const activity = { kind: "empty", fetchedAt: 1_000 };
+  const validRelation = {
+    visitor: { syncRate: { value: 42.5, fetchedAt: 1_000 } },
+  };
   const writes = [];
   const storage = {
     getItem(key) {
@@ -1970,7 +2003,16 @@ test("v3 缓存丢弃访问者层级损坏的喜好契合字段", () => {
       return JSON.stringify({
         version: 3,
         records: {
+          // 外部损坏载荷：脚本自身永不写出空映射，但整体拒绝会让混合
+          // 映射中其他访问者的有效数据一并丢失，故空条目原样保留。
           sai: { activity, relation: { visitor: null } },
+          friend: { activity, relation: validRelation },
+          broken: {
+            activity,
+            relation: {
+              visitor: { syncRate: { value: "x", fetchedAt: 1_000 } },
+            },
+          },
         },
       });
     },
@@ -1981,9 +2023,27 @@ test("v3 缓存丢弃访问者层级损坏的喜好契合字段", () => {
   };
   const cache = sorter.createFriendCache(storage);
 
+  assert.deepEqual(cache.activityFor("sai"), activity);
+  assert.deepEqual(cache.relationFor("sai", {
+    metric: "syncRate",
+    visitorIdentifier: "visitor",
+  }), undefined);
+  assert.deepEqual(cache.relationFor("friend", {
+    metric: "syncRate",
+    visitorIdentifier: "visitor",
+  }), validRelation.visitor.syncRate);
+  assert.equal(cache.relationFor("broken", {
+    metric: "syncRate",
+    visitorIdentifier: "visitor",
+  }), undefined);
+
   cache.beginRefresh().complete();
 
-  assert.deepEqual(writes.at(-1).records, { sai: { activity } });
+  assert.deepEqual(writes.at(-1).records, {
+    sai: { activity, relation: { visitor: null } },
+    friend: { activity, relation: validRelation },
+    broken: { activity },
+  });
 });
 
 test("好友缓存批次接纳领域结果，完成后可重建缓存并通过领域读取验证", () => {
@@ -4923,6 +4983,39 @@ test("完成条目数菜单在鼠标点击后移开指针时释放焦点并收�
   dropdown.dispatchEvent({ type: "pointerdown", pointerType: "mouse" });
   toggle.click();
   assert.deepEqual(selected, [["completion", "all"]]);
+  assert.equal(page.document.activeElement, toggle);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+
+  dropdown.dispatchEvent({ type: "pointerleave", pointerType: "mouse" });
+  assert.equal(page.document.activeElement, null);
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+});
+
+test("鼠标创建的焦点不因后续按键改为键盘模态（ADR-0001）", () => {
+  const selected = [];
+  const page = friendPageWith([]);
+  sortBarUnderTest(page, {
+    onSelectCriterion: (criterion, scope) => selected.push([criterion, scope]),
+  });
+  const toggle = dropdownButtonFor(page, "完成条目数");
+  const dropdown = toggle.parentElement;
+
+  dropdown.dispatchEvent({ type: "pointerenter", pointerType: "mouse" });
+  dropdown.dispatchEvent({ type: "pointerdown", pointerType: "mouse" });
+  toggle.click();
+  assert.deepEqual(selected, [["completion", "all"]]);
+  assert.equal(page.document.activeElement, toggle);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+
+  // 焦点由鼠标点击创建：按键只是触发选中，不改变焦点归属，指针离开时
+  // 仍应释放焦点并收起菜单。
+  const enterEvent = { type: "keydown", key: "Enter" };
+  toggle.dispatchEvent(enterEvent);
+  assert.equal(enterEvent.defaultPrevented, true);
+  assert.deepEqual(selected, [
+    ["completion", "all"],
+    ["completion", "all"],
+  ]);
   assert.equal(page.document.activeElement, toggle);
   assert.equal(toggle.getAttribute("aria-expanded"), "true");
 
