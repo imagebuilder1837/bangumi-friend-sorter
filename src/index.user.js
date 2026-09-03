@@ -1265,32 +1265,21 @@
 
       // The gray rule inside a friend item is the site's own border-bottom
       // on ul.usersMedium div.userContainer strong; the 名次 badge anchors
-      // to that block. Initial rank follows 网页默认顺序 until a re-sort.
+      // to that block. Reading only validates the anchor point — the badge
+      // itself is created by the sort bar's render pass.
       const rankHost = element.querySelector(".userContainer strong");
       if (!rankHost) return null;
-
-      const rankElement = pageDocument.createElement("span");
-      rankElement.className = "bangumi-friend-sorter-rank";
-      rankElement.textContent = `#${originalIndex + 1}`;
-      rankHost.append(rankElement);
 
       return {
         displayName,
         element,
         originalIndex,
-        rankElement,
+        rankHost,
         userIdentifier,
       };
     });
 
     return friends.every(Boolean) ? friends : [];
-  }
-
-  function applyFriendSort({ list, friends, ...sortOptions }) {
-    [...sortFriends(friends, sortOptions)].forEach((friend, index) => {
-      list.append(friend.element);
-      friend.rankElement.textContent = `#${index + 1}`;
-    });
   }
 
   function installStyles(document) {
@@ -1439,34 +1428,52 @@
     else button.removeAttribute("aria-current");
   }
 
-  function createSortBar(document, onSelect, onDirectionSelect = () => {}) {
-    const bar = document.createElement("div");
+  // 排序栏 deep module：排序交互与呈现的唯一边界。`bind` 一次性接收领域
+  // 意图回调（选择排序目标、切换方向），`render` 幂等地接收可呈现状态；
+  // 菜单、按钮、方向文案、状态提示、名次、ARIA、输入模态、焦点与展开
+  // 状态全部留在模块内部，调用方不持有或修改任何原始 DOM 节点。模块不
+  // 发起远程请求，也不决定刷新策略。
+  // 接口约定：bind 必须在 mount/render 之前恰好调用一次；render 接收完
+  // 整的可呈现状态，重复调用安全，展示顺序不变时跳过重排与名次更新。
+  function createSortBar(pageDocument, { list }) {
+    const bar = pageDocument.createElement("div");
     // Reuse the site's #browserTools frame, including its horizontal borders.
     bar.id = "browserTools";
     bar.className = "clearit bangumi-friend-sorter-bar";
     bar.dataset.friendSorter = "";
     bar.setAttribute("aria-label", "好友排序");
 
-    const filters = document.createElement("div");
+    // 领域意图只通过 bind 声明的回调离开排序栏；绑定前发生的事件（正常
+    // 时序下不可能）被静默忽略。
+    let handlers = null;
+
+    function bind({ selectCriterion, selectDirection }) {
+      if (handlers) throw new Error("排序栏的意图回调只能绑定一次");
+      handlers = { selectCriterion, selectDirection };
+    }
+
+    const filters = pageDocument.createElement("div");
     filters.className = "filters";
     filters.id = "bangumi-friend-sorter";
 
-    const sortOptions = document.createElement("span");
+    const sortOptions = pageDocument.createElement("span");
     sortOptions.className = "bangumi-friend-sorter-sort-options";
     // Bare text nodes are anonymous flex items and cannot carry margins, so
     // the fixed labels get wrapper spans for the breathing-room gaps.
-    const prefix = document.createElement("span");
+    const prefix = pageDocument.createElement("span");
     prefix.className = "bangumi-friend-sorter-prefix";
     prefix.textContent = "按";
     sortOptions.append(prefix);
 
     const buttons = new Map();
     for (const [criterion, label] of SORT_CHOICES) {
-      const button = document.createElement("button");
+      const button = pageDocument.createElement("button");
       button.type = "button";
       button.className = "l";
       button.textContent = label;
-      button.addEventListener("click", () => onSelect(criterion));
+      button.addEventListener("click", () =>
+        handlers?.selectCriterion(criterion),
+      );
       sortOptions.append(button);
       buttons.set(criterion, button);
     }
@@ -1478,10 +1485,10 @@
       onDefaultSelect,
       onSelect: onChoiceSelect,
     }) {
-      const dropdown = document.createElement("span");
+      const dropdown = pageDocument.createElement("span");
       dropdown.className = "bangumi-friend-sorter-dropdown";
 
-      const toggle = document.createElement("button");
+      const toggle = pageDocument.createElement("button");
       toggle.type = "button";
       toggle.className = "l bangumi-friend-sorter-dropdown-toggle";
       toggle.textContent = label;
@@ -1492,13 +1499,13 @@
         toggle.focus?.();
       });
 
-      const menu = document.createElement("span");
+      const menu = pageDocument.createElement("span");
       menu.id = id;
       menu.className = "bangumi-friend-sorter-dropdown-menu";
       menu.setAttribute("role", "menu");
       const buttons = new Map();
       for (const [value, choiceLabel] of choices) {
-        const button = document.createElement("button");
+        const button = pageDocument.createElement("button");
         button.type = "button";
         button.className = "l";
         button.textContent = choiceLabel;
@@ -1537,6 +1544,13 @@
         });
         button.addEventListener("keydown", (event) => {
           focusModality = "keyboard";
+          if (event.key === "Escape") {
+            // Esc 关闭：键盘用户按下 Esc 时释放焦点，焦点离开后菜单
+            // 经由既有 focusout 路径收起。
+            event.preventDefault?.();
+            button.blur?.();
+            return;
+          }
           if (event.key !== "Enter" && event.key !== " ") return;
           event.preventDefault?.();
           button.click();
@@ -1551,13 +1565,13 @@
         if (
           event.pointerType === "mouse" &&
           focusModality === "mouse" &&
-          isInsideDropdown(document.activeElement)
+          isInsideDropdown(pageDocument.activeElement)
         ) {
-          document.activeElement.blur?.();
+          pageDocument.activeElement.blur?.();
           setMenuOpen(false);
           return;
         }
-        if (!isInsideDropdown(document.activeElement)) setMenuOpen(false);
+        if (!isInsideDropdown(pageDocument.activeElement)) setMenuOpen(false);
       });
       keepMenuOpenOnFocus(toggle);
       for (const button of buttons.values()) keepMenuOpenOnFocus(button);
@@ -1571,8 +1585,9 @@
       id: "bangumi-friend-sorter-completion-menu",
       label: "完成条目数",
       choices: COMPLETION_CHOICES,
-      onDefaultSelect: () => onSelect(SORT.COMPLETION, COMPLETION_SCOPE.ALL),
-      onSelect: (scope) => onSelect(SORT.COMPLETION, scope),
+      onDefaultSelect: () =>
+        handlers?.selectCriterion(SORT.COMPLETION, COMPLETION_SCOPE.ALL),
+      onSelect: (scope) => handlers?.selectCriterion(SORT.COMPLETION, scope),
     });
     const completionDropdown = completionControl.dropdown;
 
@@ -1580,33 +1595,36 @@
       id: "bangumi-friend-sorter-relation-menu",
       label: "喜好契合",
       choices: RELATION_CHOICES,
-      onDefaultSelect: () => onSelect(SORT.RELATION, RELATION_CHOICES[0][0]),
-      onSelect: (metric) => onSelect(SORT.RELATION, metric),
+      onDefaultSelect: () =>
+        handlers?.selectCriterion(SORT.RELATION, RELATION_CHOICES[0][0]),
+      onSelect: (metric) => handlers?.selectCriterion(SORT.RELATION, metric),
     });
     const relationDropdown = relationControl.dropdown;
 
     sortOptions.append(relationDropdown);
     sortOptions.append(completionDropdown);
 
-    const suffix = document.createElement("span");
+    const suffix = pageDocument.createElement("span");
     suffix.className = "bangumi-friend-sorter-suffix";
     suffix.textContent = "排序";
     sortOptions.append(suffix);
-    const status = document.createElement("span");
+    const status = pageDocument.createElement("span");
     status.id = "bangumi-friend-sorter-status";
     status.setAttribute("aria-live", "polite");
     sortOptions.append(status);
 
-    const directionOptions = document.createElement("span");
+    const directionOptions = pageDocument.createElement("span");
     directionOptions.className = "bangumi-friend-sorter-direction-options";
     const directionButtons = new Map();
     const initialDirectionLabels = directionLabelsFor(SORT.ADDED);
     for (const direction of [DIRECTION.ASCENDING, DIRECTION.DESCENDING]) {
-      const button = document.createElement("button");
+      const button = pageDocument.createElement("button");
       button.type = "button";
       button.className = "l";
       button.textContent = initialDirectionLabels[direction];
-      button.addEventListener("click", () => onDirectionSelect(direction));
+      button.addEventListener("click", () =>
+        handlers?.selectDirection(direction),
+      );
       directionOptions.append(button);
       directionButtons.set(direction, button);
     }
@@ -1614,38 +1632,101 @@
     filters.append(sortOptions, directionOptions);
     bar.append(filters);
 
-    return {
-      bar,
-      setCurrent(
-        criterion,
-        direction = defaultDirectionFor(criterion),
-        selection = COMPLETION_SCOPE.ALL,
+    // 挂载复用原站 .mainWrapper 布局：排序栏插入 .columns 之前占据整行；
+    // 布局不符合预期时不修改页面。站点样式复用与必要 CSS 属于本模块，
+    // 在挂载成功后注入。
+    function mount() {
+      const canWalkAncestors = typeof list.closest === "function";
+      let mainWrapper = canWalkAncestors ? list.closest(".mainWrapper") : null;
+      if (!mainWrapper && !canWalkAncestors) {
+        try {
+          mainWrapper = pageDocument.querySelector?.(".mainWrapper");
+        } catch {
+          // Lightweight test doubles may only implement the list selector.
+        }
+      }
+      const columns = mainWrapper?.querySelector?.(".columns");
+      if (
+        mainWrapper &&
+        columns &&
+        typeof mainWrapper.insertBefore === "function"
       ) {
-        for (const [value, button] of buttons) {
-          setAriaCurrent(button, value === criterion);
-        }
-        setAriaCurrent(completionControl.button, criterion === SORT.COMPLETION);
-        setAriaCurrent(relationControl.button, criterion === SORT.RELATION);
-        for (const [scope, button] of completionControl.buttons) {
-          setAriaCurrent(
-            button,
-            criterion === SORT.COMPLETION && scope === selection,
-          );
-        }
-        for (const [metric, button] of relationControl.buttons) {
-          setAriaCurrent(
-            button,
-            criterion === SORT.RELATION && metric === selection,
-          );
-        }
-        const labels = directionLabelsFor(criterion);
-        for (const [value, button] of directionButtons) {
-          button.textContent = labels[value];
-          setAriaCurrent(button, value === direction);
-        }
-      },
-      status,
-    };
+        mainWrapper.insertBefore(bar, columns);
+        installStyles(pageDocument);
+        return true;
+      }
+      if (!canWalkAncestors) {
+        list.before(bar);
+        installStyles(pageDocument);
+        return true;
+      }
+      return false;
+    }
+
+    // 名次徽章按需创建：锚点是读取好友时验证过的原站名称块，初始名次
+    // 随第一次 render 按当时展示顺序标注。
+    function rankBadgeFor(friend) {
+      if (!friend.rankElement) {
+        const badge = pageDocument.createElement("span");
+        badge.className = "bangumi-friend-sorter-rank";
+        friend.rankHost.append(badge);
+        friend.rankElement = badge;
+      }
+      return friend.rankElement;
+    }
+
+    let lastOrderElements = null;
+
+    // 幂等呈现：当前选择、方向文案、菜单选中态、刷新状态提示与好友名次
+    // 都由这一次渲染更新。展示顺序与上次相同（例如只有状态提示变化）时
+    // 跳过重排，保持既有 DOM 操作量级。调用方始终传入完整的可呈现状态。
+    function render({
+      criterion,
+      direction,
+      selection,
+      statusMessage,
+      orderedFriends,
+    }) {
+      for (const [value, button] of buttons) {
+        setAriaCurrent(button, value === criterion);
+      }
+      setAriaCurrent(completionControl.button, criterion === SORT.COMPLETION);
+      setAriaCurrent(relationControl.button, criterion === SORT.RELATION);
+      for (const [scope, button] of completionControl.buttons) {
+        setAriaCurrent(
+          button,
+          criterion === SORT.COMPLETION && scope === selection,
+        );
+      }
+      for (const [metric, button] of relationControl.buttons) {
+        setAriaCurrent(
+          button,
+          criterion === SORT.RELATION && metric === selection,
+        );
+      }
+      const labels = directionLabelsFor(criterion);
+      for (const [value, button] of directionButtons) {
+        button.textContent = labels[value];
+        setAriaCurrent(button, value === direction);
+      }
+      if (status.textContent !== statusMessage) {
+        status.textContent = statusMessage;
+      }
+
+      const elements = orderedFriends.map((friend) => friend.element);
+      const orderChanged =
+        !lastOrderElements ||
+        lastOrderElements.length !== elements.length ||
+        lastOrderElements.some((element, index) => element !== elements[index]);
+      if (!orderChanged) return;
+      lastOrderElements = elements;
+      orderedFriends.forEach((friend, index) => {
+        list.append(friend.element);
+        rankBadgeFor(friend).textContent = `#${index + 1}`;
+      });
+    }
+
+    return { bind, mount, render };
   }
 
   async function fetchActivity(friend, fetchImpl, domParser, now) {
@@ -1677,32 +1758,6 @@
     }
   }
 
-  function mountSortBar(pageDocument, list, bar) {
-    const canWalkAncestors = typeof list.closest === "function";
-    let mainWrapper = canWalkAncestors ? list.closest(".mainWrapper") : null;
-    if (!mainWrapper && !canWalkAncestors) {
-      try {
-        mainWrapper = pageDocument.querySelector?.(".mainWrapper");
-      } catch {
-        // Lightweight test doubles may only implement the list selector.
-      }
-    }
-    const columns = mainWrapper?.querySelector?.(".columns");
-    if (
-      mainWrapper &&
-      columns &&
-      typeof mainWrapper.insertBefore === "function"
-    ) {
-      mainWrapper.insertBefore(bar, columns);
-      return true;
-    }
-    if (!canWalkAncestors) {
-      list.before(bar);
-      return true;
-    }
-    return false;
-  }
-
   function pageFetchDependencies(runtime, pageWindow) {
     const domParser =
       runtime.domParser ??
@@ -1718,8 +1773,10 @@
   function createStatusController({
     clearTimeout: clearStatusTimeout = globalThis.clearTimeout,
     now = Date.now,
+    // 最终提示的呈现出口：状态控制器只计算既有优先级下的最终文本，
+    // 由调用方把文本并入唯一的渲染过程。
+    present,
     scheduler,
-    statusElement,
     setTimeout: setStatusTimeout = globalThis.setTimeout,
   }) {
     let statusTimer = null;
@@ -1782,32 +1839,32 @@
 
       if (loginStatus) {
         statusKind = REFRESH_STATUS.LOGIN_REQUIRED;
-        statusElement.textContent = loginStatus.message;
+        present(loginStatus.message);
         return;
       }
 
       const completion = completionStatuses[0];
       if (completion) {
         statusKind = REFRESH_STATUS.COMPLETED;
-        statusElement.textContent = completion.message;
+        present(completion.message);
         return;
       }
 
       if (transientStatus) {
         statusKind = transientStatus.kind;
-        statusElement.textContent = transientStatus.message;
+        present(transientStatus.message);
         return;
       }
 
       const progress = currentProgressStatus();
       if (progress) {
         statusKind = REFRESH_STATUS.FETCHING;
-        statusElement.textContent = progress.message;
+        present(progress.message);
         return;
       }
 
       statusKind = REFRESH_STATUS.IDLE;
-      statusElement.textContent = "";
+      present("");
     }
 
     function clearArmedStatus() {
@@ -2143,8 +2200,8 @@
     friends,
     now,
     pageWindow,
+    present,
     runtime,
-    statusElement,
     visitorIdentifier,
   }) {
     const ACTIVITY_TASK_TYPE = "activity";
@@ -2152,8 +2209,8 @@
     const status = createStatusController({
       clearTimeout: runtime.clearTimeout ?? globalThis.clearTimeout,
       now,
+      present,
       scheduler,
-      statusElement,
       setTimeout: runtime.setTimeout ?? globalThis.setTimeout,
     });
     const confirmRequest =
@@ -2220,17 +2277,17 @@
   function createFriendSortController({
     cache,
     collator,
-    controls,
     friends,
-    list,
     now,
     pageWindow,
     runtime,
+    sortBar,
     visitorIdentifier,
   }) {
     let currentCriterion = SORT.ADDED;
     let completionScope = COMPLETION_SCOPE.ALL;
     let relationMetric = RELATION_CHOICES[0][0];
+    let statusMessage = "";
     const directionByCriterion = new Map(
       [
         ...SORT_CHOICES.map(([criterion]) => criterion),
@@ -2245,20 +2302,53 @@
       return COMPLETION_SCOPE.ALL;
     }
 
-    function applyCurrentSort() {
-      applyFriendSort({
-        list,
-        friends,
+    // 展示顺序只在排序输入（目标、方向、子选项）或条件重排后变化：
+    // 状态提示等纯呈现变化复用上一次结果，避免每次提示都重新排序。
+    let lastSortKey = null;
+    let lastOrderedFriends = [];
+
+    function currentOrder() {
+      const direction = directionByCriterion.get(currentCriterion);
+      const key = `${currentCriterion}|${direction}|${completionScope}|${relationMetric}`;
+      if (lastSortKey !== key) {
+        lastSortKey = key;
+        lastOrderedFriends = sortFriends(friends, {
+          criterion: currentCriterion,
+          friendCache: cache,
+          collator,
+          direction,
+          completionScope,
+          relationSelection: {
+            metric: relationMetric,
+            visitorIdentifier,
+          },
+        });
+      }
+      return lastOrderedFriends;
+    }
+
+    // 唯一的渲染过程：重排结果与当前呈现状态一次性交给排序栏投影。
+    function render() {
+      sortBar.render({
         criterion: currentCriterion,
-        friendCache: cache,
-        collator,
         direction: directionByCriterion.get(currentCriterion),
-        completionScope,
-        relationSelection: {
-          metric: relationMetric,
-          visitorIdentifier,
-        },
+        orderedFriends: currentOrder(),
+        selection: selectionFor(currentCriterion),
+        statusMessage,
       });
+    }
+
+    // 排序输入或缓存结果变化后的重排入口：强制重新计算展示顺序。
+    function applyCurrentSort() {
+      lastSortKey = null;
+      render();
+    }
+
+    // 刷新任务的最终提示文本从这里进入同一渲染过程。
+    function presentStatus(message) {
+      if (message === statusMessage) return;
+      statusMessage = message;
+      render();
     }
 
     const refresh = createFriendRefreshTasks({
@@ -2277,8 +2367,8 @@
       friends,
       now,
       pageWindow,
+      present: presentStatus,
       runtime,
-      statusElement: controls.status,
       visitorIdentifier,
     });
     const { status } = refresh;
@@ -2360,11 +2450,6 @@
 
       configuration.setSelection?.(selection);
       currentCriterion = criterion;
-      controls.setCurrent(
-        criterion,
-        directionByCriterion.get(criterion),
-        selection,
-      );
       applyCurrentSort();
 
       if (!action.refreshMode) return;
@@ -2382,11 +2467,6 @@
         status.clear();
 
       currentCriterion = criterion;
-      controls.setCurrent(
-        criterion,
-        directionByCriterion.get(criterion),
-        selectionFor(criterion),
-      );
       applyCurrentSort();
     }
 
@@ -2403,24 +2483,13 @@
       if (directionByCriterion.get(currentCriterion) === direction) return;
 
       directionByCriterion.set(currentCriterion, direction);
-      controls.setCurrent(
-        currentCriterion,
-        direction,
-        selectionFor(currentCriterion),
-      );
       applyCurrentSort();
     }
 
     return {
       selectCriterion,
       selectDirection,
-      syncControls() {
-        controls.setCurrent(
-          currentCriterion,
-          directionByCriterion.get(currentCriterion),
-          selectionFor(currentCriterion),
-        );
-      },
+      render,
     };
   }
 
@@ -2447,25 +2516,23 @@
       sensitivity: "base",
     });
     let controller = null;
-    const controls = createSortBar(
-      pageDocument,
-      (...args) => controller?.selectCriterion(...args),
-      (direction) => controller?.selectDirection(direction),
-    );
-    if (!mountSortBar(pageDocument, list, controls.bar)) return;
-    installStyles(pageDocument);
+    const sortBar = createSortBar(pageDocument, { list });
+    sortBar.bind({
+      selectCriterion: (...args) => controller?.selectCriterion(...args),
+      selectDirection: (direction) => controller?.selectDirection(direction),
+    });
+    if (!sortBar.mount()) return;
     controller = createFriendSortController({
       cache,
       collator,
-      controls,
       friends,
-      list,
       now,
       pageWindow,
       runtime,
+      sortBar,
       visitorIdentifier,
     });
-    controller.syncControls();
+    controller.render();
   }
 
   const core = {
