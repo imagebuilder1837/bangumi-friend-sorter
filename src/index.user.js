@@ -507,6 +507,15 @@
     return { metric: RELATION_CHOICES[0][0], ...relationSelection };
   }
 
+  // 展示名称比较的唯一配置点：数值感知、大小写不敏感；sortFriends
+  // 默认参数与页面初始化共享同一工厂。
+  function nameCollator() {
+    return new Intl.Collator(undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+  }
+
   function sortFriends(
     friends,
     {
@@ -514,10 +523,7 @@
       // Required for the remote sorts (activity/completion/relation); local
       // sorts (added/name) never touch the friend cache.
       friendCache,
-      collator = new Intl.Collator(undefined, {
-        numeric: true,
-        sensitivity: "base",
-      }),
+      collator = nameCollator(),
       direction,
       completionScope = COMPLETION_SCOPE.ALL,
       relationSelection,
@@ -2511,10 +2517,7 @@
       pageDocument,
       pageWindow,
     );
-    const collator = new Intl.Collator(undefined, {
-      numeric: true,
-      sensitivity: "base",
-    });
+    const collator = nameCollator();
     const sortBar = createSortBar(pageDocument, { list });
     if (!sortBar.mount()) return;
     const session = createFriendSortSession({

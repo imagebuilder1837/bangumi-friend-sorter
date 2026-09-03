@@ -4,6 +4,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 
 ## Conventions
 
+- **Who may create issues**: only the human, explicitly. Agents must never create an issue on their own initiative — not for review findings, reports, summaries, follow-up ideas, or anything else. Issue creation happens only when the human explicitly invokes a skill whose job is ticket creation (`/to-tickets`, `/triage`, `/wayfinder`), or asks for a specific issue directly. Output of `/code-review` and every other report is conversation output only: it is presented to the human, who decides what (if anything) becomes an issue.
 - **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
 - **Read an issue**: `gh issue view <number> --comments`, filtering comments by `jq` and also fetching labels.
 - **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
