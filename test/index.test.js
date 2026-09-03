@@ -3699,6 +3699,22 @@ test("下拉菜单内按下 Esc 时释放焦点并收起菜单", () => {
   assert.equal(relationButton.getAttribute("aria-expanded"), "false");
 });
 
+test("下拉菜单子项上按下 Esc 时释放焦点并收起菜单", () => {
+  const page = friendPageWith([]);
+  const sortBar = sorter.createSortBar(page.document, { list: page.list });
+  sortBar.bind({ selectCriterion: () => {}, selectDirection: () => {} });
+  sortBar.mount();
+  const relationButton = dropdownButtonFor(page, "喜好契合");
+  const relationMenu = dropdownItems(page, "喜好契合");
+
+  relationButton.focus();
+  relationMenu[0].focus();
+  assert.equal(relationButton.getAttribute("aria-expanded"), "true");
+  relationMenu[0].dispatchEvent({ type: "keydown", key: "Escape" });
+  assert.equal(page.document.activeElement, null);
+  assert.equal(relationButton.getAttribute("aria-expanded"), "false");
+});
+
 test("未登录时选择喜好契合不请求且登录提示不会因重复选择续时并允许切换子项", () => {
   const page = friendPageWith([{ href: "/user/friend", name: "好友" }]);
   let requests = 0;

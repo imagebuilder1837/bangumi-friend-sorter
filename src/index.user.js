@@ -1433,8 +1433,9 @@
   // 菜单、按钮、方向文案、状态提示、名次、ARIA、输入模态、焦点与展开
   // 状态全部留在模块内部，调用方不持有或修改任何原始 DOM 节点。模块不
   // 发起远程请求，也不决定刷新策略。
-  // 接口约定：bind 必须在 mount/render 之前恰好调用一次；render 接收完
-  // 整的可呈现状态，重复调用安全，展示顺序不变时跳过重排与名次更新。
+  // 接口约定：bind 必须在首次 render 前恰好调用一次（相对 mount 的先后
+  // 不限）；render 接收完整的可呈现状态，重复调用安全，展示顺序不变时
+  // 跳过重排与名次更新。
   function createSortBar(pageDocument, { list }) {
     const bar = pageDocument.createElement("div");
     // Reuse the site's #browserTools frame, including its horizontal borders.
@@ -2029,7 +2030,7 @@
       applySort,
       labelFor,
       progressReporter,
-      projectResult = (record) => record,
+      projectResult,
       taskType,
       visitorIdentifier,
     }) => {
@@ -2117,16 +2118,17 @@
         `正在获取“${profileFieldLabelFor(target)}” ${completed}/${total}`,
     });
 
-    // 契合指标按访问者隔离，缓存的新鲜度边界需要完整的访问者目标。
+    // 字段形状沿用 REMOTE_TARGET_SELECTION_KEYS 的统一映射：完成统计
+    // 范围按 scope 定位结果，契合指标按 metric 定位；只有契合指标按访
+    // 问者隔离，缓存的新鲜度边界需要完整的访问者目标。
     function cacheTargetFor(field) {
-      return field.kind === SORT.RELATION
+      return REMOTE_TARGET_SELECTION_KEYS[field.kind] === "metric"
         ? { ...field, visitorIdentifier }
         : field;
     }
 
     function profileFieldOutcomeFor(record, field) {
-      const selection =
-        field.kind === SORT.RELATION ? field.metric : field.scope;
+      const selection = field[REMOTE_TARGET_SELECTION_KEYS[field.kind]];
       return record?.fields?.[field.kind]?.[selection];
     }
 
@@ -2303,7 +2305,7 @@
     );
 
     // 展示顺序只在排序输入（目标、方向、子选项）或条件重排后变化：
-    // 状态提示等纯呈现变化复用上一次结果，避免每次提示都重新排序。
+    // 状态提示等纯呈现变化复用上一次结果，避免每次提示都重排好友列表。
     let lastSortKey = null;
     let lastOrderedFriends = [];
 
