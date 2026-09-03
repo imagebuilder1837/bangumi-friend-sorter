@@ -246,8 +246,9 @@ function initializeRefreshPage({
 }
 
 // Drives the production remote-sort session (createFriendSortSession) with a
-// recording sort-bar substitute, so tests exercise the same boundary the page
-// uses at runtime and never touch the private task registry or state machine.
+// recording sort-bar substitute and a mock Bangumi HTTP adapter that returns
+// normalized domain results, so tests exercise the same boundary the page uses
+// at runtime and never fake HTTP responses, DOM documents or internal state.
 function createSessionHarness({
   cache,
   friends,
@@ -266,6 +267,7 @@ function createSessionHarness({
       sensitivity: "base",
     }),
     friends,
+    http: runtime.http,
     now: runtime.now ?? (() => 1_000),
     pageWindow: {},
     runtime,
@@ -305,6 +307,13 @@ function dropdownItems(page, label) {
     (child) => child.getAttribute?.("role") === "menu",
   );
   return menu.children;
+}
+
+// Locate a dropdown item by its visible label, never by child-node position.
+function menuItemFor(page, label, itemText) {
+  return dropdownItems(page, label).find(
+    (item) => item.textContent === itemText,
+  );
 }
 
 // Fake timer wheel shared by status-timing tests: advance fires due timers in
@@ -1967,10 +1976,10 @@ test("v3 缓存丢弃访问者层级损坏的喜好契合字段", () => {
   assert.deepEqual(writes.at(-1).records, { sai: { activity } });
 });
 
-test("好友缓存批次接纳领域结果并在完成时只持久化一次", () => {
+test("好友缓存批次接纳领域结果，完成后可重建缓存并通过领域读取验证", () => {
   const writes = [];
   const storage = {
-    getItem: () => null,
+    getItem: () => (writes.length ? JSON.stringify(writes.at(-1)[1]) : null),
     setItem(key, value) {
       writes.push([key, JSON.parse(value)]);
     },
@@ -2008,11 +2017,26 @@ test("好友缓存批次接纳领域结果并在完成时只持久化一次", ()
     }),
     { value: 42.5, fetchedAt: 3_000 },
   );
-  assert.equal(writes.length, 0);
 
   batch.complete();
 
-  assert.equal(writes.length, 1);
+  const reloaded = sorter.createFriendCache(storage);
+  assert.deepEqual(reloaded.activityFor("sai"), {
+    kind: "active",
+    activityAtSeconds: 1_000,
+    fetchedAt: 2_000,
+  });
+  assert.deepEqual(reloaded.completionFor("sai", "all"), {
+    value: 9,
+    fetchedAt: 3_000,
+  });
+  assert.deepEqual(
+    reloaded.relationFor("sai", {
+      metric: "syncRate",
+      visitorIdentifier: "visitor",
+    }),
+    { value: 42.5, fetchedAt: 3_000 },
+  );
 });
 
 test("好友缓存刷新批次重复完成时同步抛出", () => {
@@ -2128,25 +2152,45 @@ test("损坏的缓存 JSON 降级为当前页面内存缓存", () => {
 test("请求响应头的时间按整秒传给活跃时刻解析并写入整数 Unix 秒缓存", async () => {
   const document = timelineDocumentFromFixture("timeline-active-seconds.html");
   const responseTime = Date.UTC(2026, 7, 26, 9, 43, 36);
-  const cache = sorter.createFriendCache(null);
-  const { finished, session } = createSessionHarness({
-    cache,
-    friends: [{ userIdentifier: "sai" }],
-    runtime: {
-      domParser: { parseFromString: () => document },
-      fetchImpl: async () => ({
-        ok: true,
-        headers: { get: (name) => (name === "date" ? new Date(responseTime).toUTCString() : null) },
-        text: async () => "fixture",
-      }),
-      now: () => responseTime,
+  const writes = [];
+  const page = friendPageWith([{ href: "/user/sai", name: "Sai" }]);
+  sorter.initialize({
+    document: page.document,
+    window: {
+      CHOBITS_USERNAME: "visitor",
+      location: { href: "https://bgm.tv/user/sai/friends" },
     },
+    storage: {
+      getItem: () => null,
+      setItem(key, value) {
+        writes.push([key, JSON.parse(value)]);
+      },
+      removeItem() {},
+    },
+    now: () => responseTime,
+    setTimeout: () => 1,
+    clearTimeout() {},
+    domParser: { parseFromString: () => document },
+    fetchImpl: async () => ({
+      ok: true,
+      headers: {
+        get: (name) =>
+          name === "date" ? new Date(responseTime).toUTCString() : null,
+      },
+      text: async () => "fixture",
+    }),
   });
 
-  session.choose("activity");
-  await finished;
+  mainSortControl(page, "上次活跃").click();
+  await waitForCondition(() => writes.length > 0);
 
-  assert.deepEqual(cache.activityFor("sai"), {
+  // 批次完成后重建缓存，通过领域读取验证响应头时间被截断到整秒。
+  const reloaded = sorter.createFriendCache({
+    getItem: () => JSON.stringify(writes.at(-1)[1]),
+    setItem() {},
+    removeItem() {},
+  });
+  assert.deepEqual(reloaded.activityFor("sai"), {
     kind: "active",
     activityAtSeconds: Date.UTC(2026, 7, 26, 9, 42, 34) / 1_000,
     fetchedAt: responseTime,
@@ -2160,8 +2204,9 @@ test("时间胶囊返回四零四时计入失败且不覆盖缓存", async () =>
     cache,
     friends: [{ userIdentifier: "missing" }],
     runtime: {
-      domParser: {},
-      fetchImpl: async () => ({ ok: false, status: 404 }),
+      http: {
+        fetchActivity: async () => ({ kind: "http-error", status: 404 }),
+      },
       now: () => 1_000,
       onProgress: (completed, total) => progress.push([completed, total]),
     },
@@ -2193,8 +2238,9 @@ test("用户主页返回四零四时计入失败且保留旧缓存", async () =>
     cache,
     friends: [{ userIdentifier: "friend" }],
     runtime: {
-      domParser: {},
-      fetchImpl: async () => ({ ok: false, status: 404 }),
+      http: {
+        fetchProfile: async () => ({ kind: "http-error", status: 404 }),
+      },
       now: () => now,
       onProgress: (completed, total) => progress.push([completed, total]),
     },
@@ -2235,8 +2281,9 @@ test("无效用户主页计入失败且保留旧缓存", async () => {
     cache,
     friends: [{ userIdentifier: "friend" }],
     runtime: {
-      domParser: { parseFromString: () => ({ querySelector: () => null }) },
-      fetchImpl: async () => ({ ok: true, text: async () => "invalid profile" }),
+      http: {
+        fetchProfile: async () => ({ kind: "parse-error" }),
+      },
       now: () => now,
     },
   });
@@ -2266,14 +2313,13 @@ test("用户主页请求超过十五秒时计入失败且保留旧缓存", async
     oldCompletion.value,
     oldCompletion.fetchedAt,
   );
-  const cache = sorter.createFriendCache(
-    friendCacheStorage({ friend: oldRecord }),
-  );
+  const page = friendPageWith([{ href: "/user/friend", name: "好友" }]);
   const scheduled = [];
   const originalSetTimeout = globalThis.setTimeout;
   const originalClearTimeout = globalThis.clearTimeout;
   let requestSignal;
 
+  // 15 秒超时由生产 HTTP adapter 实现，经页面初始化整体验证。
   globalThis.setTimeout = (callback, delay) => {
     scheduled.push({ callback, delay });
     return scheduled.length;
@@ -2281,51 +2327,56 @@ test("用户主页请求超过十五秒时计入失败且保留旧缓存", async
   globalThis.clearTimeout = () => {};
 
   try {
-    const { finished, lastMessage, session } = createSessionHarness({
-      cache,
-      friends: [{ userIdentifier: "friend" }],
-      runtime: {
-        clearTimeout: () => {},
-        domParser: {},
-        fetchImpl: (_url, { signal }) => {
-          requestSignal = signal;
-          return new Promise((resolve, reject) => {
-            if (signal.aborted) {
-              reject(new Error("request aborted"));
-              return;
-            }
-            signal.addEventListener(
-              "abort",
-              () => reject(new Error("request aborted")),
-              { once: true },
-            );
-          });
-        },
-        now: () => now,
-        setTimeout: () => 0,
+    sorter.initialize({
+      document: page.document,
+      window: {
+        CHOBITS_USERNAME: "visitor",
+        location: { href: "https://bgm.tv/user/viewed/friends" },
+      },
+      storage: friendCacheStorage({ friend: oldRecord }),
+      now: () => now,
+      setTimeout: () => 0,
+      clearTimeout() {},
+      domParser: { parseFromString: () => ({ querySelector: () => null }) },
+      fetchImpl: (_url, { signal }) => {
+        requestSignal = signal;
+        return new Promise((resolve, reject) => {
+          if (signal.aborted) {
+            reject(new Error("request aborted"));
+            return;
+          }
+          signal.addEventListener(
+            "abort",
+            () => reject(new Error("request aborted")),
+            { once: true },
+          );
+        });
       },
     });
 
-    session.choose("completion", "all");
+    const status = statusFor(page);
+    dropdownButtonFor(page, "完成条目数").click();
 
     assert.equal(scheduled.length, 1);
     assert.equal(scheduled[0].delay, 15_000);
     scheduled[0].callback();
 
-    await finished;
-    assert.equal(requestSignal.aborted, true);
-    assert.equal(lastMessage(), "“完成条目数”获取完成，1 人失败");
-    assert.deepEqual(
-      cache.completionFor("friend", "all"),
-      oldCompletion,
+    await waitForCondition(() =>
+      status.textContent.includes("获取完成，1 人失败"),
     );
+    assert.equal(requestSignal.aborted, true);
+    const reloaded = sorter.createFriendCache(
+      friendCacheStorage({ friend: oldRecord }),
+      { now: () => now },
+    );
+    assert.deepEqual(reloaded.completionFor("friend", "all"), oldCompletion);
   } finally {
     globalThis.setTimeout = originalSetTimeout;
     globalThis.clearTimeout = originalClearTimeout;
   }
 });
 
-test("时间胶囊刷新任务通过请求结果、缓存写入和进度回调驱动", async () => {
+test("时间胶囊刷新任务通过适配器结果、缓存写入和进度回调驱动", async () => {
   const requested = [];
   const progress = [];
   const responseTime = Date.UTC(2026, 7, 26, 9, 43, 36);
@@ -2334,20 +2385,18 @@ test("时间胶囊刷新任务通过请求结果、缓存写入和进度回调�
     cache,
     friends: [{ userIdentifier: "sai" }, { userIdentifier: "tom" }],
     runtime: {
-      domParser: {
-        parseFromString: () =>
-          timelineDocumentFromFixture("timeline-active-seconds.html"),
-      },
-      fetchImpl: async (url) => {
-        requested.push(url);
-        return {
-          ok: true,
-          headers: {
-            get: (name) =>
-              name === "date" ? new Date(responseTime).toUTCString() : null,
-          },
-          text: async () => "fixture",
-        };
+      http: {
+        fetchActivity: async (friend) => {
+          requested.push(friend.userIdentifier);
+          return {
+            kind: "success",
+            record: {
+              kind: "active",
+              activityAtSeconds: Date.UTC(2026, 7, 26, 9, 42, 34) / 1_000,
+              fetchedAt: responseTime,
+            },
+          };
+        },
       },
       now: () => responseTime,
       onProgress: (completed, total) => progress.push([completed, total]),
@@ -2357,7 +2406,7 @@ test("时间胶囊刷新任务通过请求结果、缓存写入和进度回调�
   session.choose("activity");
   await finished;
 
-  assert.deepEqual(requested.sort(), ["/user/sai/timeline", "/user/tom/timeline"]);
+  assert.deepEqual(requested.sort(), ["sai", "tom"]);
   const expectedActivity = {
     kind: "active",
     activityAtSeconds: Date.UTC(2026, 7, 26, 9, 42, 34) / 1_000,
@@ -2384,20 +2433,18 @@ test("会话切换排序目标后旧任务的迟到结果不覆盖当前排序",
     cache,
     friends: [{ userIdentifier: "sai" }, { userIdentifier: "tom" }],
     runtime: {
-      domParser: {
-        parseFromString: () =>
-          timelineDocumentFromFixture("timeline-active-seconds.html"),
-      },
-      fetchImpl: async () => {
-        await fetchesReleased;
-        return {
-          ok: true,
-          headers: {
-            get: (name) =>
-              name === "date" ? new Date(responseTime).toUTCString() : null,
-          },
-          text: async () => "fixture",
-        };
+      http: {
+        fetchActivity: async () => {
+          await fetchesReleased;
+          return {
+            kind: "success",
+            record: {
+              kind: "active",
+              activityAtSeconds: Date.UTC(2026, 7, 26, 9, 42, 34) / 1_000,
+              fetchedAt: responseTime,
+            },
+          };
+        },
       },
       now: () => responseTime,
     },
@@ -2426,8 +2473,8 @@ test("会话切换排序目标后旧任务的迟到结果不覆盖当前排序",
   assert.deepEqual(cache.activityFor("tom"), expectedActivity);
 });
 
-// 会话级测试：无效排序目标、无效方向与重复启动都是 programmer error。
-test("会话对未知排序目标、未知方向与重复启动同步抛出", () => {
+// 会话级测试：无效排序目标、无效子选项、无效方向与重复启动都是 programmer error。
+test("会话对未知排序目标、子选项、方向与重复启动同步抛出", () => {
   const { session } = createSessionHarness({
     cache: sorter.createFriendCache(null),
     friends: [],
@@ -2435,6 +2482,12 @@ test("会话对未知排序目标、未知方向与重复启动同步抛出", ()
   });
 
   assert.throws(() => session.choose("bogus"), /未知的排序目标/);
+  assert.throws(() => session.choose("activity", "bogus"), /未知的排序子选项/);
+  assert.throws(
+    () => session.choose("completion", "bogus"),
+    /未知的排序子选项/,
+  );
+  assert.throws(() => session.choose("relation", "bogus"), /未知的排序子选项/);
   assert.throws(() => session.changeDirection("bogus"), /未知的排序方向/);
   assert.throws(() => session.start(), /只能启动一次/);
 });
@@ -3458,8 +3511,25 @@ test("同一主页响应分别刷新完成统计，失败范围保留旧缓存",
     cache,
     friends: [{ userIdentifier: "sai" }],
     runtime: {
-      domParser: { parseFromString: () => profileStatsDocument({ includeBooks: true, malformedBooks: true }) },
-      fetchImpl: async () => ({ ok: true, text: async () => "profile" }),
+      // 一次响应服务全部字段：书籍范围解析失败，其余范围成功。
+      http: {
+        fetchProfile: async () => ({
+          kind: "success",
+          record: {
+            fetchedAt: now,
+            fields: {
+              completion: {
+                all: { kind: "success", value: 20 },
+                1: { kind: "invalid" },
+                2: { kind: "success", value: 8 },
+                3: { kind: "success", value: 6 },
+                4: { kind: "success", value: 4 },
+                6: { kind: "success", value: 2 },
+              },
+            },
+          },
+        }),
+      },
       now: () => now,
     },
   });
@@ -3508,10 +3578,29 @@ test("重复分类块只保留该范围旧缓存，其余范围和契合字段�
     cache,
     friends: [{ userIdentifier: "sai" }],
     runtime: {
-      domParser: {
-        parseFromString: () => duplicateCategoryProfileDocument(),
+      // 重复分类块只使动画范围无效：其余范围与契合字段照常成功。
+      http: {
+        fetchProfile: async () => ({
+          kind: "success",
+          record: {
+            fetchedAt: now,
+            fields: {
+              completion: {
+                all: { kind: "success", value: 20 },
+                1: { kind: "success", value: 3 },
+                2: { kind: "invalid" },
+                3: { kind: "success", value: 0 },
+                4: { kind: "success", value: 0 },
+                6: { kind: "success", value: 0 },
+              },
+              relation: {
+                syncRate: { kind: "success", value: 12 },
+                commonLikes: { kind: "success", value: 5 },
+              },
+            },
+          },
+        }),
       },
-      fetchImpl: async () => ({ ok: true, text: async () => "profile" }),
       now: () => now,
     },
   });
@@ -3576,9 +3665,12 @@ test("完成条目数菜单按范围回调并只表达当前子项的无障碍�
     orderedFriends: [],
   });
   assert.equal(toggle.getAttribute("aria-current"), "true");
-  assert.equal(menu[1].getAttribute("aria-current"), "true");
-  assert.equal(menu[1].className, "l");
-  menu[3].click();
+  assert.equal(
+    menuItemFor(page, "完成条目数", "动画").getAttribute("aria-current"),
+    "true",
+  );
+  assert.equal(menuItemFor(page, "完成条目数", "动画").className, "l");
+  menuItemFor(page, "完成条目数", "音乐").click();
   toggle.click();
   assert.deepEqual(selected, [
     ["completion", "3"],
@@ -3611,9 +3703,12 @@ test("喜好契合菜单按指标回调并直接点击默认选择同步率", ()
     orderedFriends: [],
   });
   assert.equal(toggle.getAttribute("aria-current"), "true");
-  assert.equal(menu[1].getAttribute("aria-current"), "true");
+  assert.equal(
+    menuItemFor(page, "喜好契合", "共同喜好数").getAttribute("aria-current"),
+    "true",
+  );
   toggle.click();
-  menu[1].click();
+  menuItemFor(page, "喜好契合", "共同喜好数").click();
   assert.deepEqual(selected, [
     ["relation", "syncRate"],
     ["relation", "commonLikes"],
@@ -3626,43 +3721,12 @@ test("喜好契合菜单的焦点状态只控制自身菜单", () => {
   sortBar.bind({ selectCriterion: () => {}, selectDirection: () => {} });
   sortBar.mount();
   const relationButton = dropdownButtonFor(page, "喜好契合");
-  const relationMenu = dropdownItems(page, "喜好契合");
 
   relationButton.focus();
   assert.equal(relationButton.getAttribute("aria-expanded"), "true");
-  relationMenu[1].focus();
+  menuItemFor(page, "喜好契合", "共同喜好数").focus();
   assert.equal(relationButton.getAttribute("aria-expanded"), "true");
   page.document.createElement("div").focus();
-  assert.equal(relationButton.getAttribute("aria-expanded"), "false");
-});
-
-test("下拉菜单内按下 Esc 时释放焦点并收起菜单", () => {
-  const page = friendPageWith([]);
-  const sortBar = sorter.createSortBar(page.document, { list: page.list });
-  sortBar.bind({ selectCriterion: () => {}, selectDirection: () => {} });
-  sortBar.mount();
-  const relationButton = dropdownButtonFor(page, "喜好契合");
-
-  relationButton.focus();
-  assert.equal(relationButton.getAttribute("aria-expanded"), "true");
-  relationButton.dispatchEvent({ type: "keydown", key: "Escape" });
-  assert.equal(page.document.activeElement, null);
-  assert.equal(relationButton.getAttribute("aria-expanded"), "false");
-});
-
-test("下拉菜单子项上按下 Esc 时释放焦点并收起菜单", () => {
-  const page = friendPageWith([]);
-  const sortBar = sorter.createSortBar(page.document, { list: page.list });
-  sortBar.bind({ selectCriterion: () => {}, selectDirection: () => {} });
-  sortBar.mount();
-  const relationButton = dropdownButtonFor(page, "喜好契合");
-  const relationMenu = dropdownItems(page, "喜好契合");
-
-  relationButton.focus();
-  relationMenu[0].focus();
-  assert.equal(relationButton.getAttribute("aria-expanded"), "true");
-  relationMenu[0].dispatchEvent({ type: "keydown", key: "Escape" });
-  assert.equal(page.document.activeElement, null);
   assert.equal(relationButton.getAttribute("aria-expanded"), "false");
 });
 
@@ -3686,25 +3750,33 @@ test("未登录时选择喜好契合不请求且登录提示不会因重复选�
   });
 
   const relationButton = dropdownButtonFor(page, "喜好契合");
-  const relationMenu = dropdownItems(page, "喜好契合");
   const status = statusFor(page);
 
   relationButton.click();
   assert.equal(requests, 0);
   assert.equal(status.textContent, "请登录后使用喜好契合排序");
   assert.equal(relationButton.getAttribute("aria-current"), "true");
-  assert.equal(relationMenu[0].getAttribute("aria-current"), "true");
+  assert.equal(
+    menuItemFor(page, "喜好契合", "同步率").getAttribute("aria-current"),
+    "true",
+  );
   assert.deepEqual([...clock.timers.values()].map(({ due }) => due), [5_000]);
   dropdownButtonFor(page, "完成条目数").click();
   assert.equal(status.textContent, "请登录后使用喜好契合排序");
-  relationMenu[1].click();
+  menuItemFor(page, "喜好契合", "共同喜好数").click();
   assert.equal(requests, 0);
   assert.equal(status.textContent, "请登录后使用喜好契合排序");
   assert.equal(relationButton.getAttribute("aria-current"), "true");
-  assert.equal(relationMenu[0].getAttribute("aria-current"), null);
-  assert.equal(relationMenu[1].getAttribute("aria-current"), "true");
+  assert.equal(
+    menuItemFor(page, "喜好契合", "同步率").getAttribute("aria-current"),
+    null,
+  );
+  assert.equal(
+    menuItemFor(page, "喜好契合", "共同喜好数").getAttribute("aria-current"),
+    "true",
+  );
   assert.deepEqual([...clock.timers.values()].map(({ due }) => due), [5_000]);
-  relationMenu[1].click();
+  menuItemFor(page, "喜好契合", "共同喜好数").click();
   assert.deepEqual([...clock.timers.values()].map(({ due }) => due), [5_000]);
 });
 
@@ -3847,6 +3919,9 @@ test("主页同步率与共同喜好数切换复用任务、去重请求并按�
   const storage = {
     getItem(key) {
       if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
+      // Serve the latest persisted state so the test can reload the cache
+      // through the domain interface instead of reading raw write payloads.
+      if (writes.length) return JSON.stringify(writes.at(-1)[1]);
       return JSON.stringify({
         version: 3,
         records: {
@@ -3901,12 +3976,11 @@ test("主页同步率与共同喜好数切换复用任务、去重请求并按�
   });
 
   const relationButton = dropdownButtonFor(page, "喜好契合");
-  const relationMenu = dropdownItems(page, "喜好契合");
   const status = statusFor(page);
 
   relationButton.click();
   assert.deepEqual(requests, ["a"]);
-  relationMenu[1].click();
+  menuItemFor(page, "喜好契合", "共同喜好数").click();
   releaseA({ ok: true, text: async () => "a" });
 
   await waitForCondition(() => requests.length >= 2);
@@ -3917,23 +3991,36 @@ test("主页同步率与共同喜好数切换复用任务、去重请求并按�
   assert.ok(progress.some(([completed, total]) => completed === 2 && total === 2));
   assert.equal(status.textContent, "“喜好契合”获取完成，1 人失败");
   assert.deepEqual(page.list.children.map((item) => item.textContent), ["B", "A"]);
-  assert.deepEqual(writes.at(-1)[1].records.a.relation.visitor.syncRate, {
-    value: 50,
-    fetchedAt: now,
-  });
-  assert.deepEqual(writes.at(-1)[1].records.a.relation.visitor.commonLikes, {
+
+  // 完成批次后重建缓存，通过领域读取接口验证最终缓存结果，不读取原始
+  // 写入 payload 或 raw cache field。
+  const reloaded = sorter.createFriendCache(storage, { now: () => now });
+  assert.deepEqual(
+    reloaded.relationFor("a", {
+      metric: "syncRate",
+      visitorIdentifier: "visitor",
+    }),
+    { value: 50, fetchedAt: now },
+  );
+  assert.deepEqual(
+    reloaded.relationFor("a", {
+      metric: "commonLikes",
+      visitorIdentifier: "visitor",
+    }),
+    { value: 1, fetchedAt: now },
+  );
+  assert.deepEqual(
+    reloaded.relationFor("b", {
+      metric: "commonLikes",
+      visitorIdentifier: "visitor",
+    }),
+    { value: 20, fetchedAt: now },
+  );
+  assert.deepEqual(reloaded.completionFor("a", "all"), {
     value: 1,
     fetchedAt: now,
   });
-  assert.deepEqual(writes.at(-1)[1].records.b.relation.visitor.commonLikes, {
-    value: 20,
-    fetchedAt: now,
-  });
-  assert.deepEqual(writes.at(-1)[1].records.a.completion_all, {
-    value: 1,
-    fetchedAt: now,
-  });
-  assert.deepEqual(writes.at(-1)[1].records.b.completion_all, {
+  assert.deepEqual(reloaded.completionFor("b", "all"), {
     value: 2,
     fetchedAt: now,
   });
@@ -4169,12 +4256,11 @@ test("取消大批量扩充后恢复旧主页任务目标", async () => {
   });
 
   const relationButton = dropdownButtonFor(page, "喜好契合");
-  const relationChoices = dropdownItems(page, "喜好契合");
   const status = statusFor(page);
 
   relationButton.click();
   assert.deepEqual(requests, ["/user/friend-0"]);
-  relationChoices[1].click();
+  menuItemFor(page, "喜好契合", "共同喜好数").click();
   assert.deepEqual(confirmations, [
     "本次新增获取的好友数量过多（401 人），是否继续？",
   ]);
@@ -4301,7 +4387,6 @@ test("取消大批量主页扩充后保留前台时间胶囊进度提示", async
 
   const activityButton = mainSortControl(page, "上次活跃");
   const relationButton = dropdownButtonFor(page, "喜好契合");
-  const relationChoices = dropdownItems(page, "喜好契合");
   const status = statusFor(page);
 
   relationButton.click();
@@ -4309,7 +4394,7 @@ test("取消大批量主页扩充后保留前台时间胶囊进度提示", async
   activityButton.click();
   assert.equal(status.textContent, "正在获取“上次活跃” 0/1");
 
-  relationChoices[1].click();
+  menuItemFor(page, "喜好契合", "共同喜好数").click();
   assert.deepEqual(confirmations, [
     "本次新增获取的好友数量过多（401 人），是否继续？",
   ]);
@@ -4399,7 +4484,9 @@ test("初始化将排序栏挂在主内容列之前并使用完成条目数方�
   const dropdown = sortOptions.children.find(
     (child) => child?.children?.[0]?.textContent === "完成条目数",
   );
-  dropdown.children[0].click();
+  dropdown.children
+    .find((child) => child.getAttribute("aria-haspopup") === "true")
+    .click();
   await new Promise((resolve) => setImmediate(resolve));
   const directionButtons = filters.children[1].children.filter(
     (child) => child?.tagName === "button",
@@ -4438,6 +4525,9 @@ test("完成统计范围在刷新期间切换后补取新增缺失好友", async
   const storage = {
     getItem(key) {
       if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
+      // Serve the latest persisted state so the final cache can be verified
+      // through a reloaded cache's domain reads instead of raw payloads.
+      if (writes.length) return JSON.stringify(writes.at(-1)[1]);
       return JSON.stringify({
         version: 3,
         records: {
@@ -4446,7 +4536,7 @@ test("完成统计范围在刷新期间切换后补取新增缺失好友", async
       });
     },
     setItem(key, value) {
-      writes.push(JSON.parse(value));
+      writes.push([key, JSON.parse(value)]);
     },
     removeItem() {},
   };
@@ -4475,25 +4565,37 @@ test("完成统计范围在刷新期间切换后补取新增缺失好友", async
     },
   });
 
-  const completionMenu = dropdownItems(page, "完成条目数");
-
   dropdownButtonFor(page, "完成条目数").click();
   assert.deepEqual(requests, ["a"]);
-  completionMenu[2].click();
+  menuItemFor(page, "完成条目数", "书籍").click();
   releaseA(responseFor("a"));
 
   await waitForCondition(() => requests.length >= 2);
   await waitForCondition(() => writes.length > 0);
+  // b 的结果在任务结束的批次完成时落盘；轮询领域读取直到最终值可见。
+  await waitForCondition(() => {
+    const probe = sorter.createFriendCache(storage, { now: () => now });
+    return probe.completionFor("b", "1")?.value === 20;
+  });
 
   assert.deepEqual(requests, ["a", "b"]);
-  assert.deepEqual(writes.at(-1).records.b, {
-    completion_all: { value: 2, fetchedAt: now },
-    completion_1: { value: 20, fetchedAt: now },
-    completion_2: { value: 2, fetchedAt: now },
-    completion_3: { value: 2, fetchedAt: now },
-    completion_4: { value: 2, fetchedAt: now },
-    completion_6: { value: 2, fetchedAt: now },
-  });
+  const reloaded = sorter.createFriendCache(storage, { now: () => now });
+  assert.deepEqual(
+    Object.fromEntries(
+      ["all", "1", "2", "3", "4", "6"].map((scope) => [
+        scope,
+        reloaded.completionFor("b", scope),
+      ]),
+    ),
+    {
+      all: { value: 2, fetchedAt: now },
+      1: { value: 20, fetchedAt: now },
+      2: { value: 2, fetchedAt: now },
+      3: { value: 2, fetchedAt: now },
+      4: { value: 2, fetchedAt: now },
+      6: { value: 2, fetchedAt: now },
+    },
+  );
   assert.deepEqual(page.list.children.map((item) => item.textContent), ["B", "A"]);
 });
 
@@ -4731,9 +4833,8 @@ test("完成条目数菜单的键盘焦点不因鼠标移出而关闭", () => {
     onSelectCriterion: (criterion, scope) => selected.push([criterion, scope]),
   });
   const toggle = dropdownButtonFor(page, "完成条目数");
-  const menu = dropdownItems(page, "完成条目数");
-  const bookButton = menu[2];
-  const musicButton = menu[3];
+  const bookButton = menuItemFor(page, "完成条目数", "书籍");
+  const musicButton = menuItemFor(page, "完成条目数", "音乐");
 
   toggle.focus();
   assert.equal(page.document.activeElement, toggle);
@@ -4784,15 +4885,13 @@ function assertPointerKeepsCompletionMenuOpen(pointerType) {
   assert.equal(page.document.activeElement, toggle);
   assert.equal(toggle.getAttribute("aria-expanded"), "true");
 
-  return { dropdown, selected, toggle };
+  return { page, selected, toggle };
 }
 
 test("完成条目数菜单支持触屏点击后保留菜单", () => {
-  const { dropdown, selected, toggle } =
+  const { page, selected, toggle } =
     assertPointerKeepsCompletionMenuOpen("touch");
-  const musicButton = dropdown.children.find(
-    (child) => child.getAttribute?.("role") === "menu",
-  ).children[3];
+  const musicButton = menuItemFor(page, "完成条目数", "音乐");
 
   musicButton.focus();
   musicButton.click();

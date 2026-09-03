@@ -1237,8 +1237,8 @@
   }
 
   // 一次主页请求、一次文档提取：记录按字段携带三向结果，交给主页字段
-  // 任务分别判定成功与失败。字段取值收在记录边界的 outcomeFor：
-  // 调用方只交字段，kind → selection 的内部形状不外泄。
+  // 任务分别判定成功与失败。字段取值由任务按 REMOTE_TARGET_SELECTION_KEYS
+  // 查询 fields，记录保持纯数据形状，方便测试适配器直接构造。
   async function fetchProfile(friend, fetchImpl, domParser, now) {
     return fetchPageWithTimeout(
       `/user/${encodeURIComponent(userIdentifierFor(friend))}`,
@@ -1251,19 +1251,12 @@
         if (fields.completion === null && fields.relation === null) {
           return { kind: "parse-error" };
         }
-        const record = { fetchedAt, fields };
-        record.outcomeFor = (field) =>
-          fields[field.kind]?.[field[REMOTE_TARGET_SELECTION_KEYS[field.kind]]];
-        return { kind: "success", record };
+        return { kind: "success", record: { fetchedAt, fields } };
       },
     );
   }
 
-  function readFriends(
-    list,
-    baseUrl = window.location.href,
-    pageDocument = window.document,
-  ) {
+  function readFriends(list, baseUrl = window.location.href) {
     const elements = [...list.children];
     const friends = elements.map((element, originalIndex) => {
       const anchor = element.querySelector('a.avatar[href*="/user/"]');
@@ -1559,13 +1552,7 @@
         });
         button.addEventListener("keydown", (event) => {
           focusModality = "keyboard";
-          if (event.key === "Escape") {
-            // Esc 关闭：键盘用户按下 Esc 时释放焦点，焦点离开后菜单
-            // 经由既有 focusout 路径收起。
-            event.preventDefault?.();
-            button.blur?.();
-            return;
-          }
+          // 键盘创建的焦点按 ADR-0001 持久保留，Esc 不主动释放焦点。
           if (event.key !== "Enter" && event.key !== " ") return;
           event.preventDefault?.();
           button.click();
@@ -1807,6 +1794,18 @@
     return domParser && fetchImpl ? { domParser, fetchImpl } : null;
   }
 
+  // 生产 HTTP adapter：Bangumi 是真实外部依赖，页面 URL、同源凭据、
+  // 15 秒超时、响应时间与 DOM 解析全部收在这里。任务只拿到按页面类型
+  // 规范化的领域结果；测试用返回同样领域结果的 mock adapter 替换它。
+  function createBangumiHttpAdapter({ domParser, fetchImpl, now }) {
+    if (!domParser || !fetchImpl) return null;
+    return {
+      fetchActivity: (friend) =>
+        fetchActivity(friend, fetchImpl, domParser, now),
+      fetchProfile: (friend) => fetchProfile(friend, fetchImpl, domParser, now),
+    };
+  }
+
   function createStatusController({
     clearTimeout: clearStatusTimeout = globalThis.clearTimeout,
     now = Date.now,
@@ -2001,14 +2000,12 @@
     progressReporter,
     status,
     taskType,
-    onSuccess,
   }) {
     return {
       onFetching: progressReporter,
       onProgress: progressReporter,
       onQueue: progressReporter,
       onRateLimited: status.showRateLimit,
-      onSuccess,
       onFinished({ failures, globallyStopped, target }) {
         status.clearProgress(taskType);
         applySort();
@@ -2097,10 +2094,9 @@
   }
 
   // Starts a foreground scheduler task for one refresh; guarded so a
-  // stopped scheduler or missing fetch dependencies never enqueue work.
+  // stopped scheduler or missing fetch adapter never enqueue work.
   function startForegroundTask({
     confirmRequest,
-    dependencies,
     fetch,
     isSuccess = (_record, outcome) => outcome.kind === "success",
     keyFor,
@@ -2110,7 +2106,7 @@
     target,
     taskType,
   }) {
-    if (scheduler.isGloballyStopped() || !dependencies()) return null;
+    if (scheduler.isGloballyStopped() || !fetch) return null;
     if (pending.length === 0 && !scheduler.getTask(taskType)) return null;
     const { task } = scheduler.enqueue(
       taskType,
@@ -2119,11 +2115,7 @@
         confirmMessage: (count) =>
           `本次新增获取的好友数量过多（${count} 人），是否继续？`,
         confirmRequest,
-        fetch: (item) => {
-          const pageDependencies = dependencies();
-          if (!pageDependencies) return { kind: "network-error" };
-          return fetch(item, pageDependencies);
-        },
+        fetch,
         isSuccess,
         keyFor,
         lifecycle,
@@ -2138,9 +2130,8 @@
     applySort,
     cache,
     confirmRequest,
-    dependencies,
     friends,
-    now,
+    http,
     onProgress,
     scheduler,
     status,
@@ -2166,9 +2157,10 @@
     // 按声明字段分别判定成功：请求失败、主页无效、该字段缺失或无效都算
     // 失败；字段解析成功则算成功，即使请求最初由另一个字段加入。
     function isFieldSuccess(record, outcome, field) {
+      const selectionKey = REMOTE_TARGET_SELECTION_KEYS[field.kind];
       return (
         outcome.kind === "success" &&
-        record?.outcomeFor?.(field)?.kind === "success"
+        record?.fields?.[field.kind]?.[field[selectionKey]]?.kind === "success"
       );
     }
 
@@ -2199,14 +2191,7 @@
     function refresh(field, mode = "incremental") {
       return startForegroundTask({
         confirmRequest,
-        dependencies,
-        fetch: (friend, pageDependencies) =>
-          fetchProfile(
-            friend,
-            pageDependencies.fetchImpl,
-            pageDependencies.domParser,
-            now,
-          ),
+        fetch: http && ((friend) => http.fetchProfile(friend)),
         isSuccess: isFieldSuccess,
         keyFor: userIdentifierFor,
         lifecycle,
@@ -2232,6 +2217,7 @@
     cache,
     collator,
     friends,
+    http,
     now,
     pageWindow,
     runtime,
@@ -2250,7 +2236,6 @@
     });
     const confirmRequest =
       runtime.confirm ?? pageWindow.confirm?.bind(pageWindow) ?? (() => false);
-    const getDependencies = () => pageFetchDependencies(runtime, pageWindow);
 
     const showActivityProgress = createTaskProgressReporter({
       onProgress: runtime.onProgress,
@@ -2288,9 +2273,8 @@
       applySort: applyProfileSort,
       cache,
       confirmRequest,
-      dependencies: getDependencies,
       friends,
-      now,
+      http,
       onProgress: runtime.onProgress,
       scheduler,
       status,
@@ -2300,14 +2284,7 @@
     function startActivity(mode) {
       return startForegroundTask({
         confirmRequest,
-        dependencies: getDependencies,
-        fetch: (friend, dependencies) =>
-          fetchActivity(
-            friend,
-            dependencies.fetchImpl,
-            dependencies.domParser,
-            now,
-          ),
+        fetch: http && ((friend) => http.fetchActivity(friend)),
         keyFor: userIdentifierFor,
         lifecycle: activityLifecycle,
         pending: cache.friendsNeedingRefresh(
@@ -2410,6 +2387,7 @@
           choiceLabelFor(RELATION_CHOICES, selection),
         defaultSelection: RELATION_CHOICES[0][0],
         requiresVisitor: true,
+        selections: RELATION_CHOICES.map(([value]) => value),
         setSelection: (selection) => {
           relationMetric = selection;
         },
@@ -2420,6 +2398,7 @@
           choiceLabelFor(COMPLETION_CHOICES, selection),
         defaultSelection: COMPLETION_SCOPE.ALL,
         requiresVisitor: false,
+        selections: COMPLETION_CHOICES.map(([value]) => value),
         setSelection: (selection) => {
           completionScope = selection;
         },
@@ -2495,6 +2474,13 @@
       }
       const configuration = remoteTargetConfigurations[criterion];
       if (configuration) {
+        if (
+          requestedSubcriterion != null &&
+          (!configuration.selections ||
+            !configuration.selections.includes(requestedSubcriterion))
+        ) {
+          throw new Error(`未知的排序子选项：${requestedSubcriterion}`);
+        }
         selectRemoteCriterion(criterion, configuration, requestedSubcriterion);
         return;
       }
@@ -2530,7 +2516,7 @@
     const list = pageDocument.querySelector("#memberUserList");
     if (!list || list.children.length === 0) return;
 
-    const friends = readFriends(list, pageWindow.location.href, pageDocument);
+    const friends = readFriends(list, pageWindow.location.href);
     if (friends.length !== list.children.length) return;
 
     const now = runtime.now ?? Date.now;
@@ -2545,10 +2531,19 @@
     const collator = nameCollator();
     const sortBar = createSortBar(pageDocument, { list });
     if (!sortBar.mount()) return;
+    // 生产 HTTP adapter 在装配时创建；测试可以直接注入返回规范化领域结果
+    // 的 mock adapter，不伪造 HTTP Response 或 DOM。
+    const http =
+      runtime.http ??
+      createBangumiHttpAdapter({
+        ...pageFetchDependencies(runtime, pageWindow),
+        now,
+      });
     const session = createFriendSortSession({
       cache,
       collator,
       friends,
+      http,
       now,
       pageWindow,
       runtime,
