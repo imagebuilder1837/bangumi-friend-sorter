@@ -436,11 +436,7 @@
       relationFor(userIdentifier, relationSelection) {
         return relationRecordFor(userIdentifier, relationSelection);
       },
-      friendsNeedingRefresh(
-        friends,
-        target,
-        { mode = "incremental" } = {},
-      ) {
+      friendsNeedingRefresh(friends, target, { mode = "incremental" } = {}) {
         if (mode === "full") return [...friends];
         const targetReaders = {
           [SORT.ACTIVITY]: {
@@ -1052,95 +1048,111 @@
     return Number.isFinite(parsed) ? parsed : null;
   }
 
-  function parseCommonLikes(value) {
-    const match = /(^|[^\d])([+-]?\d[\d,]*(?:\.\d+)?)\s*个共同喜好/.exec(
-      value?.textContent || "",
-    );
-    if (!match) return null;
-    const parsed = Number(match[2].replace(/,/g, ""));
-    return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+  // 主页字段的三向结果：成功携带可靠值；缺失表示字段节点未披露（不是
+  // 零）；无效表示节点存在但自相矛盾或无法解析。每个字段独立产出结果，
+  // 一个字段的失败不抹去同一响应中其他字段的有效结果。
+  function successOutcome(value) {
+    return { kind: "success", value };
   }
 
-  function parseRelationValues(document) {
+  function syncRateOutcome(synchronize) {
+    const node = synchronize?.querySelector?.(".percent_text");
+    if (!node) return { kind: "missing" };
+    const parsed = parseSyncRate(node);
+    return parsed === null ? { kind: "invalid" } : successOutcome(parsed);
+  }
+
+  function commonLikesOutcome(synchronize) {
+    const match = /(^|[^\d])([+-]?\d[\d,]*(?:\.\d+)?)\s*个共同喜好/.exec(
+      synchronize?.textContent || "",
+    );
+    if (!match) return { kind: "missing" };
+    const parsed = Number(match[2].replace(/,/g, ""));
+    return Number.isInteger(parsed) && parsed >= 0
+      ? successOutcome(parsed)
+      : { kind: "invalid" };
+  }
+
+  function relationFieldOutcomes(document) {
     const synchronize = document?.querySelector?.(".userSynchronize");
     if (!synchronize) return null;
-
-    const values = {};
-    const syncRate = parseSyncRate(
-      synchronize.querySelector?.(".percent_text"),
-    );
-    if (syncRate !== null) values.syncRate = syncRate;
-    const commonLikes = parseCommonLikes(synchronize);
-    if (commonLikes !== null) values.commonLikes = commonLikes;
-    return values;
+    return {
+      commonLikes: commonLikesOutcome(synchronize),
+      syncRate: syncRateOutcome(synchronize),
+    };
   }
 
-  function parseCompletionValues(document) {
+  function completionFieldOutcomes(document) {
     const container = document?.querySelector?.("#userStatsContainers");
     if (!container) return null;
 
+    const outcomes = {};
     const childCount = container.children?.length ?? 0;
     if (childCount === 0 && container.textContent.trim() === "") {
-      return Object.fromEntries(
-        COMPLETION_CHOICES.map(([scope]) => [scope, 0]),
-      );
+      for (const [scope] of COMPLETION_CHOICES) {
+        outcomes[scope] = successOutcome(0);
+      }
+      return outcomes;
     }
 
     const aggregate = statsBlockFor(container, COMPLETION_SCOPE.ALL);
-    if (aggregate.kind !== "found") {
-      return null;
-    }
-    const aggregateValue = parseCompletionCount(aggregate.block);
+    const aggregateValue =
+      aggregate.kind === "found" ? parseCompletionCount(aggregate.block) : null;
+    // 聚合块是全部范围的结构前提：它缺失或矛盾时六个范围都无效。
     if (aggregateValue === null) return null;
+    outcomes[COMPLETION_SCOPE.ALL] = successOutcome(aggregateValue);
 
-    const completionValues = { [COMPLETION_SCOPE.ALL]: aggregateValue };
     for (const [scope] of COMPLETION_CHOICES.slice(1)) {
       const stats = statsBlockFor(container, scope);
-      if (stats.kind === "ambiguous") return null;
       if (stats.kind === "missing") {
-        completionValues[scope] = 0;
-        continue;
+        // 缺失的分类块可靠地为零（见 docs/spec.md）。
+        outcomes[scope] = successOutcome(0);
+      } else if (stats.kind === "found") {
+        const value = parseCompletionCount(stats.block);
+        outcomes[scope] =
+          value === null ? { kind: "invalid" } : successOutcome(value);
+      } else {
+        // 重复的分类块只使自己的范围无效。
+        outcomes[scope] = { kind: "invalid" };
       }
-      const value = parseCompletionCount(stats.block);
-      if (value !== null) completionValues[scope] = value;
     }
-
-    return completionValues;
+    return outcomes;
   }
 
+  // 对解析后的主页文档只做这一遍提取：八个字段各自产出三向结果。
+  function parseProfileFieldOutcomes(document) {
+    return {
+      completion: completionFieldOutcomes(document),
+      relation: relationFieldOutcomes(document),
+    };
+  }
+
+  function successfulOutcomeValues(outcomes) {
+    const values = {};
+    for (const [selection, outcome] of Object.entries(outcomes || {})) {
+      if (outcome.kind === "success") values[selection] = outcome.value;
+    }
+    return values;
+  }
+
+  // 文档级视图，与逐字段结果共享同一遍提取：只有成功的字段值保留，
+  // 没有任何有效字段的文档视为无效。
   function parseProfileDocument(document) {
-    const completionValues = parseCompletionValues(document);
-    const relation = parseRelationValues(document);
+    const outcomes = parseProfileFieldOutcomes(document);
+    const completionValues =
+      outcomes.completion === null
+        ? null
+        : successfulOutcomeValues(outcomes.completion);
+    const relation =
+      outcomes.relation === null
+        ? null
+        : successfulOutcomeValues(outcomes.relation);
     if (!completionValues && relation === null) return { kind: "invalid" };
 
     const parsed = { kind: "success" };
     if (completionValues) parsed.completion = completionValues;
     if (relation !== null) parsed.relation = relation;
     return parsed;
-  }
-
-  const PROFILE_TARGET_POLICIES = Object.freeze({
-    [SORT.COMPLETION]: Object.freeze({
-      label: "完成条目数",
-      hasTarget: (record, target) => {
-        const value = record?.completion?.[target.scope];
-        return Number.isSafeInteger(value) && value >= 0;
-      },
-    }),
-    [SORT.RELATION]: Object.freeze({
-      label: "喜好契合",
-      hasTarget: (record, target) => {
-        const value = record?.relation?.[target.metric];
-        return isRelationRecord(
-          { value, fetchedAt: record?.fetchedAt },
-          target.metric,
-        );
-      },
-    }),
-  });
-
-  function profileTargetPolicyFor(target) {
-    return PROFILE_TARGET_POLICIES[target?.kind] || null;
   }
 
   function positiveIntegerIdentifier(value) {
@@ -1214,6 +1226,8 @@
     }
   }
 
+  // 一次主页请求、一次文档提取：记录按字段携带三向结果，交给主页字段
+  // 任务分别判定成功与失败。
   async function fetchProfile(friend, fetchImpl, domParser, now) {
     return fetchPageWithTimeout(
       `/user/${encodeURIComponent(userIdentifierFor(friend))}`,
@@ -1222,12 +1236,11 @@
         const html = await response.text();
         const fetchedAt = now();
         const document = domParser.parseFromString(html, "text/html");
-        const parsed = parseProfileDocument(document);
-        if (parsed.kind === "invalid") return { kind: "parse-error" };
-        const record = { fetchedAt };
-        if (parsed.completion) record.completion = parsed.completion;
-        if (parsed.relation) record.relation = parsed.relation;
-        return { kind: "success", record };
+        const fields = parseProfileFieldOutcomes(document);
+        if (fields.completion === null && fields.relation === null) {
+          return { kind: "parse-error" };
+        }
+        return { kind: "success", record: { fetchedAt, fields } };
       },
     );
   }
@@ -1656,10 +1669,6 @@
     );
   }
 
-  function profileRecordHasTarget(record, target) {
-    return profileTargetPolicyFor(target)?.hasTarget(record, target) ?? false;
-  }
-
   function browserStorage(pageWindow = window) {
     try {
       return pageWindow.localStorage;
@@ -1941,9 +1950,191 @@
     return choices.find(([choiceValue]) => choiceValue === value)?.[1] || value;
   }
 
+  // 主页字段任务 deep module：拥有八个主页字段（六个完成统计范围与同步
+  // 率、共同喜好数两个契合指标）的字段语义、同一批次内单次可复用的主页
+  // 请求、任务合并扩充与字段级成功失败统计。调用方只声明当前排序需要的
+  // 字段，不再拼装解析、调度或缓存写入细节。
+  const PROFILE_TASK_TYPE = "profile";
+  const PROFILE_FIELD_GROUP_LABELS = Object.freeze({
+    [SORT.COMPLETION]: "完成条目数",
+    [SORT.RELATION]: "喜好契合",
+  });
+
+  function profileFieldLabelFor(field) {
+    return PROFILE_FIELD_GROUP_LABELS[field?.kind] ?? "";
+  }
+
+  // Bridges one page task's lifecycle to a friend-cache refresh batch: the
+  // batch opens when the task starts fetching, accepts each friend's result
+  // and commits once when the task finishes. Callers never touch persistence.
+  function createCacheBatchLifecycle({ cache, status }) {
+    return ({
+      applySort,
+      labelFor,
+      progressReporter,
+      projectResult = (record) => record,
+      taskType,
+      visitorIdentifier,
+    }) => {
+      const base = createRefreshLifecycle({
+        applySort,
+        labelFor,
+        progressReporter,
+        status,
+        taskType,
+      });
+      let batch = null;
+      return {
+        ...base,
+        onFetching(progress) {
+          batch = cache.beginRefresh({ visitorIdentifier });
+          base.onFetching?.(progress);
+        },
+        onFinished(result) {
+          batch?.complete();
+          batch = null;
+          base.onFinished?.(result);
+        },
+        onSuccess(friend, record) {
+          batch?.accept(userIdentifierFor(friend), projectResult(record));
+        },
+      };
+    };
+  }
+
+  // Starts a foreground scheduler task for one refresh; guarded so a
+  // stopped scheduler or missing fetch dependencies never enqueue work.
+  function startForegroundTask({
+    confirmRequest,
+    dependencies,
+    fetch,
+    isSuccess = (_record, outcome) => outcome.kind === "success",
+    keyFor,
+    lifecycle = {},
+    pending,
+    scheduler,
+    target,
+    taskType,
+  }) {
+    if (scheduler.isGloballyStopped() || !dependencies()) return null;
+    if (pending.length === 0 && !scheduler.getTask(taskType)) return null;
+    const { task } = scheduler.enqueue(
+      taskType,
+      pending,
+      {
+        confirmMessage: (count) =>
+          `本次新增获取的好友数量过多（${count} 人），是否继续？`,
+        confirmRequest,
+        fetch: (item) => {
+          const pageDependencies = dependencies();
+          if (!pageDependencies) return { kind: "network-error" };
+          return fetch(item, pageDependencies);
+        },
+        isSuccess,
+        keyFor,
+        lifecycle,
+        target,
+      },
+      { foreground: true },
+    );
+    return task;
+  }
+
+  function createProfileFieldTasks({
+    applySort,
+    cache,
+    confirmRequest,
+    dependencies,
+    friends,
+    now,
+    onProgress,
+    scheduler,
+    status,
+    visitorIdentifier,
+  }) {
+    const progressReporter = createTaskProgressReporter({
+      onProgress,
+      status,
+      taskType: PROFILE_TASK_TYPE,
+      messageFor: ({ completed, target, total }) =>
+        `正在获取“${profileFieldLabelFor(target)}” ${completed}/${total}`,
+    });
+
+    // 契合指标按访问者隔离，缓存的新鲜度边界需要完整的访问者目标。
+    function cacheTargetFor(field) {
+      return field.kind === SORT.RELATION
+        ? { ...field, visitorIdentifier }
+        : field;
+    }
+
+    function profileFieldOutcomeFor(record, field) {
+      const selection =
+        field.kind === SORT.RELATION ? field.metric : field.scope;
+      return record?.fields?.[field.kind]?.[selection];
+    }
+
+    // 按声明字段分别判定成功：请求失败、主页无效、该字段缺失或无效都算
+    // 失败；字段解析成功则算成功，即使请求最初由另一个字段加入。
+    function isFieldSuccess(record, outcome, field) {
+      return (
+        outcome.kind === "success" &&
+        profileFieldOutcomeFor(record, field)?.kind === "success"
+      );
+    }
+
+    // 一次响应服务全部字段：解析成功的字段结果交给好友缓存批次；缺失或
+    // 无效的字段不写入缓存，因此不会覆盖仍有效的旧值。
+    function cacheResultFor(record) {
+      const result = { fetchedAt: record.fetchedAt };
+      for (const [kind, outcomes] of Object.entries(record.fields)) {
+        const values = successfulOutcomeValues(outcomes);
+        if (Object.keys(values).length > 0) result[kind] = values;
+      }
+      return result;
+    }
+
+    const cacheLifecycle = createCacheBatchLifecycle({ cache, status });
+    const lifecycle = cacheLifecycle({
+      applySort,
+      labelFor: profileFieldLabelFor,
+      progressReporter,
+      projectResult: cacheResultFor,
+      taskType: PROFILE_TASK_TYPE,
+      visitorIdentifier,
+    });
+
+    // 声明一个当前排序需要的主页字段：按字段判断待请求好友，合并进运行
+    // 中的主页任务或创建新任务。同一好友在整个任务内最多请求一次，而一
+    // 次响应解析全部八个字段，因此已排队和在途好友天然服务新增字段需求。
+    function refresh(field, mode = "incremental") {
+      return startForegroundTask({
+        confirmRequest,
+        dependencies,
+        fetch: (friend, pageDependencies) =>
+          fetchProfile(
+            friend,
+            pageDependencies.fetchImpl,
+            pageDependencies.domParser,
+            now,
+          ),
+        isSuccess: isFieldSuccess,
+        keyFor: userIdentifierFor,
+        lifecycle,
+        pending: cache.friendsNeedingRefresh(friends, cacheTargetFor(field), {
+          mode,
+        }),
+        scheduler,
+        target: field,
+        taskType: PROFILE_TASK_TYPE,
+      });
+    }
+
+    return { refresh };
+  }
+
   // Owns the refresh orchestration half of the sorter: scheduler, status
-  // rendering, task lifecycles and the activity/profile refresh starters.
-  // The selection/UI state machine only talks to it through `status`,
+  // rendering, the 时间胶囊 task, and the 主页字段任务 module above. The
+  // selection/UI state machine only talks to it through `status`,
   // `startActivity` and `startProfile`.
   function createFriendRefreshTasks({
     applyActivitySort,
@@ -1956,6 +2147,7 @@
     statusElement,
     visitorIdentifier,
   }) {
+    const ACTIVITY_TASK_TYPE = "activity";
     const scheduler = createTaskScheduler({ concurrency: 4 });
     const status = createStatusController({
       clearTimeout: runtime.clearTimeout ?? globalThis.clearTimeout,
@@ -1968,160 +2160,61 @@
       runtime.confirm ?? pageWindow.confirm?.bind(pageWindow) ?? (() => false);
     const getDependencies = () => pageFetchDependencies(runtime, pageWindow);
 
-    function profileLabelFor(target) {
-      return profileTargetPolicyFor(target)?.label ?? target?.kind ?? "";
-    }
-
     const showActivityProgress = createTaskProgressReporter({
       onProgress: runtime.onProgress,
       status,
-      taskType: "activity",
+      taskType: ACTIVITY_TASK_TYPE,
       messageFor: ({ completed, total }) =>
         `正在获取“上次活跃” ${completed}/${total}`,
     });
-    const showProfileProgress = createTaskProgressReporter({
-      onProgress: runtime.onProgress,
-      status,
-      taskType: "profile",
-      messageFor: ({ completed, target, total }) =>
-        `正在获取“${profileLabelFor(target)}” ${completed}/${total}`,
-    });
 
-    function cacheLifecycle({
-      applySort,
-      labelFor,
-      progressReporter,
-      projectResult = (record) => record,
-      taskType,
-      visitorIdentifier: batchVisitorIdentifier,
-    }) {
-      const base = createRefreshLifecycle({
-        applySort,
-        labelFor,
-        progressReporter,
-        status,
-        taskType,
-      });
-      let batch = null;
-      return {
-        ...base,
-        onFetching(progress) {
-          batch = cache.beginRefresh({
-            visitorIdentifier: batchVisitorIdentifier,
-          });
-          base.onFetching?.(progress);
-        },
-        onFinished(result) {
-          batch?.complete();
-          batch = null;
-          base.onFinished?.(result);
-        },
-        onSuccess(friend, record) {
-          batch?.accept(userIdentifierFor(friend), projectResult(record));
-        },
-      };
-    }
-
+    const cacheLifecycle = createCacheBatchLifecycle({ cache, status });
     const activityLifecycle = cacheLifecycle({
       applySort: applyActivitySort,
       labelFor: () => "上次活跃",
       progressReporter: showActivityProgress,
       projectResult: (activity) => ({ activity }),
-      taskType: "activity",
+      taskType: ACTIVITY_TASK_TYPE,
     });
-    const profileLifecycle = cacheLifecycle({
+
+    const profileFields = createProfileFieldTasks({
       applySort: applyProfileSort,
-      labelFor: profileLabelFor,
-      progressReporter: showProfileProgress,
-      taskType: "profile",
+      cache,
+      confirmRequest,
+      dependencies: getDependencies,
+      friends,
+      now,
+      onProgress: runtime.onProgress,
+      scheduler,
+      status,
       visitorIdentifier,
     });
 
-    // Starts a foreground scheduler task for one refresh mode; guarded so a
-    // stopped scheduler or missing fetch dependencies never enqueue work.
-    function startRefresh({
-      fetchItem,
-      getPending,
-      isSuccess = (_record, outcome) => outcome.kind === "success",
-      keyFor,
-      lifecycle = {},
-      target,
-      taskType,
-    }) {
-      if (scheduler.isGloballyStopped() || !getDependencies()) return null;
-
-      const pending = getPending();
-      if (pending.length === 0 && !scheduler.getTask(taskType)) return null;
-      const { task } = scheduler.enqueue(
-        taskType,
-        pending,
-        {
-          confirmMessage: (count) =>
-            `本次新增获取的好友数量过多（${count} 人），是否继续？`,
-          confirmRequest,
-          fetch: (item) => {
-            const dependencies = getDependencies();
-            if (!dependencies) return { kind: "network-error" };
-            return fetchItem(item, dependencies);
-          },
-          isSuccess,
-          keyFor,
-          lifecycle,
-          target,
-        },
-        { foreground: true },
-      );
-      return task;
-    }
-
     function startActivity(mode) {
-      return startRefresh({
-        fetchItem: (friend, dependencies) =>
+      return startForegroundTask({
+        confirmRequest,
+        dependencies: getDependencies,
+        fetch: (friend, dependencies) =>
           fetchActivity(
             friend,
             dependencies.fetchImpl,
             dependencies.domParser,
             now,
           ),
-        getPending: () =>
-          cache.friendsNeedingRefresh(
-            friends,
-            { kind: SORT.ACTIVITY },
-            { mode },
-          ),
         keyFor: userIdentifierFor,
         lifecycle: activityLifecycle,
+        pending: cache.friendsNeedingRefresh(
+          friends,
+          { kind: SORT.ACTIVITY },
+          { mode },
+        ),
+        scheduler,
         target: mode,
-        taskType: "activity",
+        taskType: ACTIVITY_TASK_TYPE,
       });
     }
 
-    function startProfile(target, mode = "incremental") {
-      const cacheTarget =
-        target.kind === SORT.RELATION
-          ? { ...target, visitorIdentifier }
-          : target;
-      return startRefresh({
-        fetchItem: (friend, dependencies) =>
-          fetchProfile(
-            friend,
-            dependencies.fetchImpl,
-            dependencies.domParser,
-            now,
-          ),
-        getPending: () =>
-          cache.friendsNeedingRefresh(friends, cacheTarget, { mode }),
-        isSuccess: (record, outcome, nextTarget) =>
-          outcome.kind === "success" &&
-          profileRecordHasTarget(record, nextTarget),
-        keyFor: userIdentifierFor,
-        lifecycle: profileLifecycle,
-        target,
-        taskType: "profile",
-      });
-    }
-
-    return { startActivity, startProfile, status };
+    return { startActivity, startProfile: profileFields.refresh, status };
   }
 
   function createFriendSortController({
@@ -2392,6 +2485,7 @@
     nextRemoteSelectionAction,
     createTaskScheduler,
     createFriendRefreshTasks,
+    createProfileFieldTasks,
     parseProfileDocument,
     parseTimelineDocument,
     sortFriends,

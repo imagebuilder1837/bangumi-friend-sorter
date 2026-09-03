@@ -2929,6 +2929,99 @@ test("统计范围只接受容器内的唯一统计块", () => {
   );
 });
 
+function duplicateCategoryProfileDocument() {
+  const statBlock = (scope, count) =>
+    new ProfileNode({
+      id: `userStats_${scope}`,
+      children: [
+        new ProfileNode({
+          children: [
+            new ProfileNode({ className: "desc", textContent: "完成" }),
+            new ProfileNode({ className: "num", textContent: String(count) }),
+          ],
+        }),
+      ],
+    });
+  const container = new ProfileNode({
+    id: "userStatsContainers",
+    children: [
+      statBlock("all", 20),
+      statBlock("2", 8),
+      statBlock("2", 9),
+      statBlock("1", 3),
+    ],
+  });
+  const relation = new ProfileNode({
+    className: "userSynchronize",
+    textContent: "5个共同喜好",
+    children: [
+      new ProfileNode({ className: "percent_text", textContent: "12%" }),
+    ],
+  });
+  return {
+    querySelector(selector) {
+      if (selector === "#userStatsContainers") return container;
+      if (selector === ".userSynchronize") return relation;
+      return container.querySelector(selector);
+    },
+  };
+}
+
+test("重复分类块只使该范围结果无效，不抹去其他范围与契合指标", () => {
+  assert.deepEqual(
+    sorter.parseProfileDocument(duplicateCategoryProfileDocument()),
+    {
+      kind: "success",
+      completion: { all: 20, "1": 3, "3": 0, "4": 0, "6": 0 },
+      relation: { syncRate: 12, commonLikes: 5 },
+    },
+  );
+});
+
+test("主页请求记录按字段携带成功、缺失或无效结果", async () => {
+  const outcome = await sorter.fetchProfile(
+    { userIdentifier: "sai" },
+    async () => ({ ok: true, text: async () => "profile" }),
+    { parseFromString: () => duplicateCategoryProfileDocument() },
+    () => 5_000,
+  );
+
+  assert.equal(outcome.kind, "success");
+  assert.equal(outcome.record.fetchedAt, 5_000);
+  assert.deepEqual(outcome.record.fields.completion.all, {
+    kind: "success",
+    value: 20,
+  });
+  assert.deepEqual(outcome.record.fields.completion["2"], { kind: "invalid" });
+  assert.deepEqual(outcome.record.fields.completion["3"], {
+    kind: "success",
+    value: 0,
+  });
+  assert.deepEqual(outcome.record.fields.relation.syncRate, {
+    kind: "success",
+    value: 12,
+  });
+  assert.deepEqual(outcome.record.fields.relation.commonLikes, {
+    kind: "success",
+    value: 5,
+  });
+
+  const absentFields = await sorter.fetchProfile(
+    { userIdentifier: "sai" },
+    async () => ({ ok: true, text: async () => "profile" }),
+    { parseFromString: () => relationProfileDocument({ syncRate: "50%" }) },
+    () => 5_000,
+  );
+  assert.deepEqual(absentFields.record.fields.relation.syncRate, {
+    kind: "success",
+    value: 50,
+  });
+  assert.deepEqual(absentFields.record.fields.relation.commonLikes, {
+    kind: "missing",
+  });
+  assert.equal(absentFields.record.fields.completion, null);
+});
+
 test("完成条目数按当前范围从高到低或从低到高稳定排序", () => {
   const friends = [
     { userIdentifier: "unknown", originalIndex: 0 },
@@ -3379,6 +3472,67 @@ test("同一主页响应分别刷新完成统计，失败范围保留旧缓存",
       6: { value: 2, fetchedAt: now },
     },
   );
+  assert.equal(writes.length, 1);
+});
+
+test("重复分类块只保留该范围旧缓存，其余范围和契合字段照常写入", async () => {
+  const now = 10_000;
+  const oldAnimation = { value: 77, fetchedAt: now - 1 };
+  const writes = [];
+  const storage = {
+    getItem(key) {
+      if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
+      return JSON.stringify({
+        version: 3,
+        records: { sai: { completion_2: oldAnimation } },
+      });
+    },
+    setItem(key, value) {
+      writes.push([key, JSON.parse(value)]);
+    },
+  };
+  const cache = sorter.createFriendCache(storage);
+
+  const { finished, refresh, statusElement } = createRefreshHarness({
+    cache,
+    friends: [{ userIdentifier: "sai" }],
+    runtime: {
+      domParser: {
+        parseFromString: () => duplicateCategoryProfileDocument(),
+      },
+      fetchImpl: async () => ({ ok: true, text: async () => "profile" }),
+      now: () => now,
+    },
+  });
+
+  refresh.startProfile({ kind: "completion", scope: "all" });
+  await finished;
+
+  assert.deepEqual(
+    Object.fromEntries(
+      ["all", "1", "2", "3", "4", "6"].map((scope) => [
+        scope,
+        cache.completionFor("sai", scope),
+      ]),
+    ),
+    {
+      all: { value: 20, fetchedAt: now },
+      1: { value: 3, fetchedAt: now },
+      2: oldAnimation,
+      3: { value: 0, fetchedAt: now },
+      4: { value: 0, fetchedAt: now },
+      6: { value: 0, fetchedAt: now },
+    },
+  );
+  assert.deepEqual(cache.relationFor("sai", {
+    metric: "syncRate",
+    visitorIdentifier: "visitor",
+  }), { value: 12, fetchedAt: now });
+  assert.deepEqual(cache.relationFor("sai", {
+    metric: "commonLikes",
+    visitorIdentifier: "visitor",
+  }), { value: 5, fetchedAt: now });
+  assert.equal(statusElement.textContent, "“完成条目数”获取完成");
   assert.equal(writes.length, 1);
 });
 
