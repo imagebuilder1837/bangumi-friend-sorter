@@ -2015,6 +2015,15 @@ test("好友缓存批次接纳领域结果并在完成时只持久化一次", ()
   assert.equal(writes.length, 1);
 });
 
+test("好友缓存刷新批次重复完成时同步抛出", () => {
+  const cache = sorter.createFriendCache(null);
+  const batch = cache.beginRefresh();
+
+  batch.complete();
+
+  assert.throws(() => batch.complete(), /好友缓存刷新批次只能完成一次/);
+});
+
 test("好友缓存按领域目标和刷新模式决定待请求好友", () => {
   const hour = 60 * 60 * 1_000;
   const now = 100 * hour;

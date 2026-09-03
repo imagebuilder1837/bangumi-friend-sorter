@@ -494,7 +494,10 @@
             return this;
           },
           complete() {
-            if (!completed) persist();
+            if (completed) {
+              throw new Error("好友缓存刷新批次只能完成一次");
+            }
+            persist();
             completed = true;
           },
         };
