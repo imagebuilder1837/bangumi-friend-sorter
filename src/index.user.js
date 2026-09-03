@@ -2493,6 +2493,308 @@
     };
   }
 
+  // 远程排序会话 deep module：页面初始化后的最高层业务边界。会话只通过
+  // start、choose 与 changeDirection 接收外部命令；内部私有状态机与任务
+  // 登记表共同拥有当前排序目标、子选项、方向记忆、增量刷新、连续两次选
+  // 择触发的全量刷新、登录前置条件、请求先后关系与提示优先级，并编排好
+  // 友缓存、活跃任务、主页字段任务、排序函数与排序栏。任务登记表、状态
+  // 机与排序栏内部节点均不向外暴露。
+  function createFriendSortSession({
+    cache,
+    collator,
+    friends,
+    now,
+    pageWindow,
+    runtime,
+    sortBar,
+    visitorIdentifier,
+  }) {
+    // ---- 私有任务登记表：调度器、状态提示与两类页面任务的生命周期。 ----
+    const ACTIVITY_TASK_TYPE = "activity";
+    const scheduler = createTaskScheduler({ concurrency: 4 });
+    const status = createStatusController({
+      clearTimeout: runtime.clearTimeout ?? globalThis.clearTimeout,
+      now,
+      present: presentStatus,
+      scheduler,
+      setTimeout: runtime.setTimeout ?? globalThis.setTimeout,
+    });
+    const confirmRequest =
+      runtime.confirm ?? pageWindow.confirm?.bind(pageWindow) ?? (() => false);
+    const getDependencies = () => pageFetchDependencies(runtime, pageWindow);
+
+    const showActivityProgress = createTaskProgressReporter({
+      onProgress: runtime.onProgress,
+      status,
+      taskType: ACTIVITY_TASK_TYPE,
+      messageFor: ({ completed, total }) =>
+        `正在获取“上次活跃” ${completed}/${total}`,
+    });
+
+    // 刷新任务结束后只在相关目标仍是当前目标时重排：旧任务的迟到结果不
+    // 覆盖切换后的排序选择。
+    function applyActivitySort() {
+      if (currentCriterion === SORT.ACTIVITY) applyCurrentSort();
+    }
+
+    function applyProfileSort() {
+      if (
+        currentCriterion === SORT.RELATION ||
+        currentCriterion === SORT.COMPLETION
+      ) {
+        applyCurrentSort();
+      }
+    }
+
+    const cacheLifecycle = createCacheBatchLifecycle({ cache, status });
+    const activityLifecycle = cacheLifecycle({
+      applySort: applyActivitySort,
+      labelFor: () => "上次活跃",
+      progressReporter: showActivityProgress,
+      projectResult: (activity) => ({ activity }),
+      taskType: ACTIVITY_TASK_TYPE,
+    });
+
+    const profileFields = createProfileFieldTasks({
+      applySort: applyProfileSort,
+      cache,
+      confirmRequest,
+      dependencies: getDependencies,
+      friends,
+      now,
+      onProgress: runtime.onProgress,
+      scheduler,
+      status,
+      visitorIdentifier,
+    });
+
+    function startActivity(mode) {
+      return startForegroundTask({
+        confirmRequest,
+        dependencies: getDependencies,
+        fetch: (friend, dependencies) =>
+          fetchActivity(
+            friend,
+            dependencies.fetchImpl,
+            dependencies.domParser,
+            now,
+          ),
+        keyFor: userIdentifierFor,
+        lifecycle: activityLifecycle,
+        pending: cache.friendsNeedingRefresh(
+          friends,
+          { kind: SORT.ACTIVITY },
+          { mode },
+        ),
+        scheduler,
+        target: mode,
+        taskType: ACTIVITY_TASK_TYPE,
+      });
+    }
+
+    // ---- 私有选择状态机：当前目标、子选项、方向与展示顺序。 ----
+    let currentCriterion = SORT.ADDED;
+    let completionScope = COMPLETION_SCOPE.ALL;
+    let relationMetric = RELATION_CHOICES[0][0];
+    let statusMessage = "";
+    let started = false;
+    const directionByCriterion = new Map(
+      [
+        ...SORT_CHOICES.map(([criterion]) => criterion),
+        SORT.COMPLETION,
+        SORT.RELATION,
+      ].map((criterion) => [criterion, defaultDirectionFor(criterion)]),
+    );
+
+    // 展示顺序只在排序输入（目标、方向、子选项）或条件重排后变化：
+    // 状态提示等纯呈现变化复用上一次结果，避免每次提示都重新排序。
+    let lastSortKey = null;
+    let lastOrderedFriends = [];
+
+    function selectionFor(criterion) {
+      if (criterion === SORT.RELATION) return relationMetric;
+      if (criterion === SORT.COMPLETION) return completionScope;
+      return COMPLETION_SCOPE.ALL;
+    }
+
+    function currentOrder() {
+      const direction = directionByCriterion.get(currentCriterion);
+      const key = `${currentCriterion}|${direction}|${completionScope}|${relationMetric}`;
+      if (lastSortKey !== key) {
+        lastSortKey = key;
+        lastOrderedFriends = sortFriends(friends, {
+          criterion: currentCriterion,
+          friendCache: cache,
+          collator,
+          direction,
+          completionScope,
+          relationSelection: {
+            metric: relationMetric,
+            visitorIdentifier,
+          },
+        });
+      }
+      return lastOrderedFriends;
+    }
+
+    // 唯一的渲染过程：重排结果与当前呈现状态一次性交给排序栏投影。
+    function render() {
+      sortBar.render({
+        criterion: currentCriterion,
+        direction: directionByCriterion.get(currentCriterion),
+        orderedFriends: currentOrder(),
+        selection: selectionFor(currentCriterion),
+        statusMessage,
+      });
+    }
+
+    // 排序输入或缓存结果变化后的重排入口：强制重新计算展示顺序。
+    function applyCurrentSort() {
+      lastSortKey = null;
+      render();
+    }
+
+    // 刷新任务的最终提示文本从这里进入同一渲染过程。
+    function presentStatus(message) {
+      if (message === statusMessage) return;
+      statusMessage = message;
+      render();
+    }
+
+    function showLoginRequiredStatus() {
+      if (status.getKind() === REFRESH_STATUS.LOGIN_REQUIRED) return;
+      status.set(
+        REFRESH_STATUS.LOGIN_REQUIRED,
+        "请登录后使用喜好契合排序",
+        5_000,
+      );
+    }
+
+    const remoteTargetConfigurations = {
+      [SORT.ACTIVITY]: {
+        armMessageFor: () => "上次活跃",
+        requiresVisitor: false,
+        startRefresh: (_target, mode) => startActivity(mode),
+      },
+      [SORT.RELATION]: {
+        armMessageFor: (selection) =>
+          choiceLabelFor(RELATION_CHOICES, selection),
+        defaultSelection: RELATION_CHOICES[0][0],
+        requiresVisitor: true,
+        setSelection: (selection) => {
+          relationMetric = selection;
+        },
+        startRefresh: (target, mode) => profileFields.refresh(target, mode),
+      },
+      [SORT.COMPLETION]: {
+        armMessageFor: (selection) =>
+          choiceLabelFor(COMPLETION_CHOICES, selection),
+        defaultSelection: COMPLETION_SCOPE.ALL,
+        requiresVisitor: false,
+        setSelection: (selection) => {
+          completionScope = selection;
+        },
+        startRefresh: (target, mode) => profileFields.refresh(target, mode),
+      },
+    };
+
+    function selectRemoteCriterion(
+      criterion,
+      configuration,
+      requestedSubcriterion,
+    ) {
+      // Only dropdown criteria (relation/completion) carry a selection;
+      // activity's target shape drops it, so no placeholder fallback here.
+      const selection = requestedSubcriterion ?? configuration.defaultSelection;
+      const currentTarget = remoteTargetFor(
+        currentCriterion,
+        selectionFor(currentCriterion),
+      );
+      const requestedTarget = remoteTargetFor(criterion, selection);
+      if (
+        configuration.requiresVisitor &&
+        sameRemoteTarget(currentTarget, requestedTarget) &&
+        !visitorIdentifier
+      ) {
+        showLoginRequiredStatus();
+        return;
+      }
+
+      const action = nextRemoteSelectionAction(
+        currentTarget,
+        requestedTarget,
+        status.getKind(),
+      );
+      if (action.kind === "ignore") return;
+      if (action.clearPrompt) status.clear();
+      if (action.kind === "arm") {
+        status.set(
+          REFRESH_STATUS.AWAITING_FULL_REFRESH,
+          `5 秒内再次点击“${configuration.armMessageFor(selection)}”以全量刷新`,
+          5_000,
+        );
+        return;
+      }
+
+      configuration.setSelection?.(selection);
+      currentCriterion = criterion;
+      applyCurrentSort();
+
+      if (!action.refreshMode) return;
+      if (configuration.requiresVisitor && !visitorIdentifier) {
+        showLoginRequiredStatus();
+        return;
+      }
+      configuration.startRefresh(requestedTarget, action.refreshMode);
+    }
+
+    function selectLocalCriterion(criterion) {
+      // 本地标准（加好友时间/名称）没有远程目标，不走刷新状态机；
+      // 切换时只需清掉可能挂起的全量刷新提示。
+      if (status.getKind() === REFRESH_STATUS.AWAITING_FULL_REFRESH)
+        status.clear();
+
+      currentCriterion = criterion;
+      applyCurrentSort();
+    }
+
+    // 会话唯一的排序选择入口：本地目标只更新选择并重排，远程目标按既有
+    // 状态优先级决定增量刷新、全量待命、全量刷新或忽略。
+    function choose(criterion, requestedSubcriterion) {
+      if (!SORT_CONFIG[criterion]) {
+        throw new Error(`未知的排序目标：${criterion}`);
+      }
+      const configuration = remoteTargetConfigurations[criterion];
+      if (configuration) {
+        selectRemoteCriterion(criterion, configuration, requestedSubcriterion);
+        return;
+      }
+      selectLocalCriterion(criterion);
+    }
+
+    function changeDirection(direction) {
+      if (
+        direction !== DIRECTION.ASCENDING &&
+        direction !== DIRECTION.DESCENDING
+      ) {
+        throw new Error(`未知的排序方向：${direction}`);
+      }
+      if (directionByCriterion.get(currentCriterion) === direction) return;
+
+      directionByCriterion.set(currentCriterion, direction);
+      applyCurrentSort();
+    }
+
+    // 启动会话：按网页默认顺序呈现首个名次；重复启动是 programmer error。
+    function start() {
+      if (started) throw new Error("远程排序会话只能启动一次");
+      started = true;
+      render();
+    }
+
+    return { start, choose, changeDirection };
+  }
+
   function initialize(runtime = {}) {
     const pageDocument = runtime.document ?? document;
     const pageWindow = runtime.window ?? window;
@@ -2515,14 +2817,9 @@
       numeric: true,
       sensitivity: "base",
     });
-    let controller = null;
     const sortBar = createSortBar(pageDocument, { list });
-    sortBar.bind({
-      selectCriterion: (...args) => controller?.selectCriterion(...args),
-      selectDirection: (direction) => controller?.selectDirection(direction),
-    });
     if (!sortBar.mount()) return;
-    controller = createFriendSortController({
+    const session = createFriendSortSession({
       cache,
       collator,
       friends,
@@ -2532,7 +2829,14 @@
       sortBar,
       visitorIdentifier,
     });
-    controller.render();
+    // 页面入口只创建会话并启动：后续交互全部经 choose 与 changeDirection
+    // 进入业务流程。
+    sortBar.bind({
+      selectCriterion: (criterion, selection) =>
+        session.choose(criterion, selection),
+      selectDirection: (direction) => session.changeDirection(direction),
+    });
+    session.start();
   }
 
   const core = {
@@ -2550,6 +2854,7 @@
     needsLargeRequestConfirmation,
     nextBatchState,
     nextRemoteSelectionAction,
+    createFriendSortSession,
     createTaskScheduler,
     createFriendRefreshTasks,
     createProfileFieldTasks,
