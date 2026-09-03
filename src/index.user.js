@@ -1682,7 +1682,7 @@
     // 列表项与名次锚点由排序栏一次性自读，调用方的好友记录只携带
     // 领域数据；条目按网页默认顺序定位，与记录的 originalIndex 对齐。
     function readFriendEntries() {
-      friendEntries = list.children.map((element) => ({
+      friendEntries = Array.from(list.children, (element) => ({
         element,
         rankHost: element.querySelector(".userContainer strong"),
       }));
@@ -1698,8 +1698,7 @@
       return entry;
     }
 
-    function rankBadgeFor(friend) {
-      const entry = entryFor(friend);
+    function rankBadgeFor(entry) {
       if (!entry.badge) {
         const badge = pageDocument.createElement("span");
         badge.className = "bangumi-friend-sorter-rank";
@@ -1747,16 +1746,17 @@
         status.textContent = statusMessage;
       }
 
-      const elements = orderedFriends.map((friend) => entryFor(friend).element);
+      const renderEntries = orderedFriends.map(entryFor);
+      const elements = renderEntries.map((entry) => entry.element);
       const orderChanged =
         !lastOrderElements ||
         lastOrderElements.length !== elements.length ||
         lastOrderElements.some((element, index) => element !== elements[index]);
       if (!orderChanged) return;
       lastOrderElements = elements;
-      orderedFriends.forEach((friend, index) => {
-        list.append(entryFor(friend).element);
-        rankBadgeFor(friend).textContent = `#${index + 1}`;
+      renderEntries.forEach((entry, index) => {
+        list.append(entry.element);
+        rankBadgeFor(entry).textContent = `#${index + 1}`;
       });
     }
 
