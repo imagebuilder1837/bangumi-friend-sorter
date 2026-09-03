@@ -273,10 +273,10 @@
   // 好友缓存 deep module：三类页面字段（上次活跃、完成统计、契合指标）
   // 的唯一读写边界。接口约定——
   // 读取：activityFor / completionFor / relationFor 只读，字段缺失或从未
-  //   写入时返回 null，永不写存储。
-  // 规划：friendsNeedingRefresh 按目标与模式返回待请求好友；mode "full"
-  //   返回全部好友，"incremental" 只返回无记录或超出对应 TTL 的好友，
-  //   未知目标返回空数组。不发起请求，也不改动缓存内容。
+  //   写入时返回 null，永不写存储。friendsNeedingRefresh 按目标与模式
+  //   返回待请求好友：mode "full" 返回全部好友，"incremental" 只返回
+  //   无记录或超出对应 TTL 的好友，未知目标返回空数组。不发起请求，
+  //   也不改动缓存内容。
   // 写入：beginRefresh 打开一个批次，accept 按好友写入校验通过的字段值，
   //   complete 恰好调用一次并触发持久化；重复 complete 抛错，批次内
   //   写入无效值时静默丢弃。调用方不直接接触存储或校验器。
@@ -834,11 +834,11 @@
 
     function createTask(type, options) {
       // startForegroundTask is the only production caller and always
-      // supplies keyFor, confirmMessage and target; no defaults here.
+      // supplies keyFor, confirmMessage, target and isSuccess; no
+      // defaults here.
       const keyFor = options.keyFor;
       const confirmMessage = options.confirmMessage;
-      const isSuccess =
-        options.isSuccess ?? ((_record, outcome) => outcome.kind === "success");
+      const isSuccess = options.isSuccess;
       const lifecycle = options.lifecycle;
       const queue = [];
       const queuedKeys = new Set();

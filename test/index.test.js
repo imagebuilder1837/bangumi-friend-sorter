@@ -2006,6 +2006,7 @@ test("v3 缓存原样保留访问者层级为空的存量契合指标映射", ()
           // 外部损坏载荷：脚本自身永不写出空映射，但整体拒绝会让混合
           // 映射中其他访问者的有效数据一并丢失，故空条目原样保留。
           sai: { activity, relation: { visitor: null } },
+          empty: { activity, relation: {} },
           friend: { activity, relation: validRelation },
           broken: {
             activity,
@@ -2036,11 +2037,16 @@ test("v3 缓存原样保留访问者层级为空的存量契合指标映射", ()
     metric: "syncRate",
     visitorIdentifier: "visitor",
   }), undefined);
+  assert.equal(cache.relationFor("empty", {
+    metric: "syncRate",
+    visitorIdentifier: "visitor",
+  }), undefined);
 
   cache.beginRefresh().complete();
 
   assert.deepEqual(writes.at(-1).records, {
     sai: { activity, relation: { visitor: null } },
+    empty: { activity, relation: {} },
     friend: { activity, relation: validRelation },
     broken: { activity },
   });
