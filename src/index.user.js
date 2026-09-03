@@ -278,6 +278,21 @@
     return effectiveDirection === DIRECTION.ASCENDING;
   }
 
+  // 好友缓存 deep module：三类页面字段（上次活跃、完成统计、契合指标）
+  // 的唯一读写边界。接口约定——
+  // 读取：activityFor / completionFor / relationFor 只读，字段缺失或从未
+  //   写入时返回 null，永不写存储。
+  // 规划：friendsNeedingRefresh 按目标与模式返回待请求好友；mode "full"
+  //   返回全部好友，"incremental" 只返回无记录或超出对应 TTL 的好友，
+  //   未知目标返回空数组。不发起请求，也不改动缓存内容。
+  // 写入：beginRefresh 打开一个批次，accept 按好友写入校验通过的字段值，
+  //   complete 恰好调用一次并触发持久化；重复 complete 抛错，批次内
+  //   写入无效值时静默丢弃。调用方不直接接触存储或校验器。
+  // 不变量：损坏或过期版本的存量数据在加载时被丢弃；字段值不通过校验
+  //   则不落盘，因此无效结果永不覆盖仍有效的旧值；持久化失败时新记录
+  //   保留在内存，下次成功写入再落盘。
+  // 错误模式：localStorage 不可用或抛错一律按尽力而为处理，读取返回
+  //   null、写入保持内存态，不向调用方抛出存储异常。
   function createFriendCache(storage, { now = Date.now } = {}) {
     const records = new Map();
     const validators = new Map([
@@ -2049,6 +2064,14 @@
   // 率、共同喜好数两个契合指标）的字段语义、同一批次内单次可复用的主页
   // 请求、任务合并扩充与字段级成功失败统计。调用方只声明当前排序需要的
   // 字段，不再拼装解析、调度或缓存写入细节。
+  // 接口约定：唯一入口 refresh(field, mode)，声明一个当前排序需要的字段
+  // 并返回前台调度任务（无 HTTP adapter，或调度器已停止且无在跑任务、
+  // 待请求为空时返回 null）。调用顺序不限：新字段声明的待请求好友优先
+  // 合并进运行中的主页任务，同一好友在整个任务内最多请求一次。不变量：
+  // 一次响应服务全部字段，只有解析成功的字段写入缓存，缺失或无效字段
+  // 不覆盖旧值。错误模式：单好友请求失败只计入该次任务的失败统计，
+  // 不影响缓存既有记录；缓存批次生命周期由 createCacheBatchLifecycle
+  // 桥接，本模块不接触持久化细节。
   const PROFILE_TASK_TYPE = "profile";
   const PROFILE_FIELD_GROUP_LABELS = Object.freeze({
     [SORT.COMPLETION]: "完成条目数",
