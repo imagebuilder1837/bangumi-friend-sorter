@@ -1276,16 +1276,14 @@
 
       // The gray rule inside a friend item is the site's own border-bottom
       // on ul.usersMedium div.userContainer strong; the 名次 badge anchors
-      // to that block. Reading only validates the anchor point — the badge
-      // itself is created by the sort bar's render pass.
-      const rankHost = element.querySelector(".userContainer strong");
-      if (!rankHost) return null;
+      // to that block. The anchor is resolved by the sort bar, which owns
+      // every page node; reading here only validates that it exists — the
+      // friend records stay pure domain data.
+      if (!element.querySelector(".userContainer strong")) return null;
 
       return {
         displayName,
-        element,
         originalIndex,
-        rankHost,
         userIdentifier,
       };
     });
@@ -1442,7 +1440,9 @@
   // 排序栏 deep module：排序交互与呈现的唯一边界。`bind` 一次性接收领域
   // 意图回调（选择排序目标、切换方向），`render` 幂等地接收可呈现状态；
   // 菜单、按钮、方向文案、状态提示、名次、ARIA、输入模态、焦点与展开
-  // 状态全部留在模块内部，调用方不持有或修改任何原始 DOM 节点。模块不
+  // 状态全部留在模块内部，调用方不持有或修改任何原始 DOM 节点。列表项
+  // 与名次锚点由排序栏自行从 list 读取，render 收到的好友记录只携带
+  // 领域数据并以 originalIndex（网页默认顺序位置）定位条目。模块不
   // 发起远程请求，也不决定刷新策略。
   // 接口约定：bind 必须在首次 render 前恰好调用一次（相对 mount 的先后
   // 不限）；render 接收完整的可呈现状态，重复调用安全，展示顺序不变时
@@ -1675,16 +1675,38 @@
       return false;
     }
 
-    // 名次徽章按需创建：锚点是读取好友时验证过的原站名称块，初始名次
+    // 名次徽章按需创建：锚点是排序栏自行读取的原站名称块，初始名次
     // 随第一次 render 按当时展示顺序标注。
+    let friendEntries = null;
+
+    // 列表项与名次锚点由排序栏一次性自读，调用方的好友记录只携带
+    // 领域数据；条目按网页默认顺序定位，与记录的 originalIndex 对齐。
+    function readFriendEntries() {
+      friendEntries = list.children.map((element) => ({
+        element,
+        rankHost: element.querySelector(".userContainer strong"),
+      }));
+      return friendEntries;
+    }
+
+    function entryFor(friend) {
+      const entries = friendEntries ?? readFriendEntries();
+      const entry = entries[friend.originalIndex];
+      if (!entry) {
+        throw new Error(`未知的好友条目：${friend.originalIndex}`);
+      }
+      return entry;
+    }
+
     function rankBadgeFor(friend) {
-      if (!friend.rankElement) {
+      const entry = entryFor(friend);
+      if (!entry.badge) {
         const badge = pageDocument.createElement("span");
         badge.className = "bangumi-friend-sorter-rank";
-        friend.rankHost.append(badge);
-        friend.rankElement = badge;
+        entry.rankHost.append(badge);
+        entry.badge = badge;
       }
-      return friend.rankElement;
+      return entry.badge;
     }
 
     let lastOrderElements = null;
@@ -1725,7 +1747,7 @@
         status.textContent = statusMessage;
       }
 
-      const elements = orderedFriends.map((friend) => friend.element);
+      const elements = orderedFriends.map((friend) => entryFor(friend).element);
       const orderChanged =
         !lastOrderElements ||
         lastOrderElements.length !== elements.length ||
@@ -1733,7 +1755,7 @@
       if (!orderChanged) return;
       lastOrderElements = elements;
       orderedFriends.forEach((friend, index) => {
-        list.append(friend.element);
+        list.append(entryFor(friend).element);
         rankBadgeFor(friend).textContent = `#${index + 1}`;
       });
     }

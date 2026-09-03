@@ -4663,10 +4663,7 @@ test("排序栏重复渲染相同展示顺序时不重排列表，且意图回�
     /只能绑定一次/,
   );
 
-  const ordered = page.list.children.map((element) => ({
-    element,
-    rankHost: element.querySelector(".userContainer strong"),
-  }));
+  const ordered = [{ originalIndex: 0 }, { originalIndex: 1 }];
   sortBar.render({
     criterion: "added",
     direction: "asc",
@@ -4676,15 +4673,27 @@ test("排序栏重复渲染相同展示顺序时不重排列表，且意图回�
   });
   assert.deepEqual(page.list.children.map(rankFor), ["#1", "#2"]);
 
+  // 传入逆序记录时按网页默认顺序位置重排条目，名次跟随展示顺序。
+  sortBar.render({
+    criterion: "added",
+    direction: "desc",
+    selection: "all",
+    statusMessage: "",
+    orderedFriends: [...ordered].reverse(),
+  });
+  assert.equal(page.list.children[0].textContent, "B");
+  assert.equal(page.list.children[1].textContent, "A");
+  assert.deepEqual(page.list.children.slice(0, 2).map(rankFor), ["#1", "#2"]);
+
   // 同一展示顺序的重复渲染（例如只有状态提示变化）不得重排好友列表。
   const sentinel = page.document.createElement("span");
   page.list.append(sentinel);
   sortBar.render({
     criterion: "added",
-    direction: "asc",
+    direction: "desc",
     selection: "all",
     statusMessage: "“名称”获取完成",
-    orderedFriends: ordered,
+    orderedFriends: [...ordered].reverse(),
   });
   assert.equal(statusFor(page).textContent, "“名称”获取完成");
   assert.equal(page.list.children.at(-1), sentinel);
