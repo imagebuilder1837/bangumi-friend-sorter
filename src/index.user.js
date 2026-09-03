@@ -588,7 +588,8 @@
       refreshMode,
     });
 
-    if (requestedTarget === null) return selectAction();
+    // 唯一调用方 selectRemoteCriterion 只对 activity/relation/completion
+    // 传入非空目标；requestedTarget === null 的分支已随其直测一并移除。
     if (!sameRemoteTarget(currentTarget, requestedTarget)) {
       return selectAction("incremental");
     }
