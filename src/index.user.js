@@ -1233,7 +1233,8 @@
   }
 
   // 一次主页请求、一次文档提取：记录按字段携带三向结果，交给主页字段
-  // 任务分别判定成功与失败。
+  // 任务分别判定成功与失败。字段取值收在记录边界的 outcomeFor：
+  // 调用方只交字段，kind → selection 的内部形状不外泄。
   async function fetchProfile(friend, fetchImpl, domParser, now) {
     return fetchPageWithTimeout(
       `/user/${encodeURIComponent(userIdentifierFor(friend))}`,
@@ -1246,7 +1247,10 @@
         if (fields.completion === null && fields.relation === null) {
           return { kind: "parse-error" };
         }
-        return { kind: "success", record: { fetchedAt, fields } };
+        const record = { fetchedAt, fields };
+        record.outcomeFor = (field) =>
+          fields[field.kind]?.[field[REMOTE_TARGET_SELECTION_KEYS[field.kind]]];
+        return { kind: "success", record };
       },
     );
   }
@@ -2133,17 +2137,12 @@
         : field;
     }
 
-    function profileFieldOutcomeFor(record, field) {
-      const selection = field[REMOTE_TARGET_SELECTION_KEYS[field.kind]];
-      return record?.fields?.[field.kind]?.[selection];
-    }
-
     // 按声明字段分别判定成功：请求失败、主页无效、该字段缺失或无效都算
     // 失败；字段解析成功则算成功，即使请求最初由另一个字段加入。
     function isFieldSuccess(record, outcome, field) {
       return (
         outcome.kind === "success" &&
-        profileFieldOutcomeFor(record, field)?.kind === "success"
+        record?.outcomeFor?.(field)?.kind === "success"
       );
     }
 
