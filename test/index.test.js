@@ -1048,36 +1048,6 @@ test("首条动态缺失精确时间时被识别为失败", () => {
   assert.deepEqual(sorter.parseTimelineDocument(document), { kind: "invalid" });
 });
 
-test("仅在本次待请求人数超过四百时要求确认", () => {
-  assert.equal(sorter.needsLargeRequestConfirmation(400), false);
-  assert.equal(sorter.needsLargeRequestConfirmation(401), true);
-});
-
-test("收到限流响应时立即停止上次活跃请求批次", () => {
-  const state = sorter.nextBatchState(
-    { consecutiveServerFailures: 0, stopped: false },
-    { kind: "http-error", status: 429 },
-  );
-
-  assert.deepEqual(state, { consecutiveServerFailures: 0, stopped: true });
-});
-
-test("连续五个禁止或服务端响应才停止批次且成功响应会重置计数", () => {
-  let state = { consecutiveServerFailures: 0, stopped: false };
-  for (const status of [403, 500, 502, 503]) {
-    state = sorter.nextBatchState(state, { kind: "http-error", status });
-  }
-  assert.deepEqual(state, { consecutiveServerFailures: 4, stopped: false });
-
-  state = sorter.nextBatchState(state, { kind: "success" });
-  assert.deepEqual(state, { consecutiveServerFailures: 0, stopped: false });
-
-  for (const status of [500, 403, 500, 502, 503]) {
-    state = sorter.nextBatchState(state, { kind: "http-error", status });
-  }
-  assert.deepEqual(state, { consecutiveServerFailures: 5, stopped: true });
-});
-
 test("页面任务调度器在全局四槽位内优先前台任务且不取消在途请求", async () => {
   const scheduler = sorter.createTaskScheduler({ concurrency: 4 });
   const started = [];
@@ -1329,6 +1299,49 @@ test("页面任务连续五次服务端失败后停止自身并恢复另一页�
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(finished[1][0], "profile");
   assert.equal(finished[1][1].failures, 0);
+});
+
+test("403 计入服务端失败且成功响应重置连续失败计数", async () => {
+  const scheduler = sorter.createTaskScheduler({ concurrency: 1 });
+  const pending = new Map();
+  const started = [];
+  const finished = [];
+  scheduler.setForeground("activity");
+  scheduler.enqueue(
+    "activity",
+    ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9"],
+    {
+      fetch: (item) =>
+        new Promise((resolve) => {
+          started.push(item);
+          pending.set(item, resolve);
+        }),
+      isSuccess: (record, outcome) => outcome.kind === "success" && record,
+      lifecycle: { onFinished: (result) => finished.push(result) },
+    },
+  );
+  const respond = async (item, outcome) => {
+    pending.get(item)(outcome);
+    await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  // 三次失败（含 403）不达五次；成功重置后，若不重置则此时应已停止。
+  await respond("a1", { kind: "http-error", status: 403 });
+  await respond("a2", { kind: "http-error", status: 500 });
+  await respond("a3", { kind: "http-error", status: 502 });
+  await respond("a4", { kind: "success", record: "a4" });
+  await respond("a5", { kind: "http-error", status: 503 });
+  await respond("a6", { kind: "http-error", status: 403 });
+  assert.deepEqual(started, ["a1", "a2", "a3", "a4", "a5", "a6", "a7"]);
+  assert.equal(finished.length, 0);
+
+  // 重置后连续五次才停止：后续项不再调度。
+  await respond("a7", { kind: "http-error", status: 500 });
+  await respond("a8", { kind: "http-error", status: 500 });
+  await respond("a9", { kind: "http-error", status: 500 });
+  assert.deepEqual(started.length, 9);
+  assert.equal(finished.length, 1);
+  assert.equal(finished[0].stopped, true);
 });
 
 test("停止任务在残余请求完成前重新入队不会留下不可调度队列", async () => {

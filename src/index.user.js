@@ -2549,8 +2549,6 @@
     directionLabelsFor,
     fetchProfile,
     initialize,
-    needsLargeRequestConfirmation,
-    nextBatchState,
     parseProfileDocument,
     parseTimelineDocument,
     sortFriends,
