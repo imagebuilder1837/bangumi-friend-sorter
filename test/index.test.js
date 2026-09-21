@@ -1836,8 +1836,9 @@ test("和我贴贴持久化写入不可用时保留当前页面结果且不破�
   });
 });
 
-test("和我贴贴每个分类最多获取五页", async () => {
+test("和我贴贴每个分类最多获取五页且进度覆盖完整统计范围", async () => {
   const pages = [];
+  const progress = [];
   const { finished, session } = createSessionHarness({
     cache: sorter.createFriendCache(null),
     friends: [{ userIdentifier: "friend", originalIndex: 0 }],
@@ -1861,6 +1862,7 @@ test("和我贴贴每个分类最多获取五页", async () => {
         },
       },
       now: () => 100_000,
+      onProgress: (completed, total) => progress.push([completed, total]),
     },
   });
 
@@ -1879,6 +1881,32 @@ test("和我贴贴每个分类最多获取五页", async () => {
     ["say", 5],
     ["subject", 5],
   ]);
+  assert.ok(progress.some(([completed, total]) => completed === 0 && total === 10));
+  assert.ok(progress.some(([completed, total]) => completed === 10 && total === 10));
+});
+
+test("和我贴贴短时间线在初始完整范围后收敛到实际页数", async () => {
+  const progress = [];
+  const { finished, session } = createSessionHarness({
+    cache: sorter.createFriendCache(null),
+    friends: [{ userIdentifier: "friend", originalIndex: 0 }],
+    runtime: {
+      http: {
+        fetchTietiePage: async () => ({
+          kind: "success",
+          record: { kind: "empty", contents: [], hasNextPage: false },
+        }),
+      },
+      now: () => 100_000,
+      onProgress: (completed, total) => progress.push([completed, total]),
+    },
+  });
+
+  session.choose("tietie");
+  await finished;
+
+  assert.ok(progress.some(([completed, total]) => completed === 0 && total === 10));
+  assert.ok(progress.some(([completed, total]) => completed === 2 && total === 2));
 });
 
 test("和我贴贴任一分类失败时不发布部分计数", async () => {
@@ -4757,7 +4785,7 @@ test("喜好契合缓存按访问者和指标判断七十二小时有效期", ()
   );
 });
 
-test("当前访问者标识按 UID、配置的访问者标识、页头头像依次回退且不读取被查看者", () => {
+test("当前访问者标识按配置的访问者标识、UID、页头头像依次回退且不读取被查看者", () => {
   const avatar = { getAttribute: () => "/user/header-user" };
   const headerDocument = {
     querySelector(selector) {
@@ -4773,7 +4801,7 @@ test("当前访问者标识按 UID、配置的访问者标识、页头头像依�
       CHOBITS_USERNAME: "name",
       location: { href: "https://bgm.tv/user/viewed/friends" },
     }),
-    "42",
+    "name",
   );
   assert.equal(
     sorter.currentVisitorIdentifier(headerDocument, {
