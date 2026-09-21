@@ -532,6 +532,14 @@ function tietieDocumentFromFixture(filename) {
           attributes: fixtureAttributes(reactionGridTag[0]),
         })
       : null;
+    const collectionInfo = /class=["'][^"']*\bcollectInfo\b[^"']*["']/.test(
+      body,
+    )
+      ? new TimelineFixtureNode()
+      : null;
+    const infoFull = /class=["'][^"']*\binfo_full\b[^"']*["']/.test(body)
+      ? new TimelineFixtureNode()
+      : null;
     return new TimelineFixtureNode({
       attributes: fixtureAttributes(attributes),
       selectors: {
@@ -543,6 +551,8 @@ function tietieDocumentFromFixture(filename) {
           (anchor) => anchor.getAttribute("class")?.includes("tml_comment"),
         ),
         ".likes_grid[id]": reactionGrid ? [reactionGrid] : [],
+        ".collectInfo": collectionInfo ? [collectionInfo] : [],
+        ".info_full": infoFull ? [infoFull] : [],
       },
     });
   });
@@ -646,6 +656,26 @@ test("贴贴解析按反应容器标识读取反应者", () => {
   });
 });
 
+test("贴贴解析接受没有反应容器的正常收藏动态", () => {
+  const parsed = sorter.parseTietieTimelineDocument(
+    tietieDocumentFromFixture("timeline-tietie-reactionless-collections.html"),
+    {
+      baseUrl: "https://bgm.tv/user/visitor/timeline?type=subject",
+      category: "subject",
+      page: 1,
+    },
+  );
+
+  assert.deepEqual(parsed, {
+    kind: "success",
+    contents: [
+      { contentKey: "/subject/72474594", reactorIdentifiers: [] },
+      { contentKey: "/subject/72245434", reactorIdentifiers: [] },
+    ],
+    hasNextPage: false,
+  });
+});
+
 test("贴贴解析缺少内容链接时判定页面残缺", () => {
   const parsed = sorter.parseTietieTimelineDocument(
     tietieDocumentFromFixture("timeline-tietie-missing-content.html"),
@@ -667,6 +697,11 @@ test("贴贴解析区分合法空页与缺少数据的残缺页", () => {
   assert.deepEqual(
     sorter.parseTietieTimelineDocument(
       tietieDocumentFromFixture("timeline-tietie-missing-data.html"),
+      {
+        baseUrl: "https://bgm.tv/user/visitor/timeline?type=subject",
+        category: "subject",
+        page: 1,
+      },
     ),
     { kind: "invalid" },
   );

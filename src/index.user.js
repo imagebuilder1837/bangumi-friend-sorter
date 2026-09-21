@@ -309,10 +309,7 @@
       }),
       compare: numericValueCompare((friend, { tietieResult }) => {
         if (!tietieResult?.complete) return null;
-        if (tietieResult.counts instanceof Map) {
-          return tietieResult.counts.get(userIdentifierFor(friend)) ?? 0;
-        }
-        return tietieResult.counts?.[userIdentifierFor(friend)] ?? 0;
+        return tietieResult.counts.get(userIdentifierFor(friend)) ?? 0;
       }),
     },
   });
@@ -441,10 +438,7 @@
             ]),
           );
         }
-        storage.setItem(
-          FRIEND_CACHE_STORAGE_KEY,
-          JSON.stringify(payload),
-        );
+        storage.setItem(FRIEND_CACHE_STORAGE_KEY, JSON.stringify(payload));
         return true;
       } catch {
         // Keep newly written records in memory when persistence is unavailable.
@@ -551,7 +545,10 @@
         return !record || now() - record.fetchedAt > TIETIE_CACHE_TTL_MS;
       },
       replaceTietie(visitorIdentifier, result) {
-        if (typeof visitorIdentifier !== "string" || !visitorIdentifier.trim()) {
+        if (
+          typeof visitorIdentifier !== "string" ||
+          !visitorIdentifier.trim()
+        ) {
           return false;
         }
         const record = normalizedTietieRecord(result);
@@ -1016,6 +1013,23 @@
     return /^likes_grid_(.+)$/.exec(gridId || "")?.[1] || null;
   }
 
+  // A normal collection status can intentionally omit the reaction grid. Its
+  // content shell and subject link still make it a reliable zero; other
+  // missing-grid rows remain malformed pages.
+  function isReactionlessCollectionItem(item, category, contentKey, baseUrl) {
+    const collectionSubject = subjectAnchorFor(item, baseUrl);
+    const hasCollectionShell =
+      item?.querySelector?.(".info_full") ||
+      item?.querySelector?.(".collectInfo");
+    return Boolean(
+      category === "subject" &&
+      contentKey &&
+      !item?.querySelector?.(".likes_grid") &&
+      collectionSubject &&
+      hasCollectionShell,
+    );
+  }
+
   function nextTietiePage(document, page, baseUrl) {
     const pager = document?.querySelector?.("#tmlPager");
     const pages = [...(pager?.querySelectorAll?.("a[href]") || [])]
@@ -1050,13 +1064,23 @@
     }
 
     const data = tietieDataFor(document);
-    if (!data) return { kind: "invalid" };
 
     const contents = [];
     for (const item of items) {
       const reactionDataKey = reactionDataKeyFor(item);
       const contentKey = contentKeyForTietieItem(item, baseUrl, category);
-      if (!reactionDataKey || !contentKey) return { kind: "invalid" };
+      if (!contentKey) return { kind: "invalid" };
+
+      if (!reactionDataKey) {
+        if (
+          !isReactionlessCollectionItem(item, category, contentKey, baseUrl)
+        ) {
+          return { kind: "invalid" };
+        }
+        contents.push({ contentKey, reactorIdentifiers: [] });
+        continue;
+      }
+      if (!data) return { kind: "invalid" };
 
       const reactorIdentifiers = reactionUsersFor(data[reactionDataKey]);
       if (reactorIdentifiers === null) return { kind: "invalid" };
