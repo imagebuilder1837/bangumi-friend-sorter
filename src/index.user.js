@@ -2701,10 +2701,20 @@
       scheduler.enqueue(TIETIE_TASK_TYPE, [item], taskOptions);
     };
 
-    function refresh() {
+    function refresh(mode = "incremental") {
       if (!http?.fetchTietiePage || !visitorIdentifier) return null;
-      if (scheduler.getTask(TIETIE_TASK_TYPE)) {
-        return scheduler.getTask(TIETIE_TASK_TYPE);
+      const existingTask = scheduler.getTask(TIETIE_TASK_TYPE);
+      if (existingTask) {
+        // Re-selecting the target while its pages are already being fetched
+        // only brings that task back to the foreground. It must not restart
+        // the batch or add duplicate category/page requests.
+        scheduler.enqueue(TIETIE_TASK_TYPE, [], taskOptions, {
+          foreground: true,
+        });
+        return existingTask;
+      }
+      if (mode !== "full" && !cache.tietieNeedsRefresh(visitorIdentifier)) {
+        return null;
       }
 
       batch = { counts: new Map(), seenContents: new Set() };
@@ -2718,7 +2728,6 @@
     }
 
     return {
-      isRunning: () => Boolean(scheduler.getTask(TIETIE_TASK_TYPE)),
       refresh,
     };
   }
@@ -2949,8 +2958,7 @@
         armMessageFor: () => "和我贴贴",
         loginLabel: "和我贴贴",
         requiresVisitor: true,
-        singleRun: true,
-        startRefresh: () => tietieTasks.refresh(),
+        startRefresh: (_target, mode) => tietieTasks.refresh(mode),
       },
       [SORT.COMPLETION]: {
         armMessageFor: (selection) =>
@@ -2989,33 +2997,6 @@
         return;
       }
 
-      if (configuration.singleRun) {
-        if (status.getKind() === REFRESH_STATUS.AWAITING_FULL_REFRESH)
-          status.clear();
-        if (tietieTasks.isRunning()) {
-          if (currentCriterion !== criterion) {
-            currentCriterion = criterion;
-            applyCurrentSort();
-          }
-          return;
-        }
-
-        configuration.setSelection?.(selection);
-        currentCriterion = criterion;
-        tietieResult = visitorIdentifier ? cachedTietieResult() : null;
-        applyCurrentSort();
-        if (!visitorIdentifier) {
-          showLoginRequiredStatus(
-            configuration.loginLabel ?? configuration.armMessageFor(selection),
-          );
-          return;
-        }
-        if (cache.tietieNeedsRefresh(visitorIdentifier)) {
-          configuration.startRefresh(requestedTarget, "incremental");
-        }
-        return;
-      }
-
       const action = nextRemoteSelectionAction(
         currentTarget,
         requestedTarget,
@@ -3034,6 +3015,9 @@
 
       configuration.setSelection?.(selection);
       currentCriterion = criterion;
+      if (criterion === SORT.TIETIE) {
+        tietieResult = visitorIdentifier ? cachedTietieResult() : null;
+      }
       applyCurrentSort();
 
       if (!action.refreshMode) return;
