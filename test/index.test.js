@@ -524,6 +524,14 @@ function tietieDocumentFromFixture(filename) {
     const statusAnchors = anchors.filter((anchor) =>
       anchor.getAttribute("href")?.includes("/timeline/status/"),
     );
+    const reactionGridTag = body.match(
+      /<[^>]*class=["'][^"']*\blikes_grid\b[^"']*["'][^>]*>/,
+    );
+    const reactionGrid = reactionGridTag
+      ? new TimelineFixtureNode({
+          attributes: fixtureAttributes(reactionGridTag[0]),
+        })
+      : null;
     return new TimelineFixtureNode({
       attributes: fixtureAttributes(attributes),
       selectors: {
@@ -534,6 +542,7 @@ function tietieDocumentFromFixture(filename) {
         'a.tml_comment[href*="/timeline/status/"]': statusAnchors.filter(
           (anchor) => anchor.getAttribute("class")?.includes("tml_comment"),
         ),
+        ".likes_grid[id]": reactionGrid ? [reactionGrid] : [],
       },
     });
   });
@@ -613,6 +622,41 @@ test("贴贴时间胶囊解析反应者、内容链接和分页，不依赖页�
       "/user/visitor/timeline/status/103",
     ],
   );
+});
+
+test("贴贴解析按反应容器标识读取反应者", () => {
+  const parsed = sorter.parseTietieTimelineDocument(
+    tietieDocumentFromFixture("timeline-tietie-reaction-container.html"),
+    {
+      baseUrl: "https://bgm.tv/user/visitor/timeline?type=subject",
+      category: "subject",
+      page: 1,
+    },
+  );
+
+  assert.deepEqual(parsed, {
+    kind: "success",
+    contents: [
+      {
+        contentKey: "/subject/42",
+        reactorIdentifiers: ["friend-from-reaction"],
+      },
+    ],
+    hasNextPage: false,
+  });
+});
+
+test("贴贴解析缺少内容链接时判定页面残缺", () => {
+  const parsed = sorter.parseTietieTimelineDocument(
+    tietieDocumentFromFixture("timeline-tietie-missing-content.html"),
+    {
+      baseUrl: "https://bgm.tv/user/visitor/timeline?type=say",
+      category: "say",
+      page: 1,
+    },
+  );
+
+  assert.deepEqual(parsed, { kind: "invalid" });
 });
 
 test("贴贴解析区分合法空页与缺少数据的残缺页", () => {

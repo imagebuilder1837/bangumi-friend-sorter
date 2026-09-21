@@ -963,6 +963,7 @@
   }
 
   function contentKeyForHref(href, baseUrl) {
+    if (typeof href !== "string" || !href.trim()) return null;
     try {
       const url = new URL(href, baseUrl || "https://bgm.tv/");
       const pathname = url.pathname.replace(/\/$/, "") || "/";
@@ -1009,6 +1010,12 @@
     return contentKeyForHref(href, baseUrl);
   }
 
+  function reactionDataKeyFor(item) {
+    const reactionGrid = item?.querySelector?.(".likes_grid[id]");
+    const gridId = reactionGrid?.getAttribute?.("id");
+    return /^likes_grid_(.+)$/.exec(gridId || "")?.[1] || null;
+  }
+
   function nextTietiePage(document, page, baseUrl) {
     const pager = document?.querySelector?.("#tmlPager");
     const pages = [...(pager?.querySelectorAll?.("a[href]") || [])]
@@ -1047,11 +1054,11 @@
 
     const contents = [];
     for (const item of items) {
-      const itemId = /^tml_(.+)$/.exec(item.getAttribute?.("id") || "")?.[1];
+      const reactionDataKey = reactionDataKeyFor(item);
       const contentKey = contentKeyForTietieItem(item, baseUrl, category);
-      if (!itemId || !contentKey) return { kind: "invalid" };
+      if (!reactionDataKey || !contentKey) return { kind: "invalid" };
 
-      const reactorIdentifiers = reactionUsersFor(data[itemId]);
+      const reactorIdentifiers = reactionUsersFor(data[reactionDataKey]);
       if (reactorIdentifiers === null) return { kind: "invalid" };
       contents.push({ contentKey, reactorIdentifiers });
     }
