@@ -1836,9 +1836,8 @@ test("和我贴贴持久化写入不可用时保留当前页面结果且不破�
   });
 });
 
-test("和我贴贴每个分类最多获取五页且进度覆盖完整统计范围", async () => {
+test("和我贴贴每个分类最多获取五页", async () => {
   const pages = [];
-  const progress = [];
   const { finished, session } = createSessionHarness({
     cache: sorter.createFriendCache(null),
     friends: [{ userIdentifier: "friend", originalIndex: 0 }],
@@ -1862,7 +1861,6 @@ test("和我贴贴每个分类最多获取五页且进度覆盖完整统计范�
         },
       },
       now: () => 100_000,
-      onProgress: (completed, total) => progress.push([completed, total]),
     },
   });
 
@@ -1881,32 +1879,6 @@ test("和我贴贴每个分类最多获取五页且进度覆盖完整统计范�
     ["say", 5],
     ["subject", 5],
   ]);
-  assert.ok(progress.some(([completed, total]) => completed === 0 && total === 10));
-  assert.ok(progress.some(([completed, total]) => completed === 10 && total === 10));
-});
-
-test("和我贴贴短时间线在初始完整范围后收敛到实际页数", async () => {
-  const progress = [];
-  const { finished, session } = createSessionHarness({
-    cache: sorter.createFriendCache(null),
-    friends: [{ userIdentifier: "friend", originalIndex: 0 }],
-    runtime: {
-      http: {
-        fetchTietiePage: async () => ({
-          kind: "success",
-          record: { kind: "empty", contents: [], hasNextPage: false },
-        }),
-      },
-      now: () => 100_000,
-      onProgress: (completed, total) => progress.push([completed, total]),
-    },
-  });
-
-  session.choose("tietie");
-  await finished;
-
-  assert.ok(progress.some(([completed, total]) => completed === 0 && total === 10));
-  assert.ok(progress.some(([completed, total]) => completed === 2 && total === 2));
 });
 
 test("和我贴贴任一分类失败时不发布部分计数", async () => {

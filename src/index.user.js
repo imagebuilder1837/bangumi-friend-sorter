@@ -1184,14 +1184,7 @@
       const queuedKeys = new Set();
       const results = new Map();
       let completed = 0;
-      // Some page tasks know their maximum scope before discovering the queue
-      // (for example, the two five-page tietie categories). They can reserve
-      // that denominator up front while still releasing pages ruled out by
-      // an explicit early-end marker.
-      const fixedProgressTotal = Number.isFinite(options.progressTotal)
-        ? options.progressTotal
-        : null;
-      let total = fixedProgressTotal ?? 0;
+      let total = 0;
       let inFlightForTask = 0;
       let target = options.target;
       let batchState = { consecutiveServerFailures: 0, stopped: false };
@@ -1279,7 +1272,7 @@
             queuedKeys.add(keyFor(item));
             queue.push(item);
           }
-          if (fixedProgressTotal === null) total += newItems.length;
+          total += newItems.length;
           if (started) {
             lifecycle.onQueue?.(progress());
           }
@@ -1288,15 +1281,6 @@
         fetch: options.fetch,
         getState() {
           return progress();
-        },
-        reduceProgressTotal(amount) {
-          if (fixedProgressTotal === null) return;
-          const reduction = Math.max(0, Math.floor(Number(amount) || 0));
-          if (reduction === 0) return;
-          const nextTotal = Math.max(completed, total - reduction);
-          if (nextTotal === total) return;
-          total = nextTotal;
-          lifecycle.onProgress?.(progress());
         },
         isStopped() {
           return batchState.stopped;
@@ -2664,8 +2648,8 @@
   }
 
   // 和我贴贴任务按分类和页排队，而不是按好友排队。每个成功页面只在
-  // 页面明确提供下一页时追加同一分类的下一页，最多读取前五页；进度
-  // 分母先预留两类各五页的完整范围，并在页面明确提前结束时收敛。两分类的页面结果先在批次内按内容链接去重，全部必要页面成功后才交给会话
+  // 页面明确提供下一页时追加同一分类的下一页，最多读取前五页；两分类
+  // 的页面结果先在批次内按内容链接去重，全部必要页面成功后才交给会话
   // 发布。只有所有必要页面成功时才整体写入 friend cache 并交给会话；
   // 失败批次不会触碰旧的完整结果。
   function createTietieTasks({
@@ -2706,11 +2690,6 @@
       onRateLimited: status.showRateLimit,
       onSuccess(item, record) {
         mergePage(record);
-        if (!record.hasNextPage) {
-          scheduler
-            .getTask(TIETIE_TASK_TYPE)
-            ?.reduceProgressTotal(TIETIE_MAX_PAGES - item.page);
-        }
         if (record.hasNextPage && item.page < TIETIE_MAX_PAGES) {
           enqueueNextPage?.({ category: item.category, page: item.page + 1 });
         }
@@ -2750,7 +2729,6 @@
         record?.kind === "success" || record?.kind === "empty",
       keyFor: (item) => `${item.category}:${item.page}`,
       lifecycle,
-      progressTotal: TIETIE_CATEGORIES.length * TIETIE_MAX_PAGES,
       target: { kind: SORT.TIETIE },
     };
 
