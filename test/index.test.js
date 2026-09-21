@@ -196,6 +196,19 @@ function friendCacheStorage(records) {
   };
 }
 
+function persistentFriendCacheStorage(initialValue = null) {
+  let value = initialValue;
+  return {
+    getItem(key) {
+      return key === "bangumi-friend-sorter:activity-cache:v3" ? value : null;
+    },
+    setItem(key, nextValue) {
+      if (key === "bangumi-friend-sorter:activity-cache:v3") value = nextValue;
+    },
+    removeItem() {},
+  };
+}
+
 function storedCompletion(value, fetchedAt) {
   return { completion_all: { value, fetchedAt } };
 }
@@ -617,6 +630,38 @@ test("贴贴解析区分合法空页与缺少数据的残缺页", () => {
     sorter.parseTietieTimelineDocument(timelineDocumentFromFixture("timeline-partial.html")),
     { kind: "invalid" },
   );
+});
+
+test("和我贴贴完整结果跨缓存重建保存全部反应者并遵守七十二小时边界", () => {
+  const hour = 60 * 60 * 1_000;
+  const now = 100 * hour;
+  const fetchedAt = now - 72 * hour;
+  const storage = persistentFriendCacheStorage();
+  const cache = sorter.createFriendCache(storage, { now: () => now });
+
+  cache.replaceTietie("visitor", {
+    counts: new Map([
+      ["friend-a", 3],
+      ["friend-b", 1],
+    ]),
+    fetchedAt,
+  });
+
+  const reloaded = sorter.createFriendCache(storage, { now: () => now });
+
+  assert.deepEqual(reloaded.tietieFor("visitor"), {
+    counts: new Map([
+      ["friend-a", 3],
+      ["friend-b", 1],
+    ]),
+    fetchedAt,
+  });
+  assert.equal(reloaded.tietieNeedsRefresh("visitor"), false);
+
+  const expired = sorter.createFriendCache(storage, {
+    now: () => now + 1,
+  });
+  assert.equal(expired.tietieNeedsRefresh("visitor"), true);
 });
 
 test("网页默认顺序默认从旧到新，也支持从新到旧", () => {
@@ -1176,6 +1221,398 @@ test("和我贴贴完整获取后按内容链接去重并稳定排序可靠零",
     "甲",
     "乙",
   ]);
+});
+
+test("和我贴贴完整获取成功后持久化全部统计结果", async () => {
+  const now = 100_000;
+  const storage = persistentFriendCacheStorage();
+  const cache = sorter.createFriendCache(storage, { now: () => now });
+  const requests = [];
+  const { finished, session } = createSessionHarness({
+    cache,
+    friends: [
+      { userIdentifier: "friend-a", originalIndex: 0 },
+      { userIdentifier: "friend-b", originalIndex: 1 },
+    ],
+    runtime: {
+      http: {
+        fetchTietiePage: async (_visitorIdentifier, category) => {
+          requests.push(category);
+          return {
+            kind: "success",
+            record: {
+              kind: "success",
+              contents: [
+                {
+                  contentKey: `/${category}/content`,
+                  reactorIdentifiers: [
+                    category === "say" ? "friend-a" : "friend-b",
+                  ],
+                },
+              ],
+              hasNextPage: false,
+            },
+          };
+        },
+      },
+      now: () => now,
+    },
+  });
+
+  session.choose("tietie");
+  await finished;
+
+  assert.deepEqual(requests, ["say", "subject"]);
+  const reloaded = sorter.createFriendCache(storage, { now: () => now });
+  assert.deepEqual(reloaded.tietieFor("visitor"), {
+    counts: new Map([
+      ["friend-a", 1],
+      ["friend-b", 1],
+    ]),
+    fetchedAt: now,
+  });
+});
+
+test("和我贴贴有效缓存直接排序并跨好友列表复用而不发起任务", () => {
+  const now = 100_000;
+  const storage = persistentFriendCacheStorage();
+  const cache = sorter.createFriendCache(storage, { now: () => now });
+  cache.replaceTietie("visitor", {
+    counts: new Map([
+      ["friend-b", 5],
+      ["outside-list", 3],
+    ]),
+    fetchedAt: now,
+  });
+
+  const requests = [];
+  const first = createSessionHarness({
+    cache: sorter.createFriendCache(storage, { now: () => now }),
+    friends: [
+      { userIdentifier: "friend-a", originalIndex: 0 },
+      { userIdentifier: "friend-b", originalIndex: 1 },
+      { userIdentifier: "friend-c", originalIndex: 2 },
+    ],
+    runtime: {
+      http: {
+        fetchTietiePage: async () => {
+          requests.push("unexpected");
+          return null;
+        },
+      },
+      now: () => now,
+    },
+  });
+  first.session.choose("tietie");
+
+  assert.deepEqual(
+    first.lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
+    ["friend-b", "friend-a", "friend-c"],
+  );
+  assert.deepEqual(requests, []);
+
+  const second = createSessionHarness({
+    cache: sorter.createFriendCache(storage, { now: () => now }),
+    friends: [
+      { userIdentifier: "friend-c", originalIndex: 0 },
+      { userIdentifier: "friend-b", originalIndex: 1 },
+    ],
+    runtime: {
+      http: {
+        fetchTietiePage: async () => {
+          requests.push("unexpected");
+          return null;
+        },
+      },
+      now: () => now,
+    },
+  });
+  second.session.choose("tietie");
+
+  assert.deepEqual(
+    second.lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
+    ["friend-b", "friend-c"],
+  );
+  assert.deepEqual(requests, []);
+});
+
+test("和我贴贴过期时先排旧结果，成功后整体替换并继承刷新前平局顺序", async () => {
+  const now = 100_000;
+  const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
+  const storage = persistentFriendCacheStorage();
+  const cache = sorter.createFriendCache(storage, { now: () => now });
+  cache.replaceTietie("visitor", {
+    counts: new Map([
+      ["friend-a", 1],
+      ["friend-b", 9],
+      ["friend-old", 7],
+    ]),
+    fetchedAt: staleFetchedAt,
+  });
+  const requests = [];
+  const { finished, lastState, session } = createSessionHarness({
+    cache,
+    friends: [
+      { userIdentifier: "friend-a", originalIndex: 0 },
+      { userIdentifier: "friend-b", originalIndex: 1 },
+      { userIdentifier: "friend-c", originalIndex: 2 },
+      { userIdentifier: "friend-old", originalIndex: 3 },
+    ],
+    runtime: {
+      http: {
+        fetchTietiePage: async (_visitorIdentifier, category) => {
+          requests.push(category);
+          return {
+            kind: "success",
+            record: {
+              kind: "success",
+              contents: [
+                {
+                  contentKey: `/${category}/content`,
+                  reactorIdentifiers: [
+                    category === "say" ? "friend-a" : "friend-b",
+                  ],
+                },
+              ],
+              hasNextPage: false,
+            },
+          };
+        },
+      },
+      now: () => now,
+    },
+  });
+
+  session.choose("tietie");
+  assert.deepEqual(
+    lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
+    ["friend-b", "friend-old", "friend-a", "friend-c"],
+  );
+
+  await finished;
+
+  assert.deepEqual(requests, ["say", "subject"]);
+  assert.deepEqual(
+    lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
+    ["friend-b", "friend-a", "friend-old", "friend-c"],
+  );
+  const reloaded = sorter.createFriendCache(storage, { now: () => now });
+  assert.deepEqual(reloaded.tietieFor("visitor"), {
+    counts: new Map([
+      ["friend-a", 1],
+      ["friend-b", 1],
+    ]),
+    fetchedAt: now,
+  });
+});
+
+test("和我贴贴刷新部分失败时保留旧结果且不续期", async () => {
+  const now = 100_000;
+  const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
+  const storage = persistentFriendCacheStorage();
+  const cache = sorter.createFriendCache(storage, { now: () => now });
+  cache.replaceTietie("visitor", {
+    counts: new Map([["friend-b", 5]]),
+    fetchedAt: staleFetchedAt,
+  });
+  const { finished, lastMessage, lastState, session } = createSessionHarness({
+    cache,
+    friends: [
+      { userIdentifier: "friend-a", originalIndex: 0 },
+      { userIdentifier: "friend-b", originalIndex: 1 },
+    ],
+    runtime: {
+      http: {
+        fetchTietiePage: async (_visitorIdentifier, category) =>
+          category === "say"
+            ? {
+                kind: "success",
+                record: {
+                  kind: "success",
+                  contents: [
+                    {
+                      contentKey: "/say/content",
+                      reactorIdentifiers: ["friend-a"],
+                    },
+                  ],
+                  hasNextPage: false,
+                },
+              }
+            : { kind: "parse-error" },
+      },
+      now: () => now,
+    },
+  });
+
+  session.choose("tietie");
+  await finished;
+
+  assert.equal(lastMessage(), "“和我贴贴”获取失败，本次结果未更新");
+  assert.deepEqual(
+    lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
+    ["friend-b", "friend-a"],
+  );
+  const reloaded = sorter.createFriendCache(storage, { now: () => now });
+  assert.deepEqual(reloaded.tietieFor("visitor"), {
+    counts: new Map([["friend-b", 5]]),
+    fetchedAt: staleFetchedAt,
+  });
+  assert.equal(reloaded.tietieNeedsRefresh("visitor"), true);
+});
+
+test("和我贴贴任务中止时保留旧结果且不续期", async () => {
+  const now = 100_000;
+  const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
+  const storage = persistentFriendCacheStorage();
+  const cache = sorter.createFriendCache(storage, { now: () => now });
+  cache.replaceTietie("visitor", {
+    counts: new Map([["friend", 4]]),
+    fetchedAt: staleFetchedAt,
+  });
+  const { finished, lastMessage, lastState, session } = createSessionHarness({
+    cache,
+    friends: [{ userIdentifier: "friend", originalIndex: 0 }],
+    runtime: {
+      http: {
+        fetchTietiePage: async (_visitorIdentifier, category) =>
+          category === "say"
+            ? { kind: "http-error", status: 429 }
+            : {
+                kind: "success",
+                record: { kind: "empty", contents: [], hasNextPage: false },
+              },
+      },
+      now: () => now,
+    },
+  });
+
+  session.choose("tietie");
+  await finished;
+
+  assert.equal(lastMessage(), "请求受限，已停止全部获取");
+  assert.deepEqual(
+    lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
+    ["friend"],
+  );
+  const reloaded = sorter.createFriendCache(storage, { now: () => now });
+  assert.deepEqual(reloaded.tietieFor("visitor"), {
+    counts: new Map([["friend", 4]]),
+    fetchedAt: staleFetchedAt,
+  });
+  assert.equal(reloaded.tietieNeedsRefresh("visitor"), true);
+});
+
+test("和我贴贴没有旧结果且刷新失败时保持未知而非可靠零", async () => {
+  const now = 100_000;
+  const cache = sorter.createFriendCache(null, { now: () => now });
+  const { finished, lastState, session } = createSessionHarness({
+    cache,
+    friends: [
+      { userIdentifier: "friend-a", originalIndex: 0 },
+      { userIdentifier: "friend-b", originalIndex: 1 },
+    ],
+    runtime: {
+      http: {
+        fetchTietiePage: async () => ({ kind: "parse-error" }),
+      },
+      now: () => now,
+    },
+  });
+
+  session.choose("tietie");
+  await finished;
+
+  assert.deepEqual(
+    lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
+    ["friend-a", "friend-b"],
+  );
+  assert.equal(cache.tietieFor("visitor"), undefined);
+});
+
+test("和我贴贴缓存按访问者隔离，损坏记录不影响已有主页字段", () => {
+  const now = 100_000;
+  const storage = {
+    getItem(key) {
+      if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
+      return JSON.stringify({
+        version: 3,
+        records: {
+          friend: {
+            completion_all: { value: 8, fetchedAt: now },
+          },
+        },
+        tietie: {
+          visitorA: {
+            counts: { friend: 2 },
+            fetchedAt: now,
+          },
+          visitorB: {
+            counts: { friend: 9 },
+            fetchedAt: now,
+          },
+          broken: {
+            counts: { friend: -1 },
+            fetchedAt: now,
+          },
+        },
+      });
+    },
+    setItem() {},
+    removeItem() {},
+  };
+  const cache = sorter.createFriendCache(storage, { now: () => now });
+
+  assert.deepEqual(cache.tietieFor("visitorA"), {
+    counts: new Map([["friend", 2]]),
+    fetchedAt: now,
+  });
+  assert.deepEqual(cache.tietieFor("visitorB"), {
+    counts: new Map([["friend", 9]]),
+    fetchedAt: now,
+  });
+  assert.equal(cache.tietieFor("broken"), undefined);
+  assert.deepEqual(cache.completionFor("friend", "all"), {
+    value: 8,
+    fetchedAt: now,
+  });
+});
+
+test("和我贴贴持久化写入不可用时保留当前页面结果且不破坏主页字段", () => {
+  const now = 100_000;
+  const storage = {
+    getItem(key) {
+      if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
+      return JSON.stringify({
+        version: 3,
+        records: {
+          friend: {
+            completion_all: { value: 8, fetchedAt: now },
+          },
+        },
+      });
+    },
+    setItem() {
+      throw new Error("quota exceeded");
+    },
+    removeItem() {},
+  };
+  const cache = sorter.createFriendCache(storage, { now: () => now });
+
+  assert.equal(
+    cache.replaceTietie("visitor", {
+      counts: new Map([["friend", 0]]),
+      fetchedAt: now,
+    }),
+    true,
+  );
+  assert.deepEqual(cache.tietieFor("visitor"), {
+    counts: new Map([["friend", 0]]),
+    fetchedAt: now,
+  });
+  assert.deepEqual(cache.completionFor("friend", "all"), {
+    value: 8,
+    fetchedAt: now,
+  });
 });
 
 test("和我贴贴每个分类最多获取五页", async () => {

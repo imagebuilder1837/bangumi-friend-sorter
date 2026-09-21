@@ -24,11 +24,13 @@
   // Completion counts and relation metrics both come from profile pages and
   // share one validity window, so the TTL is named after the source.
   const PROFILE_CACHE_TTL_MS = 72 * 60 * 60 * 1_000;
+  const TIETIE_CACHE_TTL_MS = 72 * 60 * 60 * 1_000;
   const PAGE_REQUEST_TIMEOUT_MS = 15_000;
   const SITE_OFFSET_SECONDS = 8 * 60 * 60;
-  // The v3 store holds activity, visitor-nested relation and completion
-  // fields, but the storage key keeps its historical "activity-cache" name:
-  // renaming it would strand every existing visitor's v3 payload.
+  // The v3 store holds activity, visitor-nested relation, completion fields,
+  // and visitor-scoped full tietie results, but the storage key keeps its
+  // historical "activity-cache" name: renaming it would strand every
+  // existing visitor's v3 payload.
   const FRIEND_CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v3";
   const PREVIOUS_CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v2";
   const LEGACY_CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v1";
@@ -125,6 +127,48 @@
       value.value >= 0 &&
       Number.isFinite(value.fetchedAt),
     );
+  }
+
+  function tietieCountEntries(value) {
+    if (value instanceof Map) return [...value.entries()];
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return null;
+    }
+    return Object.entries(value);
+  }
+
+  function normalizedTietieRecord(value) {
+    if (
+      !value ||
+      typeof value !== "object" ||
+      !Number.isFinite(value.fetchedAt)
+    ) {
+      return null;
+    }
+    const entries = tietieCountEntries(value.counts);
+    if (
+      !entries ||
+      !entries.every(
+        ([userIdentifier, count]) =>
+          typeof userIdentifier === "string" &&
+          userIdentifier.trim() &&
+          Number.isSafeInteger(count) &&
+          count >= 0,
+      )
+    ) {
+      return null;
+    }
+    return {
+      counts: new Map(entries),
+      fetchedAt: value.fetchedAt,
+    };
+  }
+
+  function serializedTietieRecord(record) {
+    return {
+      counts: Object.fromEntries(record.counts),
+      fetchedAt: record.fetchedAt,
+    };
   }
 
   // The record envelope (finite value + fetch time) is shared; each 契合指标
@@ -287,16 +331,18 @@
     return effectiveDirection === DIRECTION.ASCENDING;
   }
 
-  // 好友缓存 deep module：三类页面字段（上次活跃、完成统计、契合指标）
-  // 的唯一读写边界。接口约定——
+  // 好友缓存 deep module：好友级字段（上次活跃、完成统计、契合指标）
+  // 与访问者级的和我贴贴完整统计的唯一读写边界。接口约定——
   // 读取：activityFor / completionFor / relationFor 只读，字段缺失或从未
   //   写入时返回 null，永不写存储。friendsNeedingRefresh 按目标与模式
   //   返回待请求好友：mode "full" 返回全部好友，"incremental" 只返回
   //   无记录或超出对应 TTL 的好友，未知目标返回空数组。不发起请求，
-  //   也不改动缓存内容。
+  //   也不改动缓存内容。tietieFor 按访问者读取完整结果；
+  //   tietieNeedsRefresh 只判断其 72 小时有效期，不改动缓存。
   // 写入：beginRefresh 打开一个批次，accept 按好友写入校验通过的字段值，
   //   complete 恰好调用一次并触发持久化；重复 complete 抛错，批次内
-  //   写入无效值时静默丢弃。调用方不直接接触存储或校验器。
+  //   写入无效值时静默丢弃。replaceTietie 一次性替换某访问者的完整结果，
+  //   只有整体结果通过校验才写入。调用方不直接接触存储或校验器。
   // 不变量：损坏或过期版本的存量数据在加载时被丢弃；字段值不通过校验
   //   则不落盘，因此无效结果永不覆盖仍有效的旧值；持久化失败时新记录
   //   保留在内存，下次成功写入再落盘。
@@ -304,6 +350,7 @@
   //   null、写入保持内存态，不向调用方抛出存储异常。
   function createFriendCache(storage, { now = Date.now } = {}) {
     const records = new Map();
+    const tietieRecords = new Map();
     const validators = new Map([
       ["activity", isActivityRecord],
       ["relation", isRelationMap],
@@ -362,12 +409,41 @@
       return true;
     }
 
+    function loadTietie(saved) {
+      if (
+        saved?.version !== 3 ||
+        !saved.tietie ||
+        typeof saved.tietie !== "object" ||
+        Array.isArray(saved.tietie)
+      ) {
+        return;
+      }
+
+      for (const [visitorIdentifier, value] of Object.entries(saved.tietie)) {
+        if (!visitorIdentifier.trim()) continue;
+        const record = normalizedTietieRecord(value);
+        if (record) tietieRecords.set(visitorIdentifier, record);
+      }
+    }
+
     function persist() {
       try {
         if (!storage?.setItem) return false;
+        const payload = {
+          version: 3,
+          records: Object.fromEntries(records),
+        };
+        if (tietieRecords.size > 0) {
+          payload.tietie = Object.fromEntries(
+            [...tietieRecords.entries()].map(([visitorIdentifier, record]) => [
+              visitorIdentifier,
+              serializedTietieRecord(record),
+            ]),
+          );
+        }
         storage.setItem(
           FRIEND_CACHE_STORAGE_KEY,
-          JSON.stringify({ version: 3, records: Object.fromEntries(records) }),
+          JSON.stringify(payload),
         );
         return true;
       } catch {
@@ -376,7 +452,9 @@
       }
     }
 
-    const hasCurrentCache = loadFields(read(FRIEND_CACHE_STORAGE_KEY));
+    const current = read(FRIEND_CACHE_STORAGE_KEY);
+    const hasCurrentCache = loadFields(current);
+    loadTietie(current);
     const previous = read(PREVIOUS_CACHE_STORAGE_KEY);
     if (
       previous?.version === 2 &&
@@ -450,6 +528,13 @@
       });
     }
 
+    function tietieFor(visitorIdentifier) {
+      const record = tietieRecords.get(visitorIdentifier);
+      return record
+        ? { counts: new Map(record.counts), fetchedAt: record.fetchedAt }
+        : undefined;
+    }
+
     const cache = {
       activityFor(userIdentifier) {
         return fieldFor(userIdentifier, "activity");
@@ -459,6 +544,21 @@
       },
       relationFor(userIdentifier, relationSelection) {
         return relationRecordFor(userIdentifier, relationSelection);
+      },
+      tietieFor,
+      tietieNeedsRefresh(visitorIdentifier) {
+        const record = tietieRecords.get(visitorIdentifier);
+        return !record || now() - record.fetchedAt > TIETIE_CACHE_TTL_MS;
+      },
+      replaceTietie(visitorIdentifier, result) {
+        if (typeof visitorIdentifier !== "string" || !visitorIdentifier.trim()) {
+          return false;
+        }
+        const record = normalizedTietieRecord(result);
+        if (!record) return false;
+        tietieRecords.set(visitorIdentifier, record);
+        persist();
+        return true;
       },
       friendsNeedingRefresh(friends, target, { mode = "incremental" } = {}) {
         if (mode === "full") return [...friends];
@@ -2515,10 +2615,13 @@
   // 和我贴贴任务按分类和页排队，而不是按好友排队。每个成功页面只在
   // 页面明确提供下一页时追加同一分类的下一页，最多读取前五页；两分类
   // 的页面结果先在批次内按内容链接去重，全部必要页面成功后才交给会话
-  // 发布。批次不接触 friend cache，因此本票的结果只存在当前页面内存中。
+  // 发布。只有所有必要页面成功时才整体写入 friend cache 并交给会话；
+  // 失败批次不会触碰旧的完整结果。
   function createTietieTasks({
     applySort,
+    cache,
     http,
+    now,
     onProgress,
     publishResult,
     scheduler,
@@ -2565,7 +2668,13 @@
           return;
         }
         if (failures === 0) {
-          publishResult({ complete: true, counts: completedBatch.counts });
+          const result = {
+            complete: true,
+            counts: completedBatch.counts,
+            fetchedAt: now(),
+          };
+          cache.replaceTietie(visitorIdentifier, result);
+          publishResult(result);
           applySort();
           status.set(REFRESH_STATUS.COMPLETED, "“和我贴贴”获取完成", 5_000);
           return;
@@ -2704,7 +2813,9 @@
 
     const tietieTasks = createTietieTasks({
       applySort: applyTietieSort,
+      cache,
       http,
+      now,
       onProgress: runtime.onProgress,
       publishResult: (result) => {
         tietieResult = result;
@@ -2811,6 +2922,11 @@
       );
     }
 
+    function cachedTietieResult() {
+      const cached = cache.tietieFor(visitorIdentifier);
+      return cached ? { complete: true, ...cached } : null;
+    }
+
     const remoteTargetConfigurations = {
       [SORT.ACTIVITY]: {
         armMessageFor: () => "上次活跃",
@@ -2876,18 +2992,17 @@
       if (configuration.singleRun) {
         if (status.getKind() === REFRESH_STATUS.AWAITING_FULL_REFRESH)
           status.clear();
-        if (
-          (tietieTasks.isRunning() || tietieResult?.complete) &&
-          currentCriterion !== criterion
-        ) {
-          currentCriterion = criterion;
-          applyCurrentSort();
+        if (tietieTasks.isRunning()) {
+          if (currentCriterion !== criterion) {
+            currentCriterion = criterion;
+            applyCurrentSort();
+          }
           return;
         }
-        if (tietieTasks.isRunning() || tietieResult?.complete) return;
 
         configuration.setSelection?.(selection);
         currentCriterion = criterion;
+        tietieResult = visitorIdentifier ? cachedTietieResult() : null;
         applyCurrentSort();
         if (!visitorIdentifier) {
           showLoginRequiredStatus(
@@ -2895,7 +3010,9 @@
           );
           return;
         }
-        configuration.startRefresh(requestedTarget, "incremental");
+        if (cache.tietieNeedsRefresh(visitorIdentifier)) {
+          configuration.startRefresh(requestedTarget, "incremental");
+        }
         return;
       }
 
