@@ -231,12 +231,13 @@ function initializeRefreshPage({
   fetchImpl,
   now,
   records,
+  visitorIdentifier = "visitor",
 }) {
   const page = friendPageWith(entries);
   sorter.initialize({
     document: page.document,
     window: {
-      CHOBITS_USERNAME: "visitor",
+      CHOBITS_USERNAME: visitorIdentifier,
       location: { href: "https://bgm.tv/user/viewed/friends" },
     },
     storage: friendCacheStorage(records),
@@ -279,7 +280,7 @@ function createSessionHarness({
     sortBar: {
       render(state) {
         lastState = state;
-        if (/获取完成|请求受限/.test(state.statusMessage)) resolveFinished();
+        if (/获取完成|获取失败|请求受限/.test(state.statusMessage)) resolveFinished();
       },
     },
     visitorIdentifier,
@@ -454,6 +455,169 @@ function timelineDocumentFromFixture(filename) {
     },
   };
 }
+
+class TimelineFixtureNode {
+  constructor({ attributes = {}, children = [], textContent = "", selectors = {} } = {}) {
+    this.attributes = attributes;
+    this.children = children;
+    this.textContent = textContent;
+    this.selectors = selectors;
+  }
+
+  getAttribute(name) {
+    return this.attributes[name] ?? null;
+  }
+
+  querySelector(selector) {
+    return this.selectors[selector]?.[0] ?? null;
+  }
+
+  querySelectorAll(selector) {
+    return this.selectors[selector] ?? [];
+  }
+}
+
+function fixtureAttributes(source) {
+  return Object.fromEntries(
+    [...source.matchAll(/([\w-]+)=["']([^"']*)["']/g)].map(([, name, value]) => [
+      name,
+      value.replaceAll("&amp;", "&"),
+    ]),
+  );
+}
+
+function timelineFixtureAnchorNodes(source) {
+  return [...source.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/g)].map(
+    ([, attributes, textContent]) =>
+      new TimelineFixtureNode({
+        attributes: fixtureAttributes(attributes),
+        textContent: textContent.replace(/<[^>]+>/g, "").trim(),
+      }),
+  );
+}
+
+function tietieDocumentFromFixture(filename) {
+  const html = fs.readFileSync(path.join(__dirname, "fixtures", filename), "utf8");
+  const itemMatches = [
+    ...html.matchAll(
+      /<li\b([^>]*\btml_item\b[^>]*)>([\s\S]*?)<\/li>/g,
+    ),
+  ];
+  const itemNodes = itemMatches.map(([, attributes, body]) => {
+    const anchors = timelineFixtureAnchorNodes(body);
+    const subjectAnchors = anchors.filter((anchor) =>
+      anchor.getAttribute("href")?.includes("/subject/"),
+    );
+    const statusAnchors = anchors.filter((anchor) =>
+      anchor.getAttribute("href")?.includes("/timeline/status/"),
+    );
+    return new TimelineFixtureNode({
+      attributes: fixtureAttributes(attributes),
+      selectors: {
+        'a[data-subject-id][href*="/subject/"]': subjectAnchors.filter(
+          (anchor) => anchor.getAttribute("data-subject-id"),
+        ),
+        'a[href*="/subject/"]': subjectAnchors,
+        'a.tml_comment[href*="/timeline/status/"]': statusAnchors.filter(
+          (anchor) => anchor.getAttribute("class")?.includes("tml_comment"),
+        ),
+      },
+    });
+  });
+
+  const timeline = new TimelineFixtureNode({
+    textContent: itemNodes.length > 0 ? "动态" : "",
+    selectors: { ".tml_item": itemNodes },
+  });
+  const pagerSource = html.match(/<div id=["']tmlPager["']>([\s\S]*?)<\/div>\s*<\/div>/);
+  const pagerAnchors = pagerSource ? timelineFixtureAnchorNodes(pagerSource[1]) : [];
+  const pager = pagerSource
+    ? new TimelineFixtureNode({ selectors: { 'a[href]': pagerAnchors } })
+    : null;
+  if (pager) timeline.selectors["#tmlPager"] = [pager];
+
+  const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map(
+    ([, textContent]) => new TimelineFixtureNode({ textContent }),
+  );
+  const tabs = /id=["']timelineTabs["']/.test(html)
+    ? new TimelineFixtureNode()
+    : null;
+
+  return {
+    querySelector(selector) {
+      if (selector === "#timelineTabs") return tabs;
+      if (selector === "#timeline") return timeline;
+      if (selector === "#tmlContent > #timeline") return tabs ? timeline : null;
+      if (selector === "#tmlPager") return pager;
+      assert.fail(`unexpected selector: ${selector}`);
+    },
+    querySelectorAll(selector) {
+      if (selector === "script") return scripts;
+      assert.fail(`unexpected selectorAll: ${selector}`);
+    },
+  };
+}
+
+test("贴贴时间胶囊解析反应者、内容链接和分页，不依赖页面脚本执行", () => {
+  const parsed = sorter.parseTietieTimelineDocument(
+    tietieDocumentFromFixture("timeline-tietie.html"),
+    {
+      baseUrl: "https://bgm.tv/user/visitor/timeline?type=subject",
+      category: "subject",
+      page: 1,
+    },
+  );
+
+  assert.equal(parsed.kind, "success");
+  assert.equal(parsed.hasNextPage, true);
+  assert.deepEqual(
+    parsed.contents.map(({ contentKey, reactorIdentifiers }) => [
+      contentKey,
+      reactorIdentifiers,
+    ]),
+    [
+      ["/subject/42", ["friend-a", "friend-b"]],
+      ["/user/visitor/timeline/status/101", ["friend-b", "unknown"]],
+      ["/subject/42", ["friend-a", "friend-b"]],
+      ["/subject/99", ["friend-b", "friend-c"]],
+    ],
+  );
+
+  const sayParsed = sorter.parseTietieTimelineDocument(
+    tietieDocumentFromFixture("timeline-tietie.html"),
+    {
+      baseUrl: "https://bgm.tv/user/visitor/timeline?type=say",
+      category: "say",
+      page: 1,
+    },
+  );
+  assert.deepEqual(
+    sayParsed.contents.map(({ contentKey }) => contentKey),
+    [
+      "/user/visitor/timeline/status/100",
+      "/user/visitor/timeline/status/101",
+      "/user/visitor/timeline/status/102",
+      "/user/visitor/timeline/status/103",
+    ],
+  );
+});
+
+test("贴贴解析区分合法空页与缺少数据的残缺页", () => {
+  assert.deepEqual(
+    sorter.parseTietieTimelineDocument(timelineDocumentFromFixture("timeline-empty.html")),
+    { kind: "empty", contents: [], hasNextPage: false },
+  );
+  assert.deepEqual(
+    sorter.parseTietieTimelineDocument(
+      tietieDocumentFromFixture("timeline-tietie-missing-data.html"),
+    ),
+    { kind: "invalid" },
+  );
+  assert.deepEqual(
+    sorter.parseTietieTimelineDocument(timelineDocumentFromFixture("timeline-partial.html")),
+    { kind: "invalid" },
+  );
+});
 
 test("网页默认顺序默认从旧到新，也支持从新到旧", () => {
   const friends = [
@@ -694,6 +858,10 @@ test("方向文案随排序维度切换", () => {
     asc: "从低到高",
     desc: "从高到低",
   });
+  assert.deepEqual(sorter.directionLabelsFor("tietie"), {
+    asc: "从低到高",
+    desc: "从高到低",
+  });
 });
 
 test("仅为缺失或超过二十四小时的上次活跃缓存安排请求", () => {
@@ -799,7 +967,37 @@ test("排序栏通过 bind 回传意图并经 render 更新方向文案", () => 
   assert.equal(directionButtons[0].getAttribute("aria-current"), "true");
 });
 
-test("页面初始化提供五个主排序目标、全部子项和各自主按钮方向", () => {
+test("和我贴贴是位于上次活跃与喜好契合之间的独立排序按钮", () => {
+  const page = friendPageWith([]);
+  const sortBar = sorter.createSortBar(page.document, { list: page.list });
+  sortBar.bind({ selectCriterion() {}, selectDirection() {} });
+  assert.equal(sortBar.mount(), true);
+
+  const sortOptions = collectNodes(
+    mountedSortBar(page),
+    (node) =>
+      typeof node?.className === "string" &&
+      node.className
+        .split(/\s+/)
+        .includes("bangumi-friend-sorter-sort-options"),
+  )[0];
+  const labels = sortOptions.children
+    .filter((child) => child?.tagName === "button" || child?.className?.includes("dropdown"))
+    .map((child) =>
+      child.tagName === "button" ? child.textContent : child.children[0].textContent,
+    );
+
+  assert.deepEqual(labels, [
+    "加好友时间",
+    "名称",
+    "上次活跃",
+    "和我贴贴",
+    "喜好契合",
+    "完成条目数",
+  ]);
+});
+
+test("页面初始化提供六个主排序目标、全部子项和各自主按钮方向", () => {
   const page = friendPageWith([
     { href: "/user/z", name: "Zed" },
     { href: "/user/a", name: "Ada" },
@@ -817,9 +1015,12 @@ test("页面初始化提供五个主排序目标、全部子项和各自主按�
   });
 
   const directionButtons = directionButtonsFor(page);
-  const directButtons = ["加好友时间", "名称", "上次活跃"].map((label) =>
-    mainSortControl(page, label),
-  );
+  const directButtons = [
+    "加好友时间",
+    "名称",
+    "上次活跃",
+    "和我贴贴",
+  ].map((label) => mainSortControl(page, label));
   const relationToggle = dropdownButtonFor(page, "喜好契合");
   const completionToggle = dropdownButtonFor(page, "完成条目数");
 
@@ -829,7 +1030,14 @@ test("页面初始化提供五个主排序目标、全部子项和各自主按�
       relationToggle.textContent,
       completionToggle.textContent,
     ],
-    ["加好友时间", "名称", "上次活跃", "喜好契合", "完成条目数"],
+    [
+      "加好友时间",
+      "名称",
+      "上次活跃",
+      "和我贴贴",
+      "喜好契合",
+      "完成条目数",
+    ],
   );
   assert.deepEqual(
     dropdownItems(page, "喜好契合").map(({ textContent }) => textContent),
@@ -848,6 +1056,7 @@ test("页面初始化提供五个主排序目标、全部子项和各自主按�
   for (const button of [
     directButtons[1],
     directButtons[2],
+    directButtons[3],
     relationToggle,
     completionToggle,
   ]) {
@@ -866,6 +1075,293 @@ test("页面初始化提供五个主排序目标、全部子项和各自主按�
     directionButtons[1].click();
     assert.equal(directionButtons[1].getAttribute("aria-current"), "true");
   }
+});
+
+test("和我贴贴使用当前访问者身份并从吐槽和收藏第一页开始获取", async () => {
+  const requests = [];
+  const page = initializeRefreshPage({
+    entries: [
+      { href: "/user/friend", name: "好友" },
+    ],
+    now: 1_000,
+    domParser: {
+      parseFromString: () => timelineDocumentFromFixture("timeline-empty.html"),
+    },
+    fetchImpl: async (url) => {
+      requests.push(url);
+      return {
+        ok: true,
+        headers: { get: () => null },
+        text: async () => "empty timeline",
+      };
+    },
+  });
+
+  mainSortControl(page, "和我贴贴").click();
+  await waitForCondition(() => requests.length === 2);
+
+  assert.deepEqual(requests, [
+    "/user/visitor/timeline?type=say",
+    "/user/visitor/timeline?type=subject",
+  ]);
+});
+
+test("未登录时选择和我贴贴只提示登录且不发起请求", () => {
+  const requests = [];
+  const page = initializeRefreshPage({
+    entries: [{ href: "/user/friend", name: "好友" }],
+    now: 100_000,
+    visitorIdentifier: "",
+    domParser: {
+      parseFromString: () => timelineDocumentFromFixture("timeline-empty.html"),
+    },
+    fetchImpl: async (url) => {
+      requests.push(url);
+      return { ok: true, text: async () => "empty" };
+    },
+  });
+
+  mainSortControl(page, "和我贴贴").click();
+
+  assert.deepEqual(requests, []);
+  assert.equal(statusFor(page).textContent, "请登录后使用和我贴贴排序");
+});
+
+test("和我贴贴完整获取后按内容链接去重并稳定排序可靠零", async () => {
+  const requests = [];
+  const page = initializeRefreshPage({
+    entries: [
+      { href: "/user/friend-a", name: "甲" },
+      { href: "/user/friend-b", name: "乙" },
+      { href: "/user/friend-c", name: "丙" },
+      { href: "/user/missing", name: "零" },
+    ],
+    now: 100_000,
+    domParser: {
+      parseFromString: () => tietieDocumentFromFixture("timeline-tietie.html"),
+    },
+    fetchImpl: async (url) => {
+      requests.push(url);
+      return {
+        ok: true,
+        headers: { get: () => null },
+        text: async () => "fixture",
+      };
+    },
+  });
+
+  mainSortControl(page, "和我贴贴").click();
+  await waitForCondition(() => requests.length > 0);
+  await waitForCondition(() => /获取完成|获取失败/.test(statusFor(page).textContent));
+  assert.equal(statusFor(page).textContent, "“和我贴贴”获取完成");
+  assert.deepEqual(requests, [
+    "/user/visitor/timeline?type=say",
+    "/user/visitor/timeline?type=subject",
+    "/user/visitor/timeline?type=say&page=2",
+    "/user/visitor/timeline?type=subject&page=2",
+  ]);
+
+  assert.deepEqual(page.list.children.map(({ textContent }) => textContent), [
+    "乙",
+    "甲",
+    "丙",
+    "零",
+  ]);
+
+  const directionButtons = directionButtonsFor(page);
+  directionButtons[0].click();
+  assert.deepEqual(page.list.children.map(({ textContent }) => textContent), [
+    "零",
+    "丙",
+    "甲",
+    "乙",
+  ]);
+});
+
+test("和我贴贴每个分类最多获取五页", async () => {
+  const pages = [];
+  const { finished, session } = createSessionHarness({
+    cache: sorter.createFriendCache(null),
+    friends: [{ userIdentifier: "friend", originalIndex: 0 }],
+    runtime: {
+      http: {
+        fetchTietiePage: async (_visitorIdentifier, category, page) => {
+          pages.push([category, page]);
+          return {
+            kind: "success",
+            record: {
+              kind: "success",
+              contents: [
+                {
+                  contentKey: `${category}/${page}`,
+                  reactorIdentifiers: ["friend"],
+                },
+              ],
+              hasNextPage: true,
+            },
+          };
+        },
+      },
+      now: () => 100_000,
+    },
+  });
+
+  session.choose("tietie");
+  await finished;
+
+  assert.deepEqual(pages, [
+    ["say", 1],
+    ["subject", 1],
+    ["say", 2],
+    ["subject", 2],
+    ["say", 3],
+    ["subject", 3],
+    ["say", 4],
+    ["subject", 4],
+    ["say", 5],
+    ["subject", 5],
+  ]);
+});
+
+test("和我贴贴任一分类失败时不发布部分计数", async () => {
+  const friends = [
+    { userIdentifier: "first", originalIndex: 0 },
+    { userIdentifier: "second", originalIndex: 1 },
+  ];
+  const { finished, lastMessage, lastState, session } = createSessionHarness({
+    cache: sorter.createFriendCache(null),
+    friends,
+    runtime: {
+      http: {
+        fetchTietiePage: async (_visitorIdentifier, category) =>
+          category === "say"
+            ? {
+                kind: "success",
+                record: {
+                  kind: "success",
+                  contents: [
+                    {
+                      contentKey: "/user/visitor/timeline/status/1",
+                      reactorIdentifiers: ["second"],
+                    },
+                  ],
+                  hasNextPage: false,
+                },
+              }
+            : { kind: "parse-error" },
+      },
+      now: () => 100_000,
+    },
+  });
+
+  session.choose("tietie");
+  await finished;
+
+  assert.equal(lastMessage(), "“和我贴贴”获取失败，本次结果未更新");
+  assert.deepEqual(
+    lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
+    ["first", "second"],
+  );
+});
+
+test("和我贴贴收到 429 时停止并保持未完成结果未知", async () => {
+  const { finished, lastMessage, lastState, session } = createSessionHarness({
+    cache: sorter.createFriendCache(null),
+    friends: [{ userIdentifier: "friend", originalIndex: 0 }],
+    runtime: {
+      http: {
+        fetchTietiePage: async (_visitorIdentifier, category) =>
+          category === "say"
+            ? { kind: "http-error", status: 429 }
+            : {
+                kind: "success",
+                record: { kind: "empty", contents: [], hasNextPage: false },
+              },
+      },
+      now: () => 100_000,
+    },
+  });
+
+  session.choose("tietie");
+  await finished;
+
+  assert.equal(lastMessage(), "请求受限，已停止全部获取");
+  assert.deepEqual(
+    lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
+    ["friend"],
+  );
+});
+
+test("和我贴贴获取中切换方向和重复选择不重启任务", async () => {
+  const requests = [];
+  const pending = [];
+  const { finished, lastState, session } = createSessionHarness({
+    cache: sorter.createFriendCache(null),
+    friends: [{ userIdentifier: "friend", originalIndex: 0 }],
+    runtime: {
+      http: {
+        fetchTietiePage: async (_visitorIdentifier, category, page) => {
+          requests.push([category, page]);
+          return new Promise((resolve) => pending.push(resolve));
+        },
+      },
+      now: () => 100_000,
+    },
+  });
+
+  session.choose("tietie");
+  session.changeDirection("asc");
+  session.choose("tietie");
+
+  assert.deepEqual(requests, [
+    ["say", 1],
+    ["subject", 1],
+  ]);
+
+  for (const resolve of pending) {
+    resolve({
+      kind: "success",
+      record: { kind: "empty", contents: [], hasNextPage: false },
+    });
+  }
+  await finished;
+
+  assert.equal(lastState().criterion, "tietie");
+  assert.equal(lastState().direction, "asc");
+});
+
+test("和我贴贴后台完成时不改变已切换的当前排序", async () => {
+  const pending = [];
+  const { finished, lastState, session } = createSessionHarness({
+    cache: sorter.createFriendCache(null),
+    friends: [
+      { userIdentifier: "z", displayName: "Zed", originalIndex: 0 },
+      { userIdentifier: "a", displayName: "Ada", originalIndex: 1 },
+    ],
+    runtime: {
+      http: {
+        fetchTietiePage: async () =>
+          new Promise((resolve) => pending.push(resolve)),
+      },
+      now: () => 100_000,
+    },
+  });
+
+  session.choose("tietie");
+  session.choose("name");
+  for (const resolve of pending) {
+    resolve({
+      kind: "success",
+      record: { kind: "empty", contents: [], hasNextPage: false },
+    });
+  }
+  await finished;
+
+  assert.equal(lastState().criterion, "name");
+  assert.deepEqual(
+    lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
+    ["a", "z"],
+  );
 });
 
 test("页面交互按排序维度记忆方向并仅重排当前缓存", () => {

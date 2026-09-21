@@ -38,6 +38,7 @@
     COMPLETION: "completion",
     NAME: "name",
     RELATION: "relation",
+    TIETIE: "tietie",
   });
   const COMPLETION_SCOPE = Object.freeze({
     ALL: "all",
@@ -63,6 +64,7 @@
     [SORT.ADDED, "加好友时间"],
     [SORT.NAME, "名称"],
     [SORT.ACTIVITY, "上次活跃"],
+    [SORT.TIETIE, "和我贴贴"],
   ];
   const COMPLETION_CHOICES = [
     [COMPLETION_SCOPE.ALL, "全部"],
@@ -73,6 +75,9 @@
     [COMPLETION_SCOPE.REAL_LIFE, "三次元"],
   ];
   const COMPLETION_CACHE_FIELD_PREFIX = "completion_";
+  const TIETIE_CATEGORIES = Object.freeze(["say", "subject"]);
+  const TIETIE_MAX_PAGES = 5;
+  const TIETIE_TASK_TYPE = "tietie";
 
   // Normalizes a friend record to its stable cache and sort identity:
   // only a non-empty string identifier counts (see CONTEXT.md, 用户标识).
@@ -251,6 +256,20 @@
             : null;
         },
       ),
+    },
+    [SORT.TIETIE]: {
+      defaultDirection: DIRECTION.DESCENDING,
+      directionLabels: Object.freeze({
+        [DIRECTION.ASCENDING]: "从低到高",
+        [DIRECTION.DESCENDING]: "从高到低",
+      }),
+      compare: numericValueCompare((friend, { tietieResult }) => {
+        if (!tietieResult?.complete) return null;
+        if (tietieResult.counts instanceof Map) {
+          return tietieResult.counts.get(userIdentifierFor(friend)) ?? 0;
+        }
+        return tietieResult.counts?.[userIdentifierFor(friend)] ?? 0;
+      }),
     },
   });
   // SORT is a closed enum: every criterion above declares a config, so these
@@ -535,6 +554,7 @@
       direction,
       completionScope = COMPLETION_SCOPE.ALL,
       relationSelection,
+      tietieResult,
     } = {},
   ) {
     const sorted = [...friends];
@@ -551,6 +571,7 @@
           isAscending,
           relationSelection: relationSelectionFor(relationSelection),
           friendCache,
+          tietieResult,
         }),
       );
     }
@@ -566,6 +587,7 @@
     [SORT.ACTIVITY]: null,
     [SORT.COMPLETION]: "scope",
     [SORT.RELATION]: "metric",
+    [SORT.TIETIE]: null,
   });
 
   function remoteTargetFor(criterion, selection) {
@@ -751,6 +773,194 @@
     return activityAtSeconds === null
       ? { kind: "invalid" }
       : { kind: "active", activityAtSeconds };
+  }
+
+  function plainObject(value) {
+    return Boolean(value && typeof value === "object" && !Array.isArray(value));
+  }
+
+  function jsonValueEnd(source, start) {
+    const opening = source[start];
+    if (opening !== "{" && opening !== "[") return null;
+
+    const closing = opening === "{" ? "}" : "]";
+    let depth = 0;
+    let escaped = false;
+    let inString = false;
+    for (let index = start; index < source.length; index += 1) {
+      const character = source[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') {
+        inString = true;
+        continue;
+      }
+      if (character === opening) depth += 1;
+      if (character === closing) {
+        depth -= 1;
+        if (depth === 0) return index + 1;
+      }
+    }
+    return null;
+  }
+
+  function parseTietieDataScript(source) {
+    const assignment = /\b(?:var|let|const)\s+data_likes_list\s*=\s*/.exec(
+      source || "",
+    );
+    if (!assignment) return null;
+
+    const valueStart = assignment.index + assignment[0].length;
+    const valueEnd = jsonValueEnd(source, valueStart);
+    if (valueEnd === null) return { invalid: true };
+    try {
+      const value = JSON.parse(source.slice(valueStart, valueEnd));
+      return plainObject(value) ? value : { invalid: true };
+    } catch {
+      return { invalid: true };
+    }
+  }
+
+  function tietieDataFor(document) {
+    for (const script of document?.querySelectorAll?.("script") || []) {
+      const parsed = parseTietieDataScript(script.textContent);
+      if (parsed) return parsed.invalid ? null : parsed;
+    }
+    return null;
+  }
+
+  function stableReactionUserIdentifier(value) {
+    if (typeof value === "string") {
+      const identifier = value.trim();
+      return identifier || null;
+    }
+    return Number.isSafeInteger(value) ? String(value) : null;
+  }
+
+  function reactionUsersFor(value) {
+    if (value === undefined) return [];
+    const groups = Array.isArray(value)
+      ? value
+      : plainObject(value)
+        ? Object.values(value)
+        : null;
+    if (!groups) return null;
+
+    const identifiers = new Set();
+    for (const group of groups) {
+      if (!plainObject(group) || !Array.isArray(group.users)) return null;
+      for (const user of group.users) {
+        const identifier = stableReactionUserIdentifier(user?.username);
+        if (!identifier) return null;
+        identifiers.add(identifier);
+      }
+    }
+    return [...identifiers];
+  }
+
+  function contentKeyForHref(href, baseUrl) {
+    try {
+      const url = new URL(href, baseUrl || "https://bgm.tv/");
+      const pathname = url.pathname.replace(/\/$/, "") || "/";
+      return `${pathname}${url.search}`;
+    } catch {
+      return null;
+    }
+  }
+
+  function subjectAnchorFor(item, baseUrl) {
+    const anchors = [
+      ...(item?.querySelectorAll?.('a[href*="/subject/"]') || []),
+    ];
+    const normalSubject = (anchor) => {
+      const href = anchor?.getAttribute?.("href") || "";
+      try {
+        const pathname = new URL(href, baseUrl || "https://bgm.tv/").pathname;
+        return !/^\/subject\/ep(?:\/|$)/.test(pathname);
+      } catch {
+        return false;
+      }
+    };
+    return (
+      anchors.find(
+        (anchor) =>
+          anchor.getAttribute?.("data-subject-id") && normalSubject(anchor),
+      ) ||
+      anchors.find(normalSubject) ||
+      anchors[0] ||
+      null
+    );
+  }
+
+  function contentKeyForTietieItem(item, baseUrl, category) {
+    const subjectAnchor = subjectAnchorFor(item, baseUrl);
+    const statusAnchor =
+      item?.querySelector?.('a.tml_comment[href*="/timeline/status/"]') ||
+      item?.querySelector?.('a[href*="/timeline/status/"]');
+    const contentAnchor =
+      category === "say"
+        ? statusAnchor || subjectAnchor
+        : subjectAnchor || statusAnchor;
+    const href = contentAnchor?.getAttribute?.("href");
+    return contentKeyForHref(href, baseUrl);
+  }
+
+  function nextTietiePage(document, page, baseUrl) {
+    const pager = document?.querySelector?.("#tmlPager");
+    const pages = [...(pager?.querySelectorAll?.("a[href]") || [])]
+      .map((anchor) => {
+        try {
+          return Number(
+            new URL(anchor.getAttribute("href"), baseUrl).searchParams.get(
+              "page",
+            ),
+          );
+        } catch {
+          return null;
+        }
+      })
+      .filter((candidate) => Number.isInteger(candidate) && candidate > page);
+    return pages.length > 0;
+  }
+
+  function parseTietieTimelineDocument(
+    document,
+    { baseUrl = "https://bgm.tv/", category, page = 1 } = {},
+  ) {
+    const tabs = document?.querySelector?.("#timelineTabs");
+    const timeline = document?.querySelector?.("#tmlContent > #timeline");
+    if (!tabs || !timeline) return { kind: "invalid" };
+
+    const items = [...(timeline.querySelectorAll?.(".tml_item") || [])];
+    if (items.length === 0) {
+      return timeline.textContent.trim() === ""
+        ? { kind: "empty", contents: [], hasNextPage: false }
+        : { kind: "invalid" };
+    }
+
+    const data = tietieDataFor(document);
+    if (!data) return { kind: "invalid" };
+
+    const contents = [];
+    for (const item of items) {
+      const itemId = /^tml_(.+)$/.exec(item.getAttribute?.("id") || "")?.[1];
+      const contentKey = contentKeyForTietieItem(item, baseUrl, category);
+      if (!itemId || !contentKey) return { kind: "invalid" };
+
+      const reactorIdentifiers = reactionUsersFor(data[itemId]);
+      if (reactorIdentifiers === null) return { kind: "invalid" };
+      contents.push({ contentKey, reactorIdentifiers });
+    }
+
+    return {
+      kind: "success",
+      contents,
+      hasNextPage: nextTietiePage(document, page, baseUrl),
+    };
   }
 
   function needsLargeRequestConfirmation(count) {
@@ -1201,9 +1411,17 @@
     return null;
   }
 
-  async function fetchPageWithTimeout(url, fetchImpl, parseResponse) {
+  async function fetchPageWithTimeout(
+    url,
+    fetchImpl,
+    parseResponse,
+    {
+      clearTimeoutImpl = globalThis.clearTimeout,
+      setTimeoutImpl = globalThis.setTimeout,
+    } = {},
+  ) {
     const controller = new AbortController();
-    const timeout = setTimeout(
+    const timeout = setTimeoutImpl(
       () => controller.abort(),
       PAGE_REQUEST_TIMEOUT_MS,
     );
@@ -1219,7 +1437,7 @@
     } catch {
       return { kind: "network-error" };
     } finally {
-      clearTimeout(timeout);
+      clearTimeoutImpl(timeout);
     }
   }
 
@@ -1806,6 +2024,35 @@
     );
   }
 
+  async function fetchTietiePage(
+    visitorIdentifier,
+    category,
+    page,
+    fetchImpl,
+    domParser,
+    baseUrl,
+    timers,
+  ) {
+    const pageQuery = page === 1 ? "" : `&page=${page}`;
+    return fetchPageWithTimeout(
+      `/user/${encodeURIComponent(visitorIdentifier)}/timeline?type=${category}${pageQuery}`,
+      fetchImpl,
+      async (response) => {
+        const html = await response.text();
+        const document = domParser.parseFromString(html, "text/html");
+        const parsed = parseTietieTimelineDocument(document, {
+          baseUrl,
+          category,
+          page,
+        });
+        return parsed.kind === "invalid"
+          ? { kind: "parse-error" }
+          : { kind: "success", record: parsed };
+      },
+      timers,
+    );
+  }
+
   function browserStorage(pageWindow = window) {
     try {
       return pageWindow.localStorage;
@@ -1829,12 +2076,29 @@
   // 生产 HTTP adapter：Bangumi 是真实外部依赖，页面 URL、同源凭据、
   // 15 秒超时、响应时间与 DOM 解析全部收在这里。任务只拿到按页面类型
   // 规范化的领域结果；测试用返回同样领域结果的 mock adapter 替换它。
-  function createBangumiHttpAdapter({ domParser, fetchImpl, now }) {
+  function createBangumiHttpAdapter({
+    baseUrl,
+    clearTimeoutImpl,
+    domParser,
+    fetchImpl,
+    now,
+    setTimeoutImpl,
+  }) {
     if (!domParser || !fetchImpl) return null;
     return {
       fetchActivity: (friend) =>
         fetchActivity(friend, fetchImpl, domParser, now),
       fetchProfile: (friend) => fetchProfile(friend, fetchImpl, domParser, now),
+      fetchTietiePage: (visitorIdentifier, category, page) =>
+        fetchTietiePage(
+          visitorIdentifier,
+          category,
+          page,
+          fetchImpl,
+          domParser,
+          baseUrl,
+          { clearTimeoutImpl, setTimeoutImpl },
+        ),
     };
   }
 
@@ -2248,6 +2512,108 @@
     return { refresh };
   }
 
+  // 和我贴贴任务按分类和页排队，而不是按好友排队。每个成功页面只在
+  // 页面明确提供下一页时追加同一分类的下一页，最多读取前五页；两分类
+  // 的页面结果先在批次内按内容链接去重，全部必要页面成功后才交给会话
+  // 发布。批次不接触 friend cache，因此本票的结果只存在当前页面内存中。
+  function createTietieTasks({
+    applySort,
+    http,
+    onProgress,
+    publishResult,
+    scheduler,
+    status,
+    visitorIdentifier,
+  }) {
+    const progressReporter = createTaskProgressReporter({
+      onProgress,
+      status,
+      taskType: TIETIE_TASK_TYPE,
+      messageFor: ({ completed, total }) =>
+        `正在获取“和我贴贴” ${completed}/${total}`,
+    });
+    let batch = null;
+    let enqueueNextPage = null;
+
+    function mergePage(record) {
+      for (const content of record.contents || []) {
+        if (batch.seenContents.has(content.contentKey)) continue;
+        batch.seenContents.add(content.contentKey);
+        for (const identifier of content.reactorIdentifiers) {
+          batch.counts.set(identifier, (batch.counts.get(identifier) || 0) + 1);
+        }
+      }
+    }
+
+    const lifecycle = {
+      onFetching: progressReporter,
+      onProgress: progressReporter,
+      onQueue: progressReporter,
+      onRateLimited: status.showRateLimit,
+      onSuccess(item, record) {
+        mergePage(record);
+        if (record.hasNextPage && item.page < TIETIE_MAX_PAGES) {
+          enqueueNextPage?.({ category: item.category, page: item.page + 1 });
+        }
+      },
+      onFinished({ failures, globallyStopped }) {
+        status.clearProgress(TIETIE_TASK_TYPE);
+        const completedBatch = batch;
+        batch = null;
+        if (globallyStopped) {
+          status.showRateLimit();
+          return;
+        }
+        if (failures === 0) {
+          publishResult({ complete: true, counts: completedBatch.counts });
+          applySort();
+          status.set(REFRESH_STATUS.COMPLETED, "“和我贴贴”获取完成", 5_000);
+          return;
+        }
+        status.set(
+          REFRESH_STATUS.COMPLETED,
+          "“和我贴贴”获取失败，本次结果未更新",
+          5_000,
+        );
+      },
+    };
+
+    const taskOptions = {
+      fetch: (item) =>
+        http.fetchTietiePage(visitorIdentifier, item.category, item.page),
+      isSuccess: (record) =>
+        record?.kind === "success" || record?.kind === "empty",
+      keyFor: (item) => `${item.category}:${item.page}`,
+      lifecycle,
+      target: { kind: SORT.TIETIE },
+    };
+
+    enqueueNextPage = (item) => {
+      scheduler.enqueue(TIETIE_TASK_TYPE, [item], taskOptions);
+    };
+
+    function refresh() {
+      if (!http?.fetchTietiePage || !visitorIdentifier) return null;
+      if (scheduler.getTask(TIETIE_TASK_TYPE)) {
+        return scheduler.getTask(TIETIE_TASK_TYPE);
+      }
+
+      batch = { counts: new Map(), seenContents: new Set() };
+      const { task } = scheduler.enqueue(
+        TIETIE_TASK_TYPE,
+        TIETIE_CATEGORIES.map((category) => ({ category, page: 1 })),
+        taskOptions,
+        { foreground: true },
+      );
+      return task;
+    }
+
+    return {
+      isRunning: () => Boolean(scheduler.getTask(TIETIE_TASK_TYPE)),
+      refresh,
+    };
+  }
+
   // 远程排序会话 deep module：页面初始化后的最高层业务边界。会话只通过
   // start、choose 与 changeDirection 接收外部命令；内部私有状态机与任务
   // 登记表共同拥有当前排序目标、子选项、方向记忆、增量刷新、连续两次选
@@ -2285,6 +2651,7 @@
     });
     const confirmRequest =
       runtime.confirm ?? pageWindow.confirm?.bind(pageWindow) ?? (() => false);
+    let tietieResult = null;
 
     const showActivityProgress = createTaskProgressReporter({
       onProgress: runtime.onProgress,
@@ -2326,6 +2693,22 @@
       friends,
       http,
       onProgress: runtime.onProgress,
+      scheduler,
+      status,
+      visitorIdentifier,
+    });
+
+    function applyTietieSort() {
+      if (currentCriterion === SORT.TIETIE) applyCurrentSort();
+    }
+
+    const tietieTasks = createTietieTasks({
+      applySort: applyTietieSort,
+      http,
+      onProgress: runtime.onProgress,
+      publishResult: (result) => {
+        tietieResult = result;
+      },
       scheduler,
       status,
       visitorIdentifier,
@@ -2389,6 +2772,7 @@
             metric: relationMetric,
             visitorIdentifier,
           },
+          tietieResult,
         });
       }
       return lastOrderedFriends;
@@ -2418,11 +2802,11 @@
       render();
     }
 
-    function showLoginRequiredStatus() {
+    function showLoginRequiredStatus(label) {
       if (status.getKind() === REFRESH_STATUS.LOGIN_REQUIRED) return;
       status.set(
         REFRESH_STATUS.LOGIN_REQUIRED,
-        "请登录后使用喜好契合排序",
+        `请登录后使用${label}排序`,
         5_000,
       );
     }
@@ -2437,12 +2821,20 @@
         armMessageFor: (selection) =>
           choiceLabelFor(RELATION_CHOICES, selection),
         defaultSelection: RELATION_CHOICES[0][0],
+        loginLabel: "喜好契合",
         requiresVisitor: true,
         selections: RELATION_CHOICES.map(([value]) => value),
         setSelection: (selection) => {
           relationMetric = selection;
         },
         startRefresh: (target, mode) => profileFields.refresh(target, mode),
+      },
+      [SORT.TIETIE]: {
+        armMessageFor: () => "和我贴贴",
+        loginLabel: "和我贴贴",
+        requiresVisitor: true,
+        singleRun: true,
+        startRefresh: () => tietieTasks.refresh(),
       },
       [SORT.COMPLETION]: {
         armMessageFor: (selection) =>
@@ -2475,7 +2867,35 @@
         sameRemoteTarget(currentTarget, requestedTarget) &&
         !visitorIdentifier
       ) {
-        showLoginRequiredStatus();
+        showLoginRequiredStatus(
+          configuration.loginLabel ?? configuration.armMessageFor(selection),
+        );
+        return;
+      }
+
+      if (configuration.singleRun) {
+        if (status.getKind() === REFRESH_STATUS.AWAITING_FULL_REFRESH)
+          status.clear();
+        if (
+          (tietieTasks.isRunning() || tietieResult?.complete) &&
+          currentCriterion !== criterion
+        ) {
+          currentCriterion = criterion;
+          applyCurrentSort();
+          return;
+        }
+        if (tietieTasks.isRunning() || tietieResult?.complete) return;
+
+        configuration.setSelection?.(selection);
+        currentCriterion = criterion;
+        applyCurrentSort();
+        if (!visitorIdentifier) {
+          showLoginRequiredStatus(
+            configuration.loginLabel ?? configuration.armMessageFor(selection),
+          );
+          return;
+        }
+        configuration.startRefresh(requestedTarget, "incremental");
         return;
       }
 
@@ -2501,7 +2921,9 @@
 
       if (!action.refreshMode) return;
       if (configuration.requiresVisitor && !visitorIdentifier) {
-        showLoginRequiredStatus();
+        showLoginRequiredStatus(
+          configuration.loginLabel ?? configuration.armMessageFor(selection),
+        );
         return;
       }
       configuration.startRefresh(requestedTarget, action.refreshMode);
@@ -2592,8 +3014,11 @@
     const http =
       runtime.http ??
       createBangumiHttpAdapter({
+        baseUrl: pageWindow.location.href,
+        clearTimeoutImpl: runtime.clearTimeout,
         ...pageFetchDependencies(runtime, pageWindow),
         now,
+        setTimeoutImpl: runtime.setTimeout,
       });
     const session = createFriendSortSession({
       cache,
@@ -2626,6 +3051,7 @@
     fetchProfile,
     initialize,
     parseProfileDocument,
+    parseTietieTimelineDocument,
     parseTimelineDocument,
     sortFriends,
   };
