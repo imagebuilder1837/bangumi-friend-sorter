@@ -1064,6 +1064,7 @@
     }
 
     const data = tietieDataFor(document);
+    if (!data) return { kind: "invalid" };
 
     const contents = [];
     for (const item of items) {
