@@ -482,7 +482,7 @@ test("网页默认顺序默认从旧到新，也支持从新到旧", () => {
   );
 });
 
-test("名称排序支持升序和降序，同名随方向比较用户标识", () => {
+test("名称排序支持升序和降序，同名保留传入顺序", () => {
   const friends = [
     { userIdentifier: "z", displayName: "user10", originalIndex: 0 },
     { userIdentifier: "b", displayName: "User2", originalIndex: 1 },
@@ -494,13 +494,40 @@ test("名称排序支持升序和降序，同名随方向比较用户标识", ()
     sorter.sortFriends(friends, { criterion: "name", collator }).map(
       ({ userIdentifier }) => userIdentifier,
     ),
-    ["a", "b", "z"],
+    ["b", "a", "z"],
   );
   assert.deepEqual(
     sorter.sortFriends(friends, { criterion: "name", collator, direction: "desc" }).map(
       ({ userIdentifier }) => userIdentifier,
     ),
     ["z", "b", "a"],
+  );
+});
+
+test("数值排序的平局保留传入顺序而非网页默认顺序", () => {
+  const friends = [
+    { userIdentifier: "same-a", originalIndex: 4 },
+    { userIdentifier: "high", originalIndex: 2 },
+    { userIdentifier: "same-b", originalIndex: 1 },
+    { userIdentifier: "unknown", originalIndex: 0 },
+  ];
+  const cache = refreshCache(
+    sorter.createFriendCache(null),
+    [
+      ["same-a", { completion: { all: 5 }, fetchedAt: 1 }],
+      ["high", { completion: { all: 10 }, fetchedAt: 1 }],
+      ["same-b", { completion: { all: 5 }, fetchedAt: 1 }],
+    ],
+  );
+
+  assert.deepEqual(
+    sorter.sortFriends(friends, {
+      criterion: "completion",
+      completionScope: "all",
+      direction: "desc",
+      friendCache: cache,
+    }).map(({ userIdentifier }) => userIdentifier),
+    ["high", "same-a", "same-b", "unknown"],
   );
 });
 
@@ -2552,6 +2579,133 @@ test("会话切换排序目标后旧任务的迟到结果不覆盖当前排序",
   };
   assert.deepEqual(cache.activityFor("sai"), expectedActivity);
   assert.deepEqual(cache.activityFor("tom"), expectedActivity);
+});
+
+test("会话切换排序目标和方向时继承紧邻此前的顺序", () => {
+  const now = 1_000;
+  const cache = sorter.createFriendCache(null, { now: () => now });
+  refreshCache(cache, [
+    ["z", { completion: { all: 1 }, fetchedAt: now }],
+    ["b", { completion: { all: 10 }, fetchedAt: now }],
+    ["a", { completion: { all: 10 }, fetchedAt: now }],
+    ["c", { completion: { all: 1 }, fetchedAt: now }],
+  ]);
+  const friends = [
+    { userIdentifier: "z", displayName: "Z", originalIndex: 0 },
+    { userIdentifier: "b", displayName: "A", originalIndex: 1 },
+    { userIdentifier: "a", displayName: "B", originalIndex: 2 },
+    { userIdentifier: "c", displayName: "C", originalIndex: 3 },
+  ];
+  const { lastState, session } = createSessionHarness({
+    cache,
+    friends,
+    runtime: { now: () => now, http: {} },
+  });
+
+  session.choose("name");
+  assert.deepEqual(
+    lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
+    ["b", "a", "c", "z"],
+  );
+
+  session.choose("completion", "all");
+  assert.deepEqual(
+    lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
+    ["b", "a", "c", "z"],
+  );
+
+  session.changeDirection("asc");
+  assert.deepEqual(
+    lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
+    ["c", "z", "b", "a"],
+  );
+
+  session.choose("added");
+  assert.deepEqual(
+    lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
+    ["z", "b", "a", "c"],
+  );
+});
+
+test("远程刷新完成后的平局继承刷新前的缓存排序", async () => {
+  const now = 100_000;
+  const staleFetchedAt = now - 24 * 60 * 60 * 1_000 - 1;
+  const cache = sorter.createFriendCache(null, { now: () => now });
+  refreshCache(cache, [
+    [
+      "a",
+      {
+        activity: {
+          kind: "active",
+          activityAtSeconds: 2,
+          fetchedAt: staleFetchedAt,
+        },
+      },
+    ],
+    [
+      "z",
+      {
+        activity: {
+          kind: "active",
+          activityAtSeconds: 3,
+          fetchedAt: staleFetchedAt,
+        },
+      },
+    ],
+    [
+      "b",
+      {
+        activity: {
+          kind: "active",
+          activityAtSeconds: 1,
+          fetchedAt: staleFetchedAt,
+        },
+      },
+    ],
+  ]);
+  const friends = [
+    { userIdentifier: "a", displayName: "B", originalIndex: 0 },
+    { userIdentifier: "z", displayName: "Z", originalIndex: 1 },
+    { userIdentifier: "b", displayName: "A", originalIndex: 2 },
+  ];
+  let releaseFetches;
+  const fetchesReleased = new Promise((resolve) => {
+    releaseFetches = resolve;
+  });
+  const { finished, lastState, session } = createSessionHarness({
+    cache,
+    friends,
+    runtime: {
+      http: {
+        fetchActivity: async () => {
+          await fetchesReleased;
+          return {
+            kind: "success",
+            record: {
+              kind: "active",
+              activityAtSeconds: 4,
+              fetchedAt: now,
+            },
+          };
+        },
+      },
+      now: () => now,
+    },
+  });
+
+  session.choose("name");
+  session.choose("activity");
+  assert.deepEqual(
+    lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
+    ["z", "a", "b"],
+  );
+
+  releaseFetches();
+  await finished;
+  assert.deepEqual(
+    lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
+    ["z", "a", "b"],
+  );
 });
 
 // 会话级测试：无效排序目标、无效子选项、无效方向与重复启动都是 programmer error。

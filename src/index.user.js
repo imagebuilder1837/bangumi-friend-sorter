@@ -161,16 +161,15 @@
     if (leftHasValue && rightHasValue) {
       const valueComparison =
         leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
-      return (
-        valueComparison * (isAscending ? 1 : -1) ||
-        left.originalIndex - right.originalIndex
-      );
+      return valueComparison * (isAscending ? 1 : -1);
     }
     if (leftHasValue) return -1;
     if (rightHasValue) return 1;
-    return left.originalIndex - right.originalIndex;
+    return 0;
   }
 
+  // sortFriends receives the current display order, so returning zero for a
+  // tie lets the stable array sort preserve that order across re-sorts.
   // 上次活跃, 完成条目数 and 喜好契合 all rank by a reliable numeric value:
   // each sort only declares how to read one side's value.
   function numericValueCompare(readValue) {
@@ -204,8 +203,7 @@
       compare(left, right, { collator, isAscending }) {
         return (
           (isAscending ? 1 : -1) *
-          (collator.compare(left.displayName, right.displayName) ||
-            collator.compare(userIdentifierFor(left), userIdentifierFor(right)))
+          collator.compare(left.displayName, right.displayName)
         );
       },
     },
@@ -2367,7 +2365,8 @@
     // 展示顺序只在排序输入（目标、方向、子选项）或条件重排后变化：
     // 状态提示等纯呈现变化复用上一次结果，避免每次提示都重排好友列表。
     let lastSortKey = null;
-    let lastOrderedFriends = [];
+    // 每次重排都以紧邻此前的展示顺序为输入；首次输入就是网页默认顺序。
+    let lastOrderedFriends = [...friends];
 
     function selectionFor(criterion) {
       if (criterion === SORT.RELATION) return relationMetric;
@@ -2380,7 +2379,7 @@
       const key = `${currentCriterion}|${direction}|${completionScope}|${relationMetric}`;
       if (lastSortKey !== key) {
         lastSortKey = key;
-        lastOrderedFriends = sortFriends(friends, {
+        lastOrderedFriends = sortFriends(lastOrderedFriends, {
           criterion: currentCriterion,
           friendCache: cache,
           collator,
@@ -2585,8 +2584,7 @@
       list,
       // 浏览器注入可见性观察器（ADR 0002）；测试可注入替身，缺省时
       // 排序栏静默降级为仅在后续渲染中修正名次。
-      mutationObserver:
-        runtime.mutationObserver ?? pageWindow.MutationObserver,
+      mutationObserver: runtime.mutationObserver ?? pageWindow.MutationObserver,
     });
     if (!sortBar.mount()) return;
     // 生产 HTTP adapter 在装配时创建；测试可以直接注入返回规范化领域结果
