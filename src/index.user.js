@@ -939,6 +939,9 @@
   }
 
   function reactionUsersFor(value) {
+    // An empty likes_grid is omitted from data_likes_list and reliably means
+    // that the dynamic has no reactions; malformed present data is rejected
+    // below instead of being treated as an empty list.
     if (value === undefined) return [];
     const groups = Array.isArray(value)
       ? value
@@ -947,6 +950,8 @@
         : null;
     if (!groups) return null;
 
+    // Bangumi permits at most one reaction per user on one dynamic, so a
+    // user contributes once even when the response groups several reactions.
     const identifiers = new Set();
     for (const group of groups) {
       if (!plainObject(group) || !Array.isArray(group.users)) return null;
@@ -1007,10 +1012,21 @@
     return contentKeyForHref(href, baseUrl);
   }
 
+  function dynamicIdentifierFor(item) {
+    const identifier = item?.getAttribute?.("id")?.trim() || "";
+    return /^tml_.+$/.test(identifier) ? identifier : null;
+  }
+
+  function reactionContainerIdentifierFor(item) {
+    const identifier =
+      item?.querySelector?.(".likes_grid[id]")?.getAttribute?.("id")?.trim() ||
+      "";
+    return /^likes_grid_.+$/.test(identifier) ? identifier : null;
+  }
+
   function reactionDataKeyFor(item) {
-    const reactionGrid = item?.querySelector?.(".likes_grid[id]");
-    const gridId = reactionGrid?.getAttribute?.("id");
-    return /^likes_grid_(.+)$/.exec(gridId || "")?.[1] || null;
+    const identifier = reactionContainerIdentifierFor(item);
+    return identifier?.slice("likes_grid_".length) || null;
   }
 
   // A normal collection status can intentionally omit the reaction grid. Its
@@ -1070,7 +1086,8 @@
     for (const item of items) {
       const reactionDataKey = reactionDataKeyFor(item);
       const contentKey = contentKeyForTietieItem(item, baseUrl, category);
-      if (!contentKey) return { kind: "invalid" };
+      const dynamicIdentifier = dynamicIdentifierFor(item);
+      const reactionContainerIdentifier = reactionContainerIdentifierFor(item);
 
       if (!reactionDataKey) {
         if (
@@ -1078,14 +1095,24 @@
         ) {
           return { kind: "invalid" };
         }
-        contents.push({ contentKey, reactorIdentifiers: [] });
+        contents.push({
+          contentKey,
+          dynamicIdentifier,
+          reactionContainerIdentifier,
+          reactorIdentifiers: [],
+        });
         continue;
       }
       if (!data) return { kind: "invalid" };
 
       const reactorIdentifiers = reactionUsersFor(data[reactionDataKey]);
       if (reactorIdentifiers === null) return { kind: "invalid" };
-      contents.push({ contentKey, reactorIdentifiers });
+      contents.push({
+        contentKey,
+        dynamicIdentifier,
+        reactionContainerIdentifier,
+        reactorIdentifiers,
+      });
     }
 
     return {
@@ -2647,10 +2674,102 @@
     return { refresh };
   }
 
+  function tietieIdentityDescriptorsFor(content) {
+    const descriptors = [];
+    for (const [kind, field] of [
+      ["content", "contentKey"],
+      ["dynamic", "dynamicIdentifier"],
+      ["reaction", "reactionContainerIdentifier"],
+    ]) {
+      const value = content?.[field];
+      if (typeof value === "string" && value.trim()) {
+        descriptors.push({ kind, value: value.trim() });
+      }
+    }
+    return descriptors;
+  }
+
+  function tietieIdentityToken({ kind, value }) {
+    return JSON.stringify([kind, value]);
+  }
+
+  // The content link has priority over the dynamic and reaction-container
+  // identifiers. Fallback identifiers are registered as aliases, so a later
+  // item that lacks a higher-priority identifier can still join the same
+  // record. A disclosed higher-priority identifier is never bypassed to use
+  // a lower-priority alias.
+  function createTietieContentAccumulator() {
+    const records = [];
+    const index = new Map();
+
+    function recordsFor(descriptor) {
+      return index.get(tietieIdentityToken(descriptor)) || [];
+    }
+
+    function register(record, descriptor) {
+      const token = tietieIdentityToken(descriptor);
+      const matches = index.get(token) || [];
+      if (!matches.includes(record)) matches.push(record);
+      index.set(token, matches);
+    }
+
+    function registerAll(record, content) {
+      for (const descriptor of tietieIdentityDescriptorsFor(content)) {
+        register(record, descriptor);
+      }
+    }
+
+    function candidateFor(descriptors) {
+      const [primary] = descriptors;
+      if (!primary) return null;
+
+      const exact = recordsFor(primary);
+      if (exact.length === 1) return exact[0];
+      return null;
+    }
+
+    function mergeMetadata(record, content) {
+      for (const field of [
+        "contentKey",
+        "dynamicIdentifier",
+        "reactionContainerIdentifier",
+      ]) {
+        if (!record[field] && content?.[field]) record[field] = content[field];
+      }
+      registerAll(record, content);
+    }
+
+    function add(content) {
+      const descriptors = tietieIdentityDescriptorsFor(content);
+      let record = candidateFor(descriptors);
+      if (!record) {
+        record = {
+          contentKey: content?.contentKey || null,
+          dynamicIdentifier: content?.dynamicIdentifier || null,
+          reactionContainerIdentifier:
+            content?.reactionContainerIdentifier || null,
+          reactorIdentifiers: new Set(),
+        };
+        records.push(record);
+      }
+      mergeMetadata(record, content);
+
+      const addedReactors = [];
+      for (const identifier of content?.reactorIdentifiers || []) {
+        if (record.reactorIdentifiers.has(identifier)) continue;
+        record.reactorIdentifiers.add(identifier);
+        addedReactors.push(identifier);
+      }
+      return addedReactors;
+    }
+
+    return { add };
+  }
+
   // 和我贴贴任务按分类和页排队，而不是按好友排队。每个成功页面只在
   // 页面明确提供下一页时追加同一分类的下一页，最多读取前五页；两分类
-  // 的页面结果先在批次内按内容链接去重，全部必要页面成功后才交给会话
-  // 发布。只有所有必要页面成功时才整体写入 friend cache 并交给会话；
+  // 的页面结果先在批次内按内容链接、动态编号或表情容器标识逐级去重，
+  // 无可用标识的动态直接累计。全部必要页面成功后才交给会话发布；
   // 失败批次不会触碰旧的完整结果。
   function createTietieTasks({
     applySort,
@@ -2675,9 +2794,7 @@
 
     function mergePage(record) {
       for (const content of record.contents || []) {
-        if (batch.seenContents.has(content.contentKey)) continue;
-        batch.seenContents.add(content.contentKey);
-        for (const identifier of content.reactorIdentifiers) {
+        for (const identifier of batch.contents.add(content)) {
           batch.counts.set(identifier, (batch.counts.get(identifier) || 0) + 1);
         }
       }
@@ -2752,7 +2869,10 @@
         return null;
       }
 
-      batch = { counts: new Map(), seenContents: new Set() };
+      batch = {
+        contents: createTietieContentAccumulator(),
+        counts: new Map(),
+      };
       const { task } = scheduler.enqueue(
         TIETIE_TASK_TYPE,
         TIETIE_CATEGORIES.map((category) => ({ category, page: 1 })),

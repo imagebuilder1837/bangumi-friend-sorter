@@ -649,6 +649,8 @@ test("贴贴解析按反应容器标识读取反应者", () => {
     contents: [
       {
         contentKey: "/subject/42",
+        dynamicIdentifier: "tml_55260024",
+        reactionContainerIdentifier: "likes_grid_41965814",
         reactorIdentifiers: ["friend-from-reaction"],
       },
     ],
@@ -669,14 +671,24 @@ test("贴贴解析接受没有反应容器的正常收藏动态", () => {
   assert.deepEqual(parsed, {
     kind: "success",
     contents: [
-      { contentKey: "/subject/72474594", reactorIdentifiers: [] },
-      { contentKey: "/subject/72245434", reactorIdentifiers: [] },
+      {
+        contentKey: "/subject/72474594",
+        dynamicIdentifier: "tml_72474594",
+        reactionContainerIdentifier: null,
+        reactorIdentifiers: [],
+      },
+      {
+        contentKey: "/subject/72245434",
+        dynamicIdentifier: "tml_72245434",
+        reactionContainerIdentifier: null,
+        reactorIdentifiers: [],
+      },
     ],
     hasNextPage: false,
   });
 });
 
-test("贴贴解析缺少内容链接时判定页面残缺", () => {
+test("贴贴解析没有内容链接但有动态和反应容器标识时仍纳入统计", () => {
   const parsed = sorter.parseTietieTimelineDocument(
     tietieDocumentFromFixture("timeline-tietie-missing-content.html"),
     {
@@ -686,7 +698,18 @@ test("贴贴解析缺少内容链接时判定页面残缺", () => {
     },
   );
 
-  assert.deepEqual(parsed, { kind: "invalid" });
+  assert.deepEqual(parsed, {
+    kind: "success",
+    contents: [
+      {
+        contentKey: null,
+        dynamicIdentifier: "tml_55260025",
+        reactionContainerIdentifier: "likes_grid_41965815",
+        reactorIdentifiers: ["friend-from-reaction"],
+      },
+    ],
+    hasNextPage: false,
+  });
 });
 
 test("贴贴解析区分合法空页与缺少数据的残缺页", () => {
@@ -1349,6 +1372,102 @@ test("和我贴贴完整获取成功后持久化全部统计结果", async () =>
       ["friend-b", 1],
     ]),
     fetchedAt: now,
+  });
+});
+
+test("和我贴贴按内容链接、动态和反应容器标识逐级去重", async () => {
+  const cache = sorter.createFriendCache(null);
+  const { finished, session } = createSessionHarness({
+    cache,
+    friends: [{ userIdentifier: "friend", originalIndex: 0 }],
+    runtime: {
+      http: {
+        fetchTietiePage: async (_visitorIdentifier, category) =>
+          category === "say"
+            ? {
+                kind: "success",
+                record: {
+                  kind: "success",
+                  contents: [
+                    {
+                      contentKey: "/subject/linked",
+                      dynamicIdentifier: "tml_1",
+                      reactionContainerIdentifier: "likes_grid_1",
+                      reactorIdentifiers: ["friend"],
+                    },
+                    {
+                      contentKey: "/subject/linked",
+                      dynamicIdentifier: "tml_1",
+                      reactionContainerIdentifier: "likes_grid_2",
+                      reactorIdentifiers: ["friend"],
+                    },
+                    {
+                      contentKey: null,
+                      dynamicIdentifier: "tml_1",
+                      reactionContainerIdentifier: "likes_grid_3",
+                      reactorIdentifiers: ["friend"],
+                    },
+                    {
+                      contentKey: "/subject/different",
+                      dynamicIdentifier: "tml_1",
+                      reactionContainerIdentifier: "likes_grid_4",
+                      reactorIdentifiers: ["friend"],
+                    },
+                    {
+                      contentKey: null,
+                      dynamicIdentifier: null,
+                      reactionContainerIdentifier: "likes_grid_5",
+                      reactorIdentifiers: ["friend"],
+                    },
+                    {
+                      contentKey: null,
+                      dynamicIdentifier: null,
+                      reactionContainerIdentifier: "likes_grid_5",
+                      reactorIdentifiers: ["friend"],
+                    },
+                    {
+                      contentKey: null,
+                      dynamicIdentifier: null,
+                      reactionContainerIdentifier: null,
+                      reactorIdentifiers: ["friend"],
+                    },
+                    {
+                      contentKey: null,
+                      dynamicIdentifier: null,
+                      reactionContainerIdentifier: null,
+                      reactorIdentifiers: ["friend"],
+                    },
+                    {
+                      contentKey: null,
+                      dynamicIdentifier: "tml_6a",
+                      reactionContainerIdentifier: "likes_grid_6",
+                      reactorIdentifiers: ["friend"],
+                    },
+                    {
+                      contentKey: null,
+                      dynamicIdentifier: "tml_6b",
+                      reactionContainerIdentifier: "likes_grid_6",
+                      reactorIdentifiers: ["friend"],
+                    },
+                  ],
+                  hasNextPage: false,
+                },
+              }
+            : {
+                kind: "success",
+                record: { kind: "empty", contents: [], hasNextPage: false },
+              },
+      },
+      now: () => 100_000,
+    },
+  });
+
+  session.choose("tietie");
+  await finished;
+
+  assert.deepEqual(cache.tietieFor("visitor"), {
+    counts: new Map([["friend", 7]]),
+    fetchedAt: 100_000,
   });
 });
 
