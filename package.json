@@ -4,6 +4,6 @@
   "private": true,
   "scripts": {
     "check": "node --check src/index.user.js",
-    "test": "node --test"
+    "test": "node --test test/*.test.js"
   }
 }
