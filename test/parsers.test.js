@@ -137,7 +137,7 @@ test("贴贴解析没有内容链接但有动态和反应容器标识时仍纳�
 test("贴贴解析区分合法空页与缺少数据的残缺页", () => {
   assert.deepEqual(
     sorter.parseTietieTimelineDocument(
-      timelineDocumentFromFixture("timeline-empty.html"),
+      tietieDocumentFromFixture("timeline-empty.html"),
     ),
     { kind: "empty", contents: [], hasNextPage: false },
   );
@@ -154,7 +154,7 @@ test("贴贴解析区分合法空页与缺少数据的残缺页", () => {
   );
   assert.deepEqual(
     sorter.parseTietieTimelineDocument(
-      timelineDocumentFromFixture("timeline-partial.html"),
+      tietieDocumentFromFixture("timeline-partial.html"),
     ),
     { kind: "invalid" },
   );
@@ -251,13 +251,13 @@ test("相对秒数与绝对分钟冲突时回退到分钟起点", () => {
 });
 
 test("有效的空时间胶囊被识别为无公开动态", () => {
-  const document = timelineDocumentFromFixture("timeline-empty.html");
+  const document = tietieDocumentFromFixture("timeline-empty.html");
 
   assert.deepEqual(sorter.parseTimelineDocument(document), { kind: "empty" });
 });
 
 test("只有孤立时间线容器的残缺页面被识别为失败", () => {
-  const document = timelineDocumentFromFixture("timeline-partial.html");
+  const document = tietieDocumentFromFixture("timeline-partial.html");
 
   assert.deepEqual(sorter.parseTimelineDocument(document), { kind: "invalid" });
 });
