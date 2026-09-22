@@ -78,6 +78,11 @@
   ];
   const COMPLETION_CACHE_FIELD_PREFIX = "completion_";
   const TIETIE_CATEGORIES = Object.freeze(["say", "subject"]);
+  const TIETIE_REACTION_TEMPLATE_IDS = new Set([
+    "likes_reaction_menu",
+    "likes_reaction_menu_40",
+    "likes_reaction_grid_item",
+  ]);
   const TIETIE_MAX_PAGES = 5;
   const TIETIE_TASK_TYPE = "tietie";
 
@@ -1064,13 +1069,89 @@
     return pages.length > 0;
   }
 
+  function hasActiveTietieCategory(tabs, category, baseUrl) {
+    if (!TIETIE_CATEGORIES.includes(category)) return false;
+    return [...(tabs?.querySelectorAll?.("a.focus[href]") || [])].some(
+      (anchor) => {
+        try {
+          return (
+            new URL(anchor.getAttribute("href"), baseUrl).searchParams.get(
+              "type",
+            ) === category
+          );
+        } catch {
+          return false;
+        }
+      },
+    );
+  }
+
+  function isTietieReactionTemplate(node) {
+    return Boolean(
+      node?.nodeType === 1 &&
+      node.tagName?.toLowerCase() === "template" &&
+      node.getAttribute("type") === "text/template" &&
+      TIETIE_REACTION_TEMPLATE_IDS.has(node.id),
+    );
+  }
+
+  function isTietieInitializationScript(node) {
+    return Boolean(
+      node?.nodeType === 1 &&
+      node.tagName?.toLowerCase() === "script" &&
+      /\b(?:data_like_reaction_motion_map|data_likes_list)\b/.test(
+        node.textContent || "",
+      ),
+    );
+  }
+
+  // When Bangumi reaches the end of a categorized timeline it may omit the
+  // #timeline element entirely. Accept that shape only when the surrounding
+  // category shell and reaction assets prove this is a real empty page.
+  function isTietieEmptyPage(document, tabs, category, baseUrl) {
+    const content = document?.querySelector?.("#tmlContent");
+    if (!content || !hasActiveTietieCategory(tabs, category, baseUrl)) {
+      return false;
+    }
+    if (
+      content.querySelector?.("#timeline, .tml_item, #tmlPager") ||
+      document.querySelector?.("#tmlPager")
+    ) {
+      return false;
+    }
+
+    let templateCount = 0;
+    let scriptCount = 0;
+    for (const node of content.childNodes || []) {
+      if (node.nodeType === 3) {
+        if (node.textContent.trim() !== "") return false;
+        continue;
+      }
+      if (isTietieReactionTemplate(node)) {
+        templateCount += 1;
+        continue;
+      }
+      if (isTietieInitializationScript(node)) {
+        scriptCount += 1;
+        continue;
+      }
+      return false;
+    }
+    return templateCount > 0 && scriptCount > 0;
+  }
+
   function parseTietieTimelineDocument(
     document,
     { baseUrl = "https://bgm.tv/", category, page = 1 } = {},
   ) {
     const tabs = document?.querySelector?.("#timelineTabs");
     const timeline = document?.querySelector?.("#tmlContent > #timeline");
-    if (!tabs || !timeline) return { kind: "invalid" };
+    if (!tabs) return { kind: "invalid" };
+    if (!timeline) {
+      return isTietieEmptyPage(document, tabs, category, baseUrl)
+        ? { kind: "empty", contents: [], hasNextPage: false }
+        : { kind: "invalid" };
+    }
 
     const items = [...(timeline.querySelectorAll?.(".tml_item") || [])];
     if (items.length === 0) {

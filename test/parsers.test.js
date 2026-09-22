@@ -12,7 +12,7 @@ const {
 } = require("./support");
 
 
-test("贴贴时间胶囊解析反应者、内容链接和分页，不依赖页面脚本执行", () => {
+test("贴贴时间胶囊解析反应者、内容链接和分页", () => {
   const parsed = sorter.parseTietieTimelineDocument(
     tietieDocumentFromFixture("timeline-tietie.html"),
     {
@@ -160,6 +160,58 @@ test("贴贴解析区分合法空页与缺少数据的残缺页", () => {
   );
 });
 
+test("贴贴解析接受分类时间胶囊省略动态容器的可靠空页", () => {
+  assert.deepEqual(
+    sorter.parseTietieTimelineDocument(
+      tietieDocumentFromFixture("timeline-tietie-empty-no-container.html"),
+      {
+        baseUrl: "https://bgm.tv/user/visitor/timeline?type=say",
+        category: "say",
+        page: 3,
+      },
+    ),
+    { kind: "empty", contents: [], hasNextPage: false },
+  );
+  assert.deepEqual(
+    sorter.parseTietieTimelineDocument(
+      tietieDocumentFromFixture(
+        "timeline-tietie-empty-subject-no-container.html",
+      ),
+      {
+        baseUrl: "https://bgm.tv/user/visitor/timeline?type=subject",
+        category: "subject",
+        page: 1,
+      },
+    ),
+    { kind: "empty", contents: [], hasNextPage: false },
+  );
+});
+
+test("贴贴解析拒绝分类不匹配或含未知内容的无容器页", () => {
+  assert.deepEqual(
+    sorter.parseTietieTimelineDocument(
+      tietieDocumentFromFixture("timeline-tietie-empty-no-container.html"),
+      {
+        baseUrl: "https://bgm.tv/user/visitor/timeline?type=subject",
+        category: "subject",
+        page: 3,
+      },
+    ),
+    { kind: "invalid" },
+  );
+  assert.deepEqual(
+    sorter.parseTietieTimelineDocument(
+      tietieDocumentFromFixture("timeline-tietie-empty-unknown.html"),
+      {
+        baseUrl: "https://bgm.tv/user/visitor/timeline?type=say",
+        category: "say",
+        page: 3,
+      },
+    ),
+    { kind: "invalid" },
+  );
+});
+
 test("从时间胶囊首条动态读取活跃时刻", () => {
   const document = timelineDocumentFromFixture("timeline-active.html");
 
@@ -251,13 +303,13 @@ test("相对秒数与绝对分钟冲突时回退到分钟起点", () => {
 });
 
 test("有效的空时间胶囊被识别为无公开动态", () => {
-  const document = tietieDocumentFromFixture("timeline-empty.html");
+  const document = timelineDocumentFromFixture("timeline-empty.html");
 
   assert.deepEqual(sorter.parseTimelineDocument(document), { kind: "empty" });
 });
 
 test("只有孤立时间线容器的残缺页面被识别为失败", () => {
-  const document = tietieDocumentFromFixture("timeline-partial.html");
+  const document = timelineDocumentFromFixture("timeline-partial.html");
 
   assert.deepEqual(sorter.parseTimelineDocument(document), { kind: "invalid" });
 });

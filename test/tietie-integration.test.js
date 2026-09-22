@@ -195,6 +195,109 @@ test("和我贴贴完整获取成功后持久化全部统计结果", async () =>
   });
 });
 
+test("和我贴贴前页有结果且末页省略动态容器时仍发布完整统计", async () => {
+  const now = 100_000;
+  const cache = sorter.createFriendCache(null, { now: () => now });
+  cache.replaceTietie("visitor", {
+    counts: new Map([["friend-a", 99]]),
+    fetchedAt: now - 72 * 60 * 60 * 1_000 - 1,
+  });
+  const documents = new Map([
+    ["say:1", "timeline-tietie.html"],
+    ["subject:1", "timeline-tietie.html"],
+    ["say:2", "timeline-tietie-empty-no-container.html"],
+    ["subject:2", "timeline-tietie-empty-subject-no-container.html"],
+  ]);
+  const requests = [];
+  const { finished, lastMessage, session } = createSessionHarness({
+    cache,
+    friends: [
+      { userIdentifier: "friend-a", originalIndex: 0 },
+      { userIdentifier: "friend-b", originalIndex: 1 },
+      { userIdentifier: "friend-c", originalIndex: 2 },
+    ],
+    runtime: {
+      http: {
+        fetchTietiePage: async (_visitorIdentifier, category, page) => {
+          requests.push(`${category}:${page}`);
+          const filename = documents.get(`${category}:${page}`);
+          assert.ok(filename);
+          const record = sorter.parseTietieTimelineDocument(
+            tietieDocumentFromFixture(filename),
+            {
+              baseUrl: `https://bgm.tv/user/visitor/timeline?type=${category}`,
+              category,
+              page,
+            },
+          );
+          return { kind: "success", record };
+        },
+      },
+      now: () => now,
+    },
+  });
+
+  session.choose("tietie");
+  await finished;
+
+  assert.equal(lastMessage(), "“和我贴贴”获取完成");
+  assert.deepEqual(requests, ["say:1", "subject:1", "say:2", "subject:2"]);
+  assert.deepEqual(cache.tietieFor("visitor"), {
+    counts: new Map([
+      ["friend-a", 3],
+      ["friend-b", 6],
+      ["friend-c", 2],
+      ["unknown", 1],
+    ]),
+    fetchedAt: now,
+  });
+});
+
+test("和我贴贴遇到未知空页时保留旧结果", async () => {
+  const now = 100_000;
+  const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
+  const cache = sorter.createFriendCache(null, { now: () => now });
+  cache.replaceTietie("visitor", {
+    counts: new Map([["friend-a", 4]]),
+    fetchedAt: staleFetchedAt,
+  });
+  const { finished, lastMessage, session } = createSessionHarness({
+    cache,
+    friends: [{ userIdentifier: "friend-a", originalIndex: 0 }],
+    runtime: {
+      http: {
+        fetchTietiePage: async (_visitorIdentifier, category, page) => {
+          const filename =
+            category === "say"
+              ? "timeline-tietie-empty-no-container.html"
+              : "timeline-tietie-empty-unknown.html";
+          const record = sorter.parseTietieTimelineDocument(
+            tietieDocumentFromFixture(filename),
+            {
+              baseUrl: `https://bgm.tv/user/visitor/timeline?type=${category}`,
+              category,
+              page,
+            },
+          );
+          return record.kind === "invalid"
+            ? { kind: "parse-error" }
+            : { kind: "success", record };
+        },
+      },
+      now: () => now,
+    },
+  });
+
+  session.choose("tietie");
+  await finished;
+
+  assert.equal(lastMessage(), "“和我贴贴”获取失败，本次结果未更新");
+  assert.deepEqual(cache.tietieFor("visitor"), {
+    counts: new Map([["friend-a", 4]]),
+    fetchedAt: staleFetchedAt,
+  });
+});
+
 test("和我贴贴按内容链接、动态和反应容器标识逐级去重", async () => {
   const cache = sorter.createFriendCache(null);
   const { finished, session } = createSessionHarness({
