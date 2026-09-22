@@ -5,5 +5,8 @@
   "scripts": {
     "check": "node --check src/index.user.js",
     "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "^20.0.3"
   }
 }
