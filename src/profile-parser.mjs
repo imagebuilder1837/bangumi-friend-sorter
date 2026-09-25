@@ -101,7 +101,7 @@ function completionFieldOutcomes(document) {
   for (const [scope] of COMPLETION_CHOICES.slice(1)) {
     const stats = statsBlockFor(container, scope);
     if (stats.kind === "missing") {
-      // 缺失的分类块可靠地为零（见 docs/spec.md）。
+      // 缺失的分类块可靠地为零（见 docs/spec/data.md）。
       outcomes[scope] = successOutcome(0);
     } else if (stats.kind === "found") {
       const value = parseCompletionCount(stats.block);

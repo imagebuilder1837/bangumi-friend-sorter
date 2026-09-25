@@ -1,7 +1,18 @@
 # 开发与交付
 
-使用 Node.js 18+（Rollup 4.60.0 声明支持 Node >=18，Prettier 3.6.2 声明支持 Node >=14；依赖版本由锁文件固定）。运行 `npm ci` 安装开发依赖。编辑 `.mjs` 维护源后运行 `npm run build`，在原安装地址生成并格式化可读的单文件。`npm run format` 修正维护源格式，`npm run format:check` 只读检查维护源与产物格式；生成产物仅由 build 修正。
+## 构建与发布
 
-提交前在最终改动状态运行 `npm run check`，只读验证格式、语法、版本、产物一致性与测试；失败后修复并重跑。开发环境已验证 Node.js 26.10.0、Rollup 4.60.0、Prettier 3.6.2；Node 18 是所选工具声明的兼容下限，非本机实测版本。
+- 使用 Node.js 18+（Rollup 4.60.0 声明支持 Node >=18，Prettier 3.6.2 声明支持 Node >=14；依赖版本由锁文件固定）。运行 `npm ci` 安装开发依赖。
+- 提交给 Bangumi 运营者审核的最终发布物必须是零运行时依赖、自包含且可直接阅读的单文件 userscript；审核者不需要拼装多个文件或执行构建步骤，也不应收到经过混淆或压缩的输出。以 `src/main.mjs` 为浏览器入口，职责模块见 [`docs/module-guide.md`](module-guide.md)；构建生成原地址 `src/index.user.js` 并入库。
+- 使用 Rollup 保留注释、不压缩地生成 IIFE，并由 Prettier 格式化，以保持审核可读性。编辑 `.mjs` 维护源后运行 `npm run build`，在原安装地址生成并格式化可读的单文件。
+- 生成产物仅由 build 修正。`npm run format` 修正维护源格式，`npm run format:check` 只读检查维护源与产物格式。
 
-由人工决定版本变更，运行 `npm version <显式版本> --no-git-tag-version` 同步 package 和锁文件，然后运行 `npm run build`。构建与校验不自动发布、提交或打 tag。
+## 验证
+
+- 提交前在最终改动状态运行 `npm run check`，只读验证格式、语法、版本、产物一致性与测试；失败后修复并重跑。
+- 使用 Node 内置测试验证主排序按钮的稳定排序、方向记忆、菜单交互、24/72 小时缓存边界、贴贴两阶段强制刷新、v2 到 v3 迁移、时间胶囊最小 HTML fixture 解析、主页统计解析、页面获取任务、错误降级和新增请求数的 400 人边界。排序栏行为通过 `bind`、`render` 与可观察的 DOM、ARIA、焦点结果验证，不依赖内部节点序号。
+
+## 版本号
+
+- 开发环境已验证 Node.js 26.10.0、Rollup 4.60.0、Prettier 3.6.2；Node 18 是所选工具声明的兼容下限，非本机实测版本。
+- 由人工决定版本变更，运行 `npm version <显式版本> --no-git-tag-version` 同步 package 和锁文件，然后运行 `npm run build`。构建与校验不自动发布、提交或打 tag。

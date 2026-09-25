@@ -741,7 +741,7 @@
     const style = document.createElement("style");
     // The site styles #browserTools itself, but its filter rules target links.
     // These button rules mirror them; aria-current remains semantic only.
-    // See docs/spec.md, "原站样式基线", for the verified source and selectors.
+    // See docs/spec/ui.md, "原站样式基线", for the verified source and selectors.
     style.textContent = `
     #bangumi-friend-sorter.filters {
       align-items: baseline;
@@ -1352,7 +1352,7 @@
     for (const [scope] of COMPLETION_CHOICES.slice(1)) {
       const stats = statsBlockFor(container, scope);
       if (stats.kind === "missing") {
-        // 缺失的分类块可靠地为零（见 docs/spec.md）。
+        // 缺失的分类块可靠地为零（见 docs/spec/data.md）。
         outcomes[scope] = successOutcome(0);
       } else if (stats.kind === "found") {
         const value = parseCompletionCount(stats.block);

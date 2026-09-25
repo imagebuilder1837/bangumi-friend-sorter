@@ -13,7 +13,7 @@ function installStyles(document) {
   const style = document.createElement("style");
   // The site styles #browserTools itself, but its filter rules target links.
   // These button rules mirror them; aria-current remains semantic only.
-  // See docs/spec.md, "原站样式基线", for the verified source and selectors.
+  // See docs/spec/ui.md, "原站样式基线", for the verified source and selectors.
   style.textContent = `
     #bangumi-friend-sorter.filters {
       align-items: baseline;
