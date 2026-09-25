@@ -16,14 +16,14 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 
-async function snapshot(directory) {
+async function snapshot(directory, base = directory) {
   const entries = await readdir(directory, { withFileTypes: true });
   const result = {};
   for (const entry of entries) {
     if (entry.name === "node_modules") continue;
     const file = path.join(directory, entry.name);
-    if (entry.isDirectory()) Object.assign(result, await snapshot(file));
-    else result[path.relative(directory, file)] = await readFile(file, "utf8");
+    if (entry.isDirectory()) Object.assign(result, await snapshot(file, base));
+    else result[path.relative(base, file)] = await readFile(file, "utf8");
   }
   return result;
 }
@@ -91,6 +91,14 @@ test("check rejects stale output, version drift, format and syntax errors withou
         before,
         `${name}: check must be read-only`,
       );
+      if (name === "stale artifact") {
+        const rebuilt = spawnSync(process.execPath, ["scripts/build.mjs"], {
+          cwd: sandbox,
+          encoding: "utf8",
+        });
+        assert.equal(rebuilt.status, 0, rebuilt.stderr);
+        assert.equal(check().status, 0, "rebuilding repairs a stale artifact");
+      }
       await writeFile(script, original.script);
       await writeFile(lockPath, original.lock);
       await writeFile(entry, original.entry);
