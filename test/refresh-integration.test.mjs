@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import * as sorter from "../src/legacy.mjs";
+import { createFriendCache } from "../src/cache.mjs";
+import { fetchProfile } from "../src/http.mjs";
+import { initialize } from "../src/entry.mjs";
 import {
   friendPageWith,
   statusFor,
@@ -29,7 +31,7 @@ test("仅为缺失或超过二十四小时的上次活跃缓存安排请求", ()
     { userIdentifier: "stale" },
     { userIdentifier: "missing" },
   ];
-  const activities = sorter.createFriendCache(null, { now: () => now });
+  const activities = createFriendCache(null, { now: () => now });
   refreshCache(activities, [
     [
       "fresh-active",
@@ -77,7 +79,7 @@ test("请求响应头的时间按整秒传给活跃时刻解析并写入整数 U
   const responseTime = Date.UTC(2026, 7, 26, 9, 43, 36);
   const writes = [];
   const page = friendPageWith([{ href: "/user/sai", name: "Sai" }]);
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -108,7 +110,7 @@ test("请求响应头的时间按整秒传给活跃时刻解析并写入整数 U
   await waitForCondition(() => writes.length > 0);
 
   // 批次完成后重建缓存，通过领域读取验证响应头时间被截断到整秒。
-  const reloaded = sorter.createFriendCache({
+  const reloaded = createFriendCache({
     getItem: () => JSON.stringify(writes.at(-1)[1]),
     setItem() {},
     removeItem() {},
@@ -122,7 +124,7 @@ test("请求响应头的时间按整秒传给活跃时刻解析并写入整数 U
 
 test("时间胶囊返回四零四时计入失败且不覆盖缓存", async () => {
   const progress = [];
-  const cache = sorter.createFriendCache(null);
+  const cache = createFriendCache(null);
   const { finished, lastMessage, session } = createSessionHarness({
     cache,
     friends: [{ userIdentifier: "missing" }],
@@ -156,9 +158,7 @@ test("用户主页返回四零四时计入失败且保留旧缓存", async () =>
       visitor: { syncRate: { value: 55, fetchedAt: staleFetchedAt } },
     },
   };
-  const cache = sorter.createFriendCache(
-    friendCacheStorage({ friend: oldRecord }),
-  );
+  const cache = createFriendCache(friendCacheStorage({ friend: oldRecord }));
   const progress = [];
   const { finished, lastMessage, session } = createSessionHarness({
     cache,
@@ -200,9 +200,7 @@ test("无效用户主页计入失败且保留旧缓存", async () => {
       visitor: { syncRate: { value: 55, fetchedAt: staleFetchedAt } },
     },
   };
-  const cache = sorter.createFriendCache(
-    friendCacheStorage({ friend: oldRecord }),
-  );
+  const cache = createFriendCache(friendCacheStorage({ friend: oldRecord }));
   const { finished, lastMessage, session } = createSessionHarness({
     cache,
     friends: [{ userIdentifier: "friend" }],
@@ -250,7 +248,7 @@ test("用户主页请求超过十五秒时计入失败且保留旧缓存", async
   globalThis.clearTimeout = () => {};
 
   try {
-    sorter.initialize({
+    initialize({
       document: page.document,
       window: {
         CHOBITS_USERNAME: "visitor",
@@ -288,7 +286,7 @@ test("用户主页请求超过十五秒时计入失败且保留旧缓存", async
       status.textContent.includes("获取完成，1 人失败"),
     );
     assert.equal(requestSignal.aborted, true);
-    const reloaded = sorter.createFriendCache(
+    const reloaded = createFriendCache(
       friendCacheStorage({ friend: oldRecord }),
       { now: () => now },
     );
@@ -303,7 +301,7 @@ test("时间胶囊刷新任务通过适配器结果、缓存写入和进度回�
   const requested = [];
   const progress = [];
   const responseTime = Date.UTC(2026, 7, 26, 9, 43, 36);
-  const cache = sorter.createFriendCache(null);
+  const cache = createFriendCache(null);
   const { finished, lastMessage, session } = createSessionHarness({
     cache,
     friends: [{ userIdentifier: "sai" }, { userIdentifier: "tom" }],
@@ -349,7 +347,7 @@ test("时间胶囊刷新任务通过适配器结果、缓存写入和进度回�
 });
 
 test("主页请求记录按字段携带成功、缺失或无效结果", async () => {
-  const outcome = await sorter.fetchProfile(
+  const outcome = await fetchProfile(
     { userIdentifier: "sai" },
     async () => ({ ok: true, text: async () => "profile" }),
     { parseFromString: () => duplicateCategoryProfileDocument() },
@@ -369,7 +367,7 @@ test("主页请求记录按字段携带成功、缺失或无效结果", async ()
     value: 5,
   });
 
-  const absentFields = await sorter.fetchProfile(
+  const absentFields = await fetchProfile(
     { userIdentifier: "sai" },
     async () => ({ ok: true, text: async () => "profile" }),
     { parseFromString: () => relationProfileDocument({ syncRate: "50%" }) },
@@ -450,7 +448,7 @@ test("同一主页响应分别刷新完成统计，失败范围保留旧缓存",
       writes.push([key, JSON.parse(value)]);
     },
   };
-  const cache = sorter.createFriendCache(storage);
+  const cache = createFriendCache(storage);
 
   const { finished, session } = createSessionHarness({
     cache,
@@ -509,7 +507,7 @@ test("某个完成范围解析无效只保留该范围旧缓存，其余范围�
       writes.push([key, JSON.parse(value)]);
     },
   };
-  const cache = sorter.createFriendCache(storage);
+  const cache = createFriendCache(storage);
 
   const { finished, lastMessage, session } = createSessionHarness({
     cache,

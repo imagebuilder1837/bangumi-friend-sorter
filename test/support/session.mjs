@@ -1,4 +1,5 @@
-import * as sorter from "../../src/legacy.mjs";
+import { createFriendSortSession } from "../../src/session.mjs";
+import { initialize } from "../../src/entry.mjs";
 
 import { friendPageWith } from "./dom.mjs";
 
@@ -22,7 +23,7 @@ function initializeRefreshPage({
   visitorIdentifier = "visitor",
 }) {
   const page = friendPageWith(entries);
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: visitorIdentifier,
@@ -54,7 +55,7 @@ function createSessionHarness({
   const finished = new Promise((resolve) => {
     resolveFinished = resolve;
   });
-  const session = sorter.createFriendSortSession({
+  const session = createFriendSortSession({
     cache,
     collator: new Intl.Collator(undefined, {
       numeric: true,

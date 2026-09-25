@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import * as sorter from "../src/legacy.mjs";
+import { createFriendCache } from "../src/cache.mjs";
+import { initialize } from "../src/entry.mjs";
 import {
   friendPageWith,
   mountedSortBar,
@@ -42,7 +43,7 @@ test("初始化在时间胶囊和用户主页任务之间切换并恢复暂停�
     pending.delete(url);
     resolve(responseFor(url));
   };
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -107,7 +108,7 @@ test("页面初始化全局最多四并发且限流会停止两类页面任务",
   const started = [];
   const pending = new Map();
 
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/viewed/friends" } },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -152,7 +153,7 @@ test("同一页面任务收到 429 时立即显示全局限流提示", async () 
   const pending = new Map();
   const started = [];
 
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/viewed/friends" } },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -241,7 +242,7 @@ test("本地排序不改变当前远程任务的前台优先级", async () => {
     resolve(responseFor(url));
   };
 
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -291,7 +292,7 @@ test("主页连续五次服务端错误后停止并恢复暂停的时间胶囊�
   );
   const started = [];
   const pending = new Map();
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/viewed/friends" } },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -345,7 +346,7 @@ test("未登录时选择喜好契合不请求且登录提示不会因重复选�
   const page = friendPageWith([{ href: "/user/friend", name: "好友" }]);
   let requests = 0;
   const clock = fakeTimers();
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: {
       location: { href: "https://bgm.tv/user/viewed/friends" },
@@ -402,7 +403,7 @@ test("未登录时选择喜好契合不请求且登录提示不会因重复选�
 
 test("选择喜好契合会清除已激活的上次活跃全量刷新提示", () => {
   const page = friendPageWith([{ href: "/user/friend", name: "好友" }]);
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -427,7 +428,7 @@ test("登录提示不会被完成任务完成状态覆盖", async () => {
   const pendingProfile = new Promise((resolve) => {
     releaseProfile = resolve;
   });
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: {
       location: { href: "https://bgm.tv/user/viewed/friends" },
@@ -470,7 +471,7 @@ test("不同页面类型的完成提示按队头出现时间各保持五秒", as
     releaseProfile = resolve;
   });
 
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -564,7 +565,7 @@ test("主页同步率与共同喜好数切换复用任务、去重请求并按�
     removeItem() {},
   };
 
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -621,7 +622,7 @@ test("主页同步率与共同喜好数切换复用任务、去重请求并按�
 
   // 完成批次后重建缓存，通过领域读取接口验证最终缓存结果，不读取原始
   // 写入 payload 或 raw cache field。
-  const reloaded = sorter.createFriendCache(storage, { now: () => now });
+  const reloaded = createFriendCache(storage, { now: () => now });
   assert.deepEqual(
     reloaded.relationFor("a", {
       metric: "syncRate",
@@ -682,7 +683,7 @@ test("同步率切换到完成条目数时复用同一主页任务", async () =>
     removeItem() {},
   };
 
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -748,7 +749,7 @@ test("切换字段但未新增好友时立即更新进行中提示的主按钮�
   });
   const requests = [];
 
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -801,7 +802,7 @@ test("获取中重复选择同一远程目标被忽略且不打断进行中任�
   });
   const requests = [];
 
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -1052,7 +1053,7 @@ test("主页任务按好友用户标识去重重复条目", async () => {
     { href: "/user/a", name: "A2" },
   ]);
   const requests = [];
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -1093,7 +1094,7 @@ test("初始化将排序栏挂在主内容列之前并使用完成条目数方�
   page.list.closest = (selector) =>
     selector === ".mainWrapper" ? wrapper : null;
 
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/sai/friends" } },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -1178,7 +1179,7 @@ test("完成统计范围在刷新期间切换后补取新增缺失好友", async
     removeItem() {},
   };
 
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/sai/friends" } },
     storage,
@@ -1211,12 +1212,12 @@ test("完成统计范围在刷新期间切换后补取新增缺失好友", async
   await waitForCondition(() => writes.length > 0);
   // b 的结果在任务结束的批次完成时落盘；轮询领域读取直到最终值可见。
   await waitForCondition(() => {
-    const probe = sorter.createFriendCache(storage, { now: () => now });
+    const probe = createFriendCache(storage, { now: () => now });
     return probe.completionFor("b", "1")?.value === 20;
   });
 
   assert.deepEqual(requests, ["a", "b"]);
-  const reloaded = sorter.createFriendCache(storage, { now: () => now });
+  const reloaded = createFriendCache(storage, { now: () => now });
   assert.deepEqual(completionSnapshotFor(reloaded, "b"), {
     all: { value: 2, fetchedAt: now },
     1: { value: 20, fetchedAt: now },
@@ -1238,7 +1239,7 @@ test("完成条目数两击全量刷新使用实际范围名称并忽略有效�
   ]);
   const now = 100_000;
   const requests = [];
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/sai/friends" } },
     storage: {
@@ -1358,7 +1359,7 @@ test("页面增量刷新恰好新增四百个请求时不确认", async () => {
   );
   const requests = [];
   const confirmations = [];
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/sai/friends" } },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },

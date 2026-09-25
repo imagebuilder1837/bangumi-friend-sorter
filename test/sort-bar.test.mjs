@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import * as sorter from "../src/legacy.mjs";
+import { createSortBar } from "../src/sort-bar.mjs";
+import { directionLabelsFor } from "../src/sorting.mjs";
+import { initialize } from "../src/entry.mjs";
 import {
   friendPageWith,
   mountedSortBar,
@@ -41,7 +43,7 @@ test("纯空白展示名称不会阻止排序栏初始化", () => {
   };
 
   try {
-    sorter.initialize();
+    initialize();
   } finally {
     global.document = previousDocument;
     global.window = previousWindow;
@@ -70,7 +72,7 @@ test("初始化后每个好友项显示网页默认顺序名次", () => {
   };
 
   try {
-    sorter.initialize();
+    initialize();
   } finally {
     global.document = previousDocument;
     global.window = previousWindow;
@@ -98,7 +100,7 @@ test("名次随每次重排更新，#1 始终是当前展示顺序的第一位",
   };
 
   try {
-    sorter.initialize();
+    initialize();
   } finally {
     global.document = previousDocument;
     global.window = previousWindow;
@@ -132,23 +134,23 @@ test("名次随每次重排更新，#1 始终是当前展示顺序的第一位",
 });
 
 test("方向文案随排序维度切换", () => {
-  assert.deepEqual(sorter.directionLabelsFor("name"), {
+  assert.deepEqual(directionLabelsFor("name"), {
     asc: "升序",
     desc: "降序",
   });
-  assert.deepEqual(sorter.directionLabelsFor("added"), {
+  assert.deepEqual(directionLabelsFor("added"), {
     asc: "从旧到新",
     desc: "从新到旧",
   });
-  assert.deepEqual(sorter.directionLabelsFor("activity"), {
+  assert.deepEqual(directionLabelsFor("activity"), {
     asc: "从旧到新",
     desc: "从新到旧",
   });
-  assert.deepEqual(sorter.directionLabelsFor("relation"), {
+  assert.deepEqual(directionLabelsFor("relation"), {
     asc: "从低到高",
     desc: "从高到低",
   });
-  assert.deepEqual(sorter.directionLabelsFor("tietie"), {
+  assert.deepEqual(directionLabelsFor("tietie"), {
     asc: "从低到高",
     desc: "从高到低",
   });
@@ -158,7 +160,7 @@ test("排序栏通过 bind 回传意图并经 render 更新方向文案", () => 
   const page = friendPageWith([]);
   const selections = [];
   const directions = [];
-  const sortBar = sorter.createSortBar(page.document, { list: page.list });
+  const sortBar = createSortBar(page.document, { list: page.list });
   sortBar.bind({
     selectCriterion: (criterion, selection) =>
       selections.push([criterion, selection]),
@@ -208,7 +210,7 @@ test("排序栏通过 bind 回传意图并经 render 更新方向文案", () => 
 
 test("和我贴贴是位于上次活跃与喜好契合之间的独立排序按钮", () => {
   const page = friendPageWith([]);
-  const sortBar = sorter.createSortBar(page.document, { list: page.list });
+  const sortBar = createSortBar(page.document, { list: page.list });
   sortBar.bind({ selectCriterion() {}, selectDirection() {} });
   assert.equal(sortBar.mount(), true);
 
@@ -247,7 +249,7 @@ test("页面初始化提供六个主排序目标、全部子项和各自主按�
     { href: "/user/a", name: "Ada" },
   ]);
 
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -317,7 +319,7 @@ test("页面初始化提供六个主排序目标、全部子项和各自主按�
 test("完成条目数菜单按范围回调并只表达当前子项的无障碍状态", () => {
   const selected = [];
   const page = friendPageWith([]);
-  const sortBar = sorter.createSortBar(page.document, { list: page.list });
+  const sortBar = createSortBar(page.document, { list: page.list });
   sortBar.bind({
     selectCriterion: (criterion, scope) => selected.push([criterion, scope]),
     selectDirection: () => {},
@@ -351,7 +353,7 @@ test("完成条目数菜单按范围回调并只表达当前子项的无障碍�
 test("喜好契合菜单按指标回调并直接点击默认选择同步率", () => {
   const selected = [];
   const page = friendPageWith([]);
-  const sortBar = sorter.createSortBar(page.document, { list: page.list });
+  const sortBar = createSortBar(page.document, { list: page.list });
   sortBar.bind({
     selectCriterion: (criterion, metric) => selected.push([criterion, metric]),
     selectDirection: () => {},
@@ -387,7 +389,7 @@ test("喜好契合菜单按指标回调并直接点击默认选择同步率", ()
 
 test("喜好契合菜单的焦点状态只控制自身菜单", () => {
   const page = friendPageWith([]);
-  const sortBar = sorter.createSortBar(page.document, { list: page.list });
+  const sortBar = createSortBar(page.document, { list: page.list });
   sortBar.bind({ selectCriterion: () => {}, selectDirection: () => {} });
   sortBar.mount();
   const relationButton = dropdownButtonFor(page, "喜好契合");
@@ -512,7 +514,7 @@ test("外部筛选切换后名次经可见性观察自动重排", () => {
     { href: "/user/c", name: "C" },
   ]);
   const { instances, FakeMutationObserver } = fakeMutationObserverClass();
-  const sortBar = sorter.createSortBar(page.document, {
+  const sortBar = createSortBar(page.document, {
     list: page.list,
     mutationObserver: FakeMutationObserver,
   });
@@ -562,7 +564,7 @@ test("页面初始化把可见性观察器接到好友列表上", () => {
     { href: "/user/b", name: "B" },
   ]);
   const { instances, FakeMutationObserver } = fakeMutationObserverClass();
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -709,7 +711,7 @@ test("缺少主内容布局时不修改好友页面", () => {
   const page = friendPageWith([{ href: "/user/a", name: "A" }]);
   page.list.closest = () => null;
 
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/sai/friends" } },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -721,7 +723,7 @@ test("缺少主内容布局时不修改好友页面", () => {
 
 test("注入样式支持固定标签与相邻按钮之间的空隙", () => {
   const page = friendPageWith([{ href: "/user/a", name: "A" }]);
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/sai/friends" } },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },

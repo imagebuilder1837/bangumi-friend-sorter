@@ -57,7 +57,7 @@ export async function generate() {
       throw new Error("Expected one self-contained browser script");
     }
     const notice =
-      "// Generated from src/main.mjs and src/legacy.mjs. Do not edit; run npm run build.\n";
+      "// Generated from src/main.mjs and its src/*.mjs imports. Do not edit; run npm run build.\n";
     const formatted = await prettier.format(output[0].code, {
       filepath: artifact,
     });

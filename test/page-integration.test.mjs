@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import * as sorter from "../src/legacy.mjs";
+import { currentVisitorIdentifier } from "../src/identity.mjs";
+import { initialize } from "../src/entry.mjs";
 import {
   friendPageWith,
   mainSortControl,
@@ -30,7 +31,7 @@ test("页面初始化可以注入获取任务所需的运行时依赖", async ()
     location: { href: "https://bgm.tv/user/sai/friends" },
   };
 
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: pageWindow,
     storage,
@@ -88,7 +89,7 @@ test("三个支持站点都使用隔离存储和同源请求刷新两类页面",
     const requests = [];
     const writes = [];
     domainWrites.set(host, writes);
-    sorter.initialize({
+    initialize({
       document: page.document,
       window: {
         location: { href: `https://${host}/user/viewed/friends` },
@@ -172,7 +173,7 @@ test("页面初始化使用注入时钟判断 v2 上次活跃记录迁移有效�
     setItem() {},
   };
 
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/sai/friends" } },
     storage,
@@ -204,7 +205,7 @@ test("当前访问者标识按配置的访问者标识、UID、页头头像依�
   };
 
   assert.equal(
-    sorter.currentVisitorIdentifier(headerDocument, {
+    currentVisitorIdentifier(headerDocument, {
       CHOBITS_UID: "42",
       CHOBITS_USERNAME: "name",
       location: { href: "https://bgm.tv/user/viewed/friends" },
@@ -212,14 +213,14 @@ test("当前访问者标识按配置的访问者标识、UID、页头头像依�
     "name",
   );
   assert.equal(
-    sorter.currentVisitorIdentifier(headerDocument, {
+    currentVisitorIdentifier(headerDocument, {
       CHOBITS_UID: "9007199254740993",
       location: { href: "https://bgm.tv/user/viewed/friends" },
     }),
     "9007199254740993",
   );
   assert.equal(
-    sorter.currentVisitorIdentifier(headerDocument, {
+    currentVisitorIdentifier(headerDocument, {
       CHOBITS_UID: "0",
       CHOBITS_USERNAME: "  name  ",
       location: { href: "https://bgm.tv/user/viewed/friends" },
@@ -227,13 +228,13 @@ test("当前访问者标识按配置的访问者标识、UID、页头头像依�
     "name",
   );
   assert.equal(
-    sorter.currentVisitorIdentifier(headerDocument, {
+    currentVisitorIdentifier(headerDocument, {
       location: { href: "https://bgm.tv/user/viewed/friends" },
     }),
     "header-user",
   );
   assert.equal(
-    sorter.currentVisitorIdentifier(
+    currentVisitorIdentifier(
       { querySelector: () => null },
       { location: { href: "https://bgm.tv/user/viewed/friends" } },
     ),
@@ -265,7 +266,7 @@ test("初始化按当前访问者隔离喜好契合缓存", () => {
 
   const pageA = friendPageWith([{ href: "/user/friend", name: "好友" }]);
   let requestsA = 0;
-  sorter.initialize({
+  initialize({
     document: pageA.document,
     window: {
       CHOBITS_USERNAME: visitorA,
@@ -286,7 +287,7 @@ test("初始化按当前访问者隔离喜好契合缓存", () => {
 
   const pageB = friendPageWith([{ href: "/user/friend", name: "好友" }]);
   let requestsB = 0;
-  sorter.initialize({
+  initialize({
     document: pageB.document,
     window: {
       CHOBITS_USERNAME: visitorB,

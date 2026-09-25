@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import * as sorter from "../../src/legacy.mjs";
+import { createSortBar } from "../../src/sort-bar.mjs";
 import { friendPageWith } from "./dom.mjs";
 
 function mountedSortBar(page) {
@@ -92,7 +92,7 @@ function renderState(overrides = {}) {
 }
 
 function sortBarUnderTest(page, { onSelectCriterion = () => {} } = {}) {
-  const sortBar = sorter.createSortBar(page.document, { list: page.list });
+  const sortBar = createSortBar(page.document, { list: page.list });
   sortBar.bind({
     selectCriterion: onSelectCriterion,
     selectDirection: () => {},

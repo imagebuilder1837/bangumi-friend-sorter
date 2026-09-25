@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import * as sorter from "../src/legacy.mjs";
+import { createFriendCache } from "../src/cache.mjs";
 import {
   friendCacheStorage,
   storedCompletion,
@@ -16,7 +16,7 @@ test("持久存储不可用时上次活跃缓存仍在当前页面内工作", ()
       throw new Error("storage unavailable");
     },
   };
-  const cache = sorter.createFriendCache(unavailableStorage);
+  const cache = createFriendCache(unavailableStorage);
   const record = { kind: "active", activityAtSeconds: 1, fetchedAt: 2_000 };
 
   refreshCache(cache, [["sai", { activity: record }]]);
@@ -43,7 +43,7 @@ test("升级缓存版本时迁移有效的 v2 上次活跃记录到 v3", () => {
     },
   };
 
-  const cache = sorter.createFriendCache(storage, { now: () => 3_000 });
+  const cache = createFriendCache(storage, { now: () => 3_000 });
 
   assert.deepEqual(cache.activityFor("sai"), record);
   assert.deepEqual(writes, [
@@ -83,7 +83,7 @@ test("v2 上次活跃记录迁移遵守二十四小时有效期边界", () => {
     setItem() {},
   };
 
-  const cache = sorter.createFriendCache(storage, { now: () => now });
+  const cache = createFriendCache(storage, { now: () => now });
 
   assert.deepEqual(cache.activityFor("fresh"), records.fresh);
   assert.deepEqual(cache.activityFor("boundary"), records.boundary);
@@ -117,7 +117,7 @@ test("v3 缓存不完整时仍合并尚未迁移的 v2 上次活跃记录", () =
     },
   };
 
-  const cache = sorter.createFriendCache(storage, { now: () => 3_000 });
+  const cache = createFriendCache(storage, { now: () => 3_000 });
 
   assert.deepEqual(cache.activityFor("sai"), activity);
   assert.deepEqual(writes, [
@@ -152,7 +152,7 @@ test("v3 缓存独立校验每个好友的完成字段", () => {
     },
   };
 
-  const cache = sorter.createFriendCache(storage);
+  const cache = createFriendCache(storage);
 
   assert.deepEqual(cache.activityFor("sai"), activity);
   assert.deepEqual(cache.completionFor("sai", "all"), completion);
@@ -191,7 +191,7 @@ test("v3 缓存原样保留访问者层级为空的存量契合指标映射", ()
     },
     removeItem() {},
   };
-  const cache = sorter.createFriendCache(storage);
+  const cache = createFriendCache(storage);
 
   assert.deepEqual(cache.activityFor("sai"), activity);
   assert.deepEqual(
@@ -242,7 +242,7 @@ test("好友缓存批次接纳领域结果，完成后可重建缓存并通过�
     },
     removeItem() {},
   };
-  const cache = sorter.createFriendCache(storage);
+  const cache = createFriendCache(storage);
   const batch = cache.beginRefresh({ visitorIdentifier: "visitor" });
 
   batch.accept("sai", {
@@ -277,7 +277,7 @@ test("好友缓存批次接纳领域结果，完成后可重建缓存并通过�
 
   batch.complete();
 
-  const reloaded = sorter.createFriendCache(storage);
+  const reloaded = createFriendCache(storage);
   assert.deepEqual(reloaded.activityFor("sai"), {
     kind: "active",
     activityAtSeconds: 1_000,
@@ -297,7 +297,7 @@ test("好友缓存批次接纳领域结果，完成后可重建缓存并通过�
 });
 
 test("好友缓存刷新批次重复完成时同步抛出", () => {
-  const cache = sorter.createFriendCache(null);
+  const cache = createFriendCache(null);
   const batch = cache.beginRefresh();
 
   batch.complete();
@@ -334,7 +334,7 @@ test("好友缓存按领域目标和刷新模式决定待请求好友", () => {
       },
     },
   };
-  const cache = sorter.createFriendCache(friendCacheStorage(records), {
+  const cache = createFriendCache(friendCacheStorage(records), {
     now: () => now,
   });
   const identifiers = (target, options) =>
@@ -383,7 +383,7 @@ test("升级缓存版本时删除旧版缓存而不迁移分钟级结果", () =>
     setItem() {},
   };
 
-  const cache = sorter.createFriendCache(storage);
+  const cache = createFriendCache(storage);
 
   assert.equal(cache.activityFor("sai"), undefined);
   assert.deepEqual(removedKeys, ["bangumi-friend-sorter:activity-cache:v1"]);
@@ -398,7 +398,7 @@ test("损坏的缓存 JSON 降级为当前页面内存缓存", () => {
       throw new Error("quota exceeded");
     },
   };
-  const cache = sorter.createFriendCache(storage);
+  const cache = createFriendCache(storage);
   const record = { kind: "active", activityAtSeconds: 1, fetchedAt: 2_000 };
 
   refreshCache(cache, [["sai", { activity: record }]]);
@@ -415,7 +415,7 @@ test("完成统计缓存的七十二小时边界只请求缺失或过期范围",
     { userIdentifier: "stale" },
     { userIdentifier: "missing" },
   ];
-  const values = sorter.createFriendCache(null, { now: () => now });
+  const values = createFriendCache(null, { now: () => now });
   for (const [userIdentifier, value] of [
     ["fresh", 1],
     ["boundary", 2],
@@ -455,7 +455,7 @@ test("喜好契合缓存按访问者和指标判断七十二小时有效期", ()
     { userIdentifier: "missing" },
   ];
   const cache = refreshCache(
-    sorter.createFriendCache(null, { now: () => now }),
+    createFriendCache(null, { now: () => now }),
     [
       ["fresh", { relation: { syncRate: 1.5 }, fetchedAt: now - hour }],
       ["boundary", { relation: { syncRate: 2 }, fetchedAt: now - 72 * hour }],

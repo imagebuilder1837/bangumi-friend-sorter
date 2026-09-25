@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import * as sorter from "../src/legacy.mjs";
+import { createFriendCache } from "../src/cache.mjs";
+import { initialize } from "../src/entry.mjs";
 import {
   friendPageWith,
   mainSortControl,
@@ -29,7 +30,7 @@ test("页面交互按排序维度记忆方向并仅重排当前缓存", () => {
   };
 
   try {
-    sorter.initialize();
+    initialize();
   } finally {
     global.document = previousDocument;
     global.window = previousWindow;
@@ -115,7 +116,7 @@ test("上次活跃刷新完成后沿用刷新期间选择的方向", async () =>
   };
 
   try {
-    sorter.initialize();
+    initialize();
     const directionButtons = directionButtonsFor(page);
 
     mainSortControl(page, "上次活跃").click();
@@ -135,7 +136,7 @@ test("上次活跃刷新完成后沿用刷新期间选择的方向", async () =>
 
 test("会话切换排序目标后旧任务的迟到结果不覆盖当前排序", async () => {
   const responseTime = Date.UTC(2026, 7, 26, 9, 43, 36);
-  const cache = sorter.createFriendCache(null);
+  const cache = createFriendCache(null);
   let releaseFetches;
   const fetchesReleased = new Promise((resolve) => {
     releaseFetches = resolve;
@@ -186,7 +187,7 @@ test("会话切换排序目标后旧任务的迟到结果不覆盖当前排序",
 
 test("会话切换排序目标和方向时继承紧邻此前的顺序", () => {
   const now = 1_000;
-  const cache = sorter.createFriendCache(null, { now: () => now });
+  const cache = createFriendCache(null, { now: () => now });
   refreshCache(cache, [
     ["z", { completion: { all: 1 }, fetchedAt: now }],
     ["b", { completion: { all: 10 }, fetchedAt: now }],
@@ -233,7 +234,7 @@ test("会话切换排序目标和方向时继承紧邻此前的顺序", () => {
 test("远程刷新完成后的平局继承刷新前的缓存排序", async () => {
   const now = 100_000;
   const staleFetchedAt = now - 24 * 60 * 60 * 1_000 - 1;
-  const cache = sorter.createFriendCache(null, { now: () => now });
+  const cache = createFriendCache(null, { now: () => now });
   refreshCache(cache, [
     [
       "a",
@@ -313,7 +314,7 @@ test("远程刷新完成后的平局继承刷新前的缓存排序", async () =>
 
 test("会话对未知排序目标、子选项、方向与重复启动同步抛出", () => {
   const { session } = createSessionHarness({
-    cache: sorter.createFriendCache(null),
+    cache: createFriendCache(null),
     friends: [],
     runtime: {},
   });

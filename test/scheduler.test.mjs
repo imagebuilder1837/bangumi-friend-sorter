@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import * as sorter from "../src/legacy.mjs";
+import { createTaskScheduler } from "../src/scheduler.mjs";
+import { initialize } from "../src/entry.mjs";
 import {
   friendPageWith,
   mainSortControl,
@@ -12,7 +13,7 @@ import {
 } from "./support/index.mjs";
 
 test("页面任务调度器在全局四槽位内优先前台任务且不取消在途请求", async () => {
-  const scheduler = sorter.createTaskScheduler({ concurrency: 4 });
+  const scheduler = createTaskScheduler({ concurrency: 4 });
   const started = [];
   const pending = new Map();
   const fetchPage = (type) => (item) =>
@@ -84,7 +85,7 @@ test("页面任务调度器在全局四槽位内优先前台任务且不取消�
 });
 
 test("前台队列耗尽但仍有在途请求时不会恢复后台任务", async () => {
-  const scheduler = sorter.createTaskScheduler({ concurrency: 2 });
+  const scheduler = createTaskScheduler({ concurrency: 2 });
   const pending = new Map();
   const started = [];
   const options = (type) => ({
@@ -143,7 +144,7 @@ test("前台队列耗尽但仍有在途请求时不会恢复后台任务", async
 });
 
 test("全量刷新扩充进行中的同页面类型任务且不重试已尝试好友", async () => {
-  const scheduler = sorter.createTaskScheduler({ concurrency: 1 });
+  const scheduler = createTaskScheduler({ concurrency: 1 });
   const started = [];
   const pending = new Map();
   const finished = [];
@@ -198,7 +199,7 @@ test("全量刷新扩充进行中的同页面类型任务且不重试已尝试�
 });
 
 test("页面任务调度器收到 429 时停止所有任务并统计未尝试好友", async () => {
-  const scheduler = sorter.createTaskScheduler({ concurrency: 4 });
+  const scheduler = createTaskScheduler({ concurrency: 4 });
   const pending = new Map();
   const finished = [];
   const fetchPage = (type) => (item) =>
@@ -248,7 +249,7 @@ test("页面任务调度器收到 429 时停止所有任务并统计未尝试好
 });
 
 test("页面任务连续五次服务端失败后停止自身并恢复另一页面任务", async () => {
-  const scheduler = sorter.createTaskScheduler({ concurrency: 1 });
+  const scheduler = createTaskScheduler({ concurrency: 1 });
   const pending = new Map();
   const started = [];
   const finished = [];
@@ -297,7 +298,7 @@ test("页面任务连续五次服务端失败后停止自身并恢复另一页�
 });
 
 test("403 计入服务端失败且成功响应重置连续失败计数", async () => {
-  const scheduler = sorter.createTaskScheduler({ concurrency: 1 });
+  const scheduler = createTaskScheduler({ concurrency: 1 });
   const pending = new Map();
   const started = [];
   const finished = [];
@@ -342,7 +343,7 @@ test("403 计入服务端失败且成功响应重置连续失败计数", async (
 });
 
 test("停止任务在残余请求完成前重新入队不会留下不可调度队列", async () => {
-  const scheduler = sorter.createTaskScheduler({ concurrency: 4 });
+  const scheduler = createTaskScheduler({ concurrency: 4 });
   const started = [];
   const pending = new Map();
   const finished = [];
@@ -424,7 +425,7 @@ test("没有待请求好友的远程目标不会暂停后台任务", async () =>
     ]),
   );
 
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/sai/friends" } },
     storage: {

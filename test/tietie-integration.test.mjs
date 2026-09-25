@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import * as sorter from "../src/legacy.mjs";
+import { createFriendCache } from "../src/cache.mjs";
+import { initialize } from "../src/entry.mjs";
+import { parseTietieTimelineDocument } from "../src/tietie-parser.mjs";
 import {
   friendPageWith,
   statusFor,
@@ -20,7 +22,7 @@ test("和我贴贴完整结果跨缓存重建保存全部反应者并遵守七�
   const now = 100 * hour;
   const fetchedAt = now - 72 * hour;
   const storage = persistentFriendCacheStorage();
-  const cache = sorter.createFriendCache(storage, { now: () => now });
+  const cache = createFriendCache(storage, { now: () => now });
 
   cache.replaceTietie("visitor", {
     counts: new Map([
@@ -30,7 +32,7 @@ test("和我贴贴完整结果跨缓存重建保存全部反应者并遵守七�
     fetchedAt,
   });
 
-  const reloaded = sorter.createFriendCache(storage, { now: () => now });
+  const reloaded = createFriendCache(storage, { now: () => now });
 
   assert.deepEqual(reloaded.tietieFor("visitor"), {
     counts: new Map([
@@ -41,7 +43,7 @@ test("和我贴贴完整结果跨缓存重建保存全部反应者并遵守七�
   });
   assert.equal(reloaded.tietieNeedsRefresh("visitor"), false);
 
-  const expired = sorter.createFriendCache(storage, {
+  const expired = createFriendCache(storage, {
     now: () => now + 1,
   });
   assert.equal(expired.tietieNeedsRefresh("visitor"), true);
@@ -147,7 +149,7 @@ test("和我贴贴完整获取后按内容链接去重并稳定排序可靠零",
 test("和我贴贴完整获取成功后持久化全部统计结果", async () => {
   const now = 100_000;
   const storage = persistentFriendCacheStorage();
-  const cache = sorter.createFriendCache(storage, { now: () => now });
+  const cache = createFriendCache(storage, { now: () => now });
   const requests = [];
   const { finished, session } = createSessionHarness({
     cache,
@@ -184,7 +186,7 @@ test("和我贴贴完整获取成功后持久化全部统计结果", async () =>
   await finished;
 
   assert.deepEqual(requests, ["say", "subject"]);
-  const reloaded = sorter.createFriendCache(storage, { now: () => now });
+  const reloaded = createFriendCache(storage, { now: () => now });
   assert.deepEqual(reloaded.tietieFor("visitor"), {
     counts: new Map([
       ["friend-a", 1],
@@ -196,7 +198,7 @@ test("和我贴贴完整获取成功后持久化全部统计结果", async () =>
 
 test("和我贴贴前页有结果且末页省略动态容器时仍发布完整统计", async () => {
   const now = 100_000;
-  const cache = sorter.createFriendCache(null, { now: () => now });
+  const cache = createFriendCache(null, { now: () => now });
   cache.replaceTietie("visitor", {
     counts: new Map([["friend-a", 99]]),
     fetchedAt: now - 72 * 60 * 60 * 1_000 - 1,
@@ -221,7 +223,7 @@ test("和我贴贴前页有结果且末页省略动态容器时仍发布完整�
           requests.push(`${category}:${page}`);
           const filename = documents.get(`${category}:${page}`);
           assert.ok(filename);
-          const record = sorter.parseTietieTimelineDocument(
+          const record = parseTietieTimelineDocument(
             tietieDocumentFromFixture(filename),
             {
               baseUrl: `https://bgm.tv/user/visitor/timeline?type=${category}`,
@@ -255,7 +257,7 @@ test("和我贴贴前页有结果且末页省略动态容器时仍发布完整�
 test("和我贴贴遇到未知空页时保留旧结果", async () => {
   const now = 100_000;
   const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
-  const cache = sorter.createFriendCache(null, { now: () => now });
+  const cache = createFriendCache(null, { now: () => now });
   cache.replaceTietie("visitor", {
     counts: new Map([["friend-a", 4]]),
     fetchedAt: staleFetchedAt,
@@ -270,7 +272,7 @@ test("和我贴贴遇到未知空页时保留旧结果", async () => {
             category === "say"
               ? "timeline-tietie-empty-no-container.html"
               : "timeline-tietie-empty-unknown.html";
-          const record = sorter.parseTietieTimelineDocument(
+          const record = parseTietieTimelineDocument(
             tietieDocumentFromFixture(filename),
             {
               baseUrl: `https://bgm.tv/user/visitor/timeline?type=${category}`,
@@ -298,7 +300,7 @@ test("和我贴贴遇到未知空页时保留旧结果", async () => {
 });
 
 test("和我贴贴按内容链接、动态和反应容器标识逐级去重", async () => {
-  const cache = sorter.createFriendCache(null);
+  const cache = createFriendCache(null);
   const { finished, session } = createSessionHarness({
     cache,
     friends: [{ userIdentifier: "friend", originalIndex: 0 }],
@@ -396,7 +398,7 @@ test("和我贴贴按内容链接、动态和反应容器标识逐级去重", as
 test("和我贴贴有效缓存直接排序并跨好友列表复用而不发起任务", () => {
   const now = 100_000;
   const storage = persistentFriendCacheStorage();
-  const cache = sorter.createFriendCache(storage, { now: () => now });
+  const cache = createFriendCache(storage, { now: () => now });
   cache.replaceTietie("visitor", {
     counts: new Map([
       ["friend-b", 5],
@@ -407,7 +409,7 @@ test("和我贴贴有效缓存直接排序并跨好友列表复用而不发起�
 
   const requests = [];
   const first = createSessionHarness({
-    cache: sorter.createFriendCache(storage, { now: () => now }),
+    cache: createFriendCache(storage, { now: () => now }),
     friends: [
       { userIdentifier: "friend-a", originalIndex: 0 },
       { userIdentifier: "friend-b", originalIndex: 1 },
@@ -434,7 +436,7 @@ test("和我贴贴有效缓存直接排序并跨好友列表复用而不发起�
   assert.deepEqual(requests, []);
 
   const second = createSessionHarness({
-    cache: sorter.createFriendCache(storage, { now: () => now }),
+    cache: createFriendCache(storage, { now: () => now }),
     friends: [
       { userIdentifier: "friend-c", originalIndex: 0 },
       { userIdentifier: "friend-b", originalIndex: 1 },
@@ -476,7 +478,7 @@ test("和我贴贴有效缓存两击后强制刷新，待命五秒后重新开�
     }),
   );
   const page = friendPageWith([{ href: "/user/friend", name: "好友" }]);
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -532,7 +534,7 @@ test("和我贴贴有效缓存两击后强制刷新，待命五秒后重新开�
   assert.equal(status.textContent, "");
   button.click();
   assert.equal(status.textContent, "5 秒内再次点击“和我贴贴”以全量刷新");
-  const reloaded = sorter.createFriendCache(storage, { now: clock.now });
+  const reloaded = createFriendCache(storage, { now: clock.now });
   assert.deepEqual(reloaded.tietieFor("visitor"), {
     counts: new Map([["friend", 2]]),
     fetchedAt: 6_000,
@@ -555,7 +557,7 @@ test("和我贴贴主动刷新失败时保留旧结果和获取时间", async ()
   );
   const requests = [];
   const page = friendPageWith([{ href: "/user/friend", name: "好友" }]);
-  sorter.initialize({
+  initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -595,7 +597,7 @@ test("和我贴贴主动刷新失败时保留旧结果和获取时间", async ()
 
   assert.deepEqual(requests, ["say", "subject"]);
   assert.equal(status.textContent, "“和我贴贴”获取失败，本次结果未更新");
-  const reloaded = sorter.createFriendCache(storage, { now: () => now });
+  const reloaded = createFriendCache(storage, { now: () => now });
   assert.deepEqual(reloaded.tietieFor("visitor"), {
     counts: new Map([["friend", 4]]),
     fetchedAt: now,
@@ -606,7 +608,7 @@ test("和我贴贴过期时先排旧结果，成功后整体替换并继承刷�
   const now = 100_000;
   const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
   const storage = persistentFriendCacheStorage();
-  const cache = sorter.createFriendCache(storage, { now: () => now });
+  const cache = createFriendCache(storage, { now: () => now });
   cache.replaceTietie("visitor", {
     counts: new Map([
       ["friend-a", 1],
@@ -662,7 +664,7 @@ test("和我贴贴过期时先排旧结果，成功后整体替换并继承刷�
     lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
     ["friend-b", "friend-a", "friend-old", "friend-c"],
   );
-  const reloaded = sorter.createFriendCache(storage, { now: () => now });
+  const reloaded = createFriendCache(storage, { now: () => now });
   assert.deepEqual(reloaded.tietieFor("visitor"), {
     counts: new Map([
       ["friend-a", 1],
@@ -676,7 +678,7 @@ test("和我贴贴刷新部分失败时保留旧结果且不续期", async () =>
   const now = 100_000;
   const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
   const storage = persistentFriendCacheStorage();
-  const cache = sorter.createFriendCache(storage, { now: () => now });
+  const cache = createFriendCache(storage, { now: () => now });
   cache.replaceTietie("visitor", {
     counts: new Map([["friend-b", 5]]),
     fetchedAt: staleFetchedAt,
@@ -718,7 +720,7 @@ test("和我贴贴刷新部分失败时保留旧结果且不续期", async () =>
     lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
     ["friend-b", "friend-a"],
   );
-  const reloaded = sorter.createFriendCache(storage, { now: () => now });
+  const reloaded = createFriendCache(storage, { now: () => now });
   assert.deepEqual(reloaded.tietieFor("visitor"), {
     counts: new Map([["friend-b", 5]]),
     fetchedAt: staleFetchedAt,
@@ -730,7 +732,7 @@ test("和我贴贴任务中止时保留旧结果且不续期", async () => {
   const now = 100_000;
   const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
   const storage = persistentFriendCacheStorage();
-  const cache = sorter.createFriendCache(storage, { now: () => now });
+  const cache = createFriendCache(storage, { now: () => now });
   cache.replaceTietie("visitor", {
     counts: new Map([["friend", 4]]),
     fetchedAt: staleFetchedAt,
@@ -760,7 +762,7 @@ test("和我贴贴任务中止时保留旧结果且不续期", async () => {
     lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
     ["friend"],
   );
-  const reloaded = sorter.createFriendCache(storage, { now: () => now });
+  const reloaded = createFriendCache(storage, { now: () => now });
   assert.deepEqual(reloaded.tietieFor("visitor"), {
     counts: new Map([["friend", 4]]),
     fetchedAt: staleFetchedAt,
@@ -770,7 +772,7 @@ test("和我贴贴任务中止时保留旧结果且不续期", async () => {
 
 test("和我贴贴没有旧结果且刷新失败时保持未知而非可靠零", async () => {
   const now = 100_000;
-  const cache = sorter.createFriendCache(null, { now: () => now });
+  const cache = createFriendCache(null, { now: () => now });
   const { finished, lastState, session } = createSessionHarness({
     cache,
     friends: [
@@ -826,7 +828,7 @@ test("和我贴贴缓存按访问者隔离，损坏记录不影响已有主页�
     setItem() {},
     removeItem() {},
   };
-  const cache = sorter.createFriendCache(storage, { now: () => now });
+  const cache = createFriendCache(storage, { now: () => now });
 
   assert.deepEqual(cache.tietieFor("visitorA"), {
     counts: new Map([["friend", 2]]),
@@ -862,7 +864,7 @@ test("和我贴贴持久化写入不可用时保留当前页面结果且不破�
     },
     removeItem() {},
   };
-  const cache = sorter.createFriendCache(storage, { now: () => now });
+  const cache = createFriendCache(storage, { now: () => now });
 
   assert.equal(
     cache.replaceTietie("visitor", {
@@ -884,7 +886,7 @@ test("和我贴贴持久化写入不可用时保留当前页面结果且不破�
 test("和我贴贴每个分类最多获取五页", async () => {
   const pages = [];
   const { finished, session } = createSessionHarness({
-    cache: sorter.createFriendCache(null),
+    cache: createFriendCache(null),
     friends: [{ userIdentifier: "friend", originalIndex: 0 }],
     runtime: {
       http: {
@@ -932,7 +934,7 @@ test("和我贴贴任一分类失败时不发布部分计数", async () => {
     { userIdentifier: "second", originalIndex: 1 },
   ];
   const { finished, lastMessage, lastState, session } = createSessionHarness({
-    cache: sorter.createFriendCache(null),
+    cache: createFriendCache(null),
     friends,
     runtime: {
       http: {
@@ -969,7 +971,7 @@ test("和我贴贴任一分类失败时不发布部分计数", async () => {
 
 test("和我贴贴收到 429 时停止并保持未完成结果未知", async () => {
   const { finished, lastMessage, lastState, session } = createSessionHarness({
-    cache: sorter.createFriendCache(null),
+    cache: createFriendCache(null),
     friends: [{ userIdentifier: "friend", originalIndex: 0 }],
     runtime: {
       http: {
@@ -999,7 +1001,7 @@ test("和我贴贴获取中切换方向和重复选择不重启任务", async ()
   const requests = [];
   const pending = [];
   const { finished, lastState, session } = createSessionHarness({
-    cache: sorter.createFriendCache(null),
+    cache: createFriendCache(null),
     friends: [{ userIdentifier: "friend", originalIndex: 0 }],
     runtime: {
       http: {
@@ -1036,7 +1038,7 @@ test("和我贴贴获取中切换方向和重复选择不重启任务", async ()
 test("和我贴贴后台完成时不改变已切换的当前排序", async () => {
   const pending = [];
   const { finished, lastState, session } = createSessionHarness({
-    cache: sorter.createFriendCache(null),
+    cache: createFriendCache(null),
     friends: [
       { userIdentifier: "z", displayName: "Zed", originalIndex: 0 },
       { userIdentifier: "a", displayName: "Ada", originalIndex: 1 },
