@@ -12,7 +12,7 @@
 
 ## 版本号
 
-- `package.json` 的 `version` 是唯一权威版本，人工决定是否 bump；agent 交付行为变更时提醒人工，但不代为升级。使用 `npm version <显式版本> --no-git-tag-version` 同步 package 和锁文件，再运行 `npm run build` 生成 `@version`；不自动提交、tag 或发布。发现不一致时先让人工确认修复方案。
+- `package.json` 的 `version` 是唯一权威版本，人工决定是否 bump；agent 交付行为变更时提醒人工，但不代为升级。使用 `npm version <显式版本>` 同步 package 和锁文件，再运行 `npm run build` 生成 `@version`；不自动提交、tag 或发布。发现不一致时先让人工确认修复方案。
 
 ## 测试与元数据
 

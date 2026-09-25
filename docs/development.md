@@ -15,4 +15,4 @@
 ## 版本号
 
 - 项目检查流程已在当前开发环境验证；未单独界定跨 Node.js 版本的兼容范围。
-- 由人工决定版本变更，运行 `npm version <显式版本> --no-git-tag-version` 同步 package 和锁文件，然后运行 `npm run build`。构建与校验不自动发布、提交或打 tag。
+- 由人工决定版本变更，运行 `npm version <显式版本>` 同步 package 和锁文件，然后运行 `npm run build`。构建与校验不自动发布、提交或打 tag。
