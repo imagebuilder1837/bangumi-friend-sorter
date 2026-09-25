@@ -1,7 +1,7 @@
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const sorter = require("../src/index.user.js");
-const {
+import test from "node:test";
+import assert from "node:assert/strict";
+import * as sorter from "../src/legacy.mjs";
+import {
   friendPageWith,
   mountedSortBar,
   statusFor,
@@ -20,8 +20,7 @@ const {
   profileStatsDocument,
   relationProfileDocument,
   profileDocumentWithRelation,
-} = require("./support");
-
+} from "./support/index.mjs";
 
 test("初始化在时间胶囊和用户主页任务之间切换并恢复暂停队列", async () => {
   const page = friendPageWith(

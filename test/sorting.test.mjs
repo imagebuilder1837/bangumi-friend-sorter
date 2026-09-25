@@ -1,10 +1,7 @@
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const sorter = require("../src/index.user.js");
-const {
-  refreshCache,
-} = require("./support");
-
+import test from "node:test";
+import assert from "node:assert/strict";
+import * as sorter from "../src/legacy.mjs";
+import { refreshCache } from "./support/index.mjs";
 
 test("网页默认顺序默认从旧到新，也支持从新到旧", () => {
   const friends = [

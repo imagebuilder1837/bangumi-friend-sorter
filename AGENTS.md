@@ -12,6 +12,10 @@ Use the default canonical triage labels: `needs-triage`, `needs-info`, `ready-fo
 
 This is a single-context repo with root `CONTEXT.md` and `docs/adr/`. See `docs/agents/domain.md`.
 
+### Source navigation and delivery
+
+For behavior changes, consult `docs/module-guide.md` and read the relevant maintained source. Do not load the whole generated `src/index.user.js` by default; inspect targeted parts only for build debugging, review, or artifact acceptance. Before every commit, run `npm run check` on the final change state; fix failures and rerun before committing.
+
 ### Script metadata
 
 Userscript metadata (the `==UserScript==` header block) is manually managed. Agents must get explicit per-item approval before touching it. See `docs/agents/metadata.md`.

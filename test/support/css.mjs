@@ -63,4 +63,4 @@ function normalizeCssSelector(selector) {
   return selector.replace(/\s+/g, " ").trim();
 }
 
-module.exports = { topLevelCssRules, normalizeCssSelector };
+export { topLevelCssRules, normalizeCssSelector };

@@ -1,15 +1,14 @@
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const sorter = require("../src/index.user.js");
-const {
+import test from "node:test";
+import assert from "node:assert/strict";
+import * as sorter from "../src/legacy.mjs";
+import {
   friendPageWith,
   mainSortControl,
   refreshCache,
   createSessionHarness,
   directionButtonsFor,
   timelineDocumentFromFixture,
-} = require("./support");
-
+} from "./support/index.mjs";
 
 test("页面交互按排序维度记忆方向并仅重排当前缓存", () => {
   const page = friendPageWith([

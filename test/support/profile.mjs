@@ -1,8 +1,9 @@
-const assert = require("node:assert/strict");
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import assert from "node:assert/strict";
 
-const fs = require("node:fs");
-
-const path = require("node:path");
+import fs from "node:fs";
 
 const FIXTURE_DIR = path.join(__dirname, "..", "fixtures");
 
@@ -210,4 +211,11 @@ function duplicateCategoryProfileDocument() {
   };
 }
 
-module.exports = { ProfileNode, profileStatsDocument, profileStatsDocumentFromFixture, relationProfileDocument, profileDocumentWithRelation, duplicateCategoryProfileDocument };
+export {
+  ProfileNode,
+  profileStatsDocument,
+  profileStatsDocumentFromFixture,
+  relationProfileDocument,
+  profileDocumentWithRelation,
+  duplicateCategoryProfileDocument,
+};

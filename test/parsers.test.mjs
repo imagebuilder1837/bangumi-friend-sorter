@@ -1,7 +1,7 @@
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const sorter = require("../src/index.user.js");
-const {
+import test from "node:test";
+import assert from "node:assert/strict";
+import * as sorter from "../src/legacy.mjs";
+import {
   timelineDocumentFromFixture,
   tietieDocumentFromFixture,
   ProfileNode,
@@ -9,8 +9,7 @@ const {
   profileStatsDocumentFromFixture,
   relationProfileDocument,
   duplicateCategoryProfileDocument,
-} = require("./support");
-
+} from "./support/index.mjs";
 
 test("贴贴时间胶囊解析反应者、内容链接和分页", () => {
   const parsed = sorter.parseTietieTimelineDocument(

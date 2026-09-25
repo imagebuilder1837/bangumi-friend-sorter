@@ -1,8 +1,8 @@
-const sorter = require("../../src/index.user.js");
+import * as sorter from "../../src/legacy.mjs";
 
-const { friendPageWith } = require("./dom");
+import { friendPageWith } from "./dom.mjs";
 
-const { friendCacheStorage } = require("./cache");
+import { friendCacheStorage } from "./cache.mjs";
 
 function refreshResponseFor(url) {
   return {
@@ -83,4 +83,4 @@ function createSessionHarness({
   };
 }
 
-module.exports = { refreshResponseFor, initializeRefreshPage, createSessionHarness };
+export { refreshResponseFor, initializeRefreshPage, createSessionHarness };

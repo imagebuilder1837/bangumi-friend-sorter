@@ -3,10 +3,15 @@
   "version": "0.3.0",
   "private": true,
   "scripts": {
-    "check": "node --check src/index.user.js",
-    "test": "node --test test/*.test.js"
+    "build": "node scripts/build.mjs",
+    "format": "prettier --write src/*.mjs scripts/*.mjs test/*.mjs test/support/*.mjs",
+    "format:check": "prettier --check src/index.user.js src/*.mjs scripts/*.mjs test/*.mjs test/support/*.mjs",
+    "check": "node scripts/check.mjs",
+    "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {
-    "jsdom": "^20.0.3"
+    "jsdom": "^20.0.3",
+    "prettier": "3.6.2",
+    "rollup": "4.60.0"
   }
 }

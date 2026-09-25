@@ -1,15 +1,14 @@
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const sorter = require("../src/index.user.js");
-const {
+import test from "node:test";
+import assert from "node:assert/strict";
+import * as sorter from "../src/legacy.mjs";
+import {
   friendPageWith,
   mainSortControl,
   dropdownButtonFor,
   timelineDocumentFromFixture,
   profileStatsDocument,
   relationProfileDocument,
-} = require("./support");
-
+} from "./support/index.mjs";
 
 test("页面初始化可以注入获取任务所需的运行时依赖", async () => {
   const page = friendPageWith([{ href: "/user/sai", name: "Sai" }]);

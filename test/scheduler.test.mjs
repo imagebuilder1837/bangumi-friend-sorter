@@ -1,7 +1,7 @@
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const sorter = require("../src/index.user.js");
-const {
+import test from "node:test";
+import assert from "node:assert/strict";
+import * as sorter from "../src/legacy.mjs";
+import {
   friendPageWith,
   mainSortControl,
   storedCompletion,
@@ -9,8 +9,7 @@ const {
   dropdownButtonFor,
   timelineDocumentFromFixture,
   profileStatsDocument,
-} = require("./support");
-
+} from "./support/index.mjs";
 
 test("页面任务调度器在全局四槽位内优先前台任务且不取消在途请求", async () => {
   const scheduler = sorter.createTaskScheduler({ concurrency: 4 });

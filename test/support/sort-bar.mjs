@@ -1,6 +1,6 @@
-const assert = require("node:assert/strict");
-const sorter = require("../../src/index.user.js");
-const { friendPageWith } = require("./dom");
+import assert from "node:assert/strict";
+import * as sorter from "../../src/legacy.mjs";
+import { friendPageWith } from "./dom.mjs";
 
 function mountedSortBar(page) {
   return page.list.beforeNodes[0];
@@ -145,4 +145,21 @@ function assertPointerKeepsCompletionMenuOpen(pointerType) {
   return { page, selected, toggle };
 }
 
-module.exports = { mountedSortBar, collectNodes, buttonsIn, rankFor, statusFor, mainSortControl, directionOptionsFor, directionButtonsFor, dropdownButtonFor, dropdownItems, menuItemFor, renderState, sortBarUnderTest, setFriendVisible, fakeMutationObserverClass, assertPointerKeepsCompletionMenuOpen };
+export {
+  mountedSortBar,
+  collectNodes,
+  buttonsIn,
+  rankFor,
+  statusFor,
+  mainSortControl,
+  directionOptionsFor,
+  directionButtonsFor,
+  dropdownButtonFor,
+  dropdownItems,
+  menuItemFor,
+  renderState,
+  sortBarUnderTest,
+  setFriendVisible,
+  fakeMutationObserverClass,
+  assertPointerKeepsCompletionMenuOpen,
+};

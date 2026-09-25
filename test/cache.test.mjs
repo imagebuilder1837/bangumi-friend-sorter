@@ -1,12 +1,11 @@
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const sorter = require("../src/index.user.js");
-const {
+import test from "node:test";
+import assert from "node:assert/strict";
+import * as sorter from "../src/legacy.mjs";
+import {
   friendCacheStorage,
   storedCompletion,
   refreshCache,
-} = require("./support");
-
+} from "./support/index.mjs";
 
 test("持久存储不可用时上次活跃缓存仍在当前页面内工作", () => {
   const unavailableStorage = {

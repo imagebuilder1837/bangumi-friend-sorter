@@ -1,4 +1,4 @@
-const assert = require("node:assert/strict");
+import assert from "node:assert/strict";
 
 async function waitForCondition(predicate, maxAttempts = 40) {
   for (let attempt = 0; attempt < maxAttempts && !predicate(); attempt += 1) {
@@ -39,4 +39,4 @@ function fakeTimers(startTime = 0) {
   };
 }
 
-module.exports = { waitForCondition, fakeTimers };
+export { waitForCondition, fakeTimers };

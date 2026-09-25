@@ -1,7 +1,7 @@
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const sorter = require("../src/index.user.js");
-const {
+import test from "node:test";
+import assert from "node:assert/strict";
+import * as sorter from "../src/legacy.mjs";
+import {
   friendPageWith,
   statusFor,
   mainSortControl,
@@ -17,8 +17,7 @@ const {
   timelineDocumentFromFixture,
   relationProfileDocument,
   duplicateCategoryProfileDocument,
-} = require("./support");
-
+} from "./support/index.mjs";
 
 test("仅为缺失或超过二十四小时的上次活跃缓存安排请求", () => {
   const hour = 60 * 60 * 1_000;

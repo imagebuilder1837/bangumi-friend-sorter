@@ -1,13 +1,11 @@
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const sorter = require("../src/index.user.js");
-const fs = require("node:fs");
-const path = require("node:path");
-
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 
 test("单文件 userscript 元数据匹配三个站点的双好友页", () => {
   const source = fs.readFileSync(
-    path.join(__dirname, "..", "src", "index.user.js"),
+    fileURLToPath(new URL("../src/index.user.js", import.meta.url)),
     "utf8",
   );
   const matches = [...source.matchAll(/^\/\/ @match\s+(\S+)$/gm)].map(
@@ -24,5 +22,11 @@ test("单文件 userscript 元数据匹配三个站点的双好友页", () => {
   ]);
   // @description 等声明性字段由人工管理，测试只确认其存在，不断言内容。
   assert.match(source, /^\/\/ @description\s+\S.*$/m);
+  assert.match(source, /^\/\/ @run-at\s+document-end$/m);
+  assert.match(source, /^\/\/ @grant\s+none$/m);
+  const url =
+    "https://raw.githubusercontent.com/imagebuilder1837/bangumi-friend-sorter/refs/heads/main/src/index.user.js";
+  assert.ok(source.includes(`// @downloadURL  ${url}\n`));
+  assert.ok(source.includes(`// @updateURL    ${url}\n`));
   assert.doesNotMatch(source, /^\s*(?:import|export)\s/m);
 });

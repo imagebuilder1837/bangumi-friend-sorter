@@ -1,8 +1,9 @@
-const fs = require("node:fs");
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+import fs from "node:fs";
+import { JSDOM } from "jsdom";
 
-const path = require("node:path");
-
-const { JSDOM } = require("jsdom");
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const FIXTURE_DIR = path.join(__dirname, "..", "fixtures");
 
@@ -21,4 +22,4 @@ function tietieDocumentFromFixture(filename) {
   return documentFromFixture(filename);
 }
 
-module.exports = { timelineDocumentFromFixture, tietieDocumentFromFixture };
+export { timelineDocumentFromFixture, tietieDocumentFromFixture };

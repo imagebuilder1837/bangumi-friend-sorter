@@ -1,7 +1,7 @@
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const sorter = require("../src/index.user.js");
-const {
+import test from "node:test";
+import assert from "node:assert/strict";
+import * as sorter from "../src/legacy.mjs";
+import {
   friendPageWith,
   mountedSortBar,
   collectNodes,
@@ -21,8 +21,7 @@ const {
   assertPointerKeepsCompletionMenuOpen,
   topLevelCssRules,
   normalizeCssSelector,
-} = require("./support");
-
+} from "./support/index.mjs";
 
 test("纯空白展示名称不会阻止排序栏初始化", () => {
   const page = friendPageWith([

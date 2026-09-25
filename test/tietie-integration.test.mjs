@@ -1,7 +1,7 @@
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const sorter = require("../src/index.user.js");
-const {
+import test from "node:test";
+import assert from "node:assert/strict";
+import * as sorter from "../src/legacy.mjs";
+import {
   friendPageWith,
   statusFor,
   mainSortControl,
@@ -13,8 +13,7 @@ const {
   fakeTimers,
   timelineDocumentFromFixture,
   tietieDocumentFromFixture,
-} = require("./support");
-
+} from "./support/index.mjs";
 
 test("和我贴贴完整结果跨缓存重建保存全部反应者并遵守七十二小时边界", () => {
   const hour = 60 * 60 * 1_000;

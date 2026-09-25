@@ -1,4 +1,4 @@
-const assert = require("node:assert/strict");
+import assert from "node:assert/strict";
 
 function friendPageWith(entries) {
   class Element {
@@ -128,4 +128,4 @@ function friendPageWith(entries) {
   return { document, list };
 }
 
-module.exports = { friendPageWith };
+export { friendPageWith };

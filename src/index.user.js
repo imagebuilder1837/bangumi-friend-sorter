@@ -16,10 +16,11 @@
 // @downloadURL  https://raw.githubusercontent.com/imagebuilder1837/bangumi-friend-sorter/refs/heads/main/src/index.user.js
 // @updateURL    https://raw.githubusercontent.com/imagebuilder1837/bangumi-friend-sorter/refs/heads/main/src/index.user.js
 // ==/UserScript==
-
+// Generated from src/main.mjs and src/legacy.mjs. Do not edit; run npm run build.
 (function () {
   "use strict";
 
+  // src/legacy.mjs — transitional home for the existing implementation; split by responsibility in #25.
   const CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
   // Completion counts and relation metrics both come from profile pages and
   // share one validity window, so the TTL is named after the source.
@@ -127,10 +128,10 @@
   function isCompletionRecord(value) {
     return Boolean(
       value &&
-      typeof value === "object" &&
-      Number.isSafeInteger(value.value) &&
-      value.value >= 0 &&
-      Number.isFinite(value.fetchedAt),
+        typeof value === "object" &&
+        Number.isSafeInteger(value.value) &&
+        value.value >= 0 &&
+        Number.isFinite(value.fetchedAt),
     );
   }
 
@@ -186,9 +187,9 @@
   function isRelationRecord(value, metric) {
     return Boolean(
       value &&
-      typeof value === "object" &&
-      Number.isFinite(value.fetchedAt) &&
-      RELATION_VALUE_VALIDATORS[metric]?.(value.value),
+        typeof value === "object" &&
+        Number.isFinite(value.fetchedAt) &&
+        RELATION_VALUE_VALIDATORS[metric]?.(value.value),
     );
   }
 
@@ -1044,10 +1045,10 @@
       item?.querySelector?.(".collectInfo");
     return Boolean(
       category === "subject" &&
-      contentKey &&
-      !item?.querySelector?.(".likes_grid") &&
-      collectionSubject &&
-      hasCollectionShell,
+        contentKey &&
+        !item?.querySelector?.(".likes_grid") &&
+        collectionSubject &&
+        hasCollectionShell,
     );
   }
 
@@ -1089,19 +1090,19 @@
   function isTietieReactionTemplate(node) {
     return Boolean(
       node?.nodeType === 1 &&
-      node.tagName?.toLowerCase() === "template" &&
-      node.getAttribute("type") === "text/template" &&
-      TIETIE_REACTION_TEMPLATE_IDS.has(node.id),
+        node.tagName?.toLowerCase() === "template" &&
+        node.getAttribute("type") === "text/template" &&
+        TIETIE_REACTION_TEMPLATE_IDS.has(node.id),
     );
   }
 
   function isTietieInitializationScript(node) {
     return Boolean(
       node?.nodeType === 1 &&
-      node.tagName?.toLowerCase() === "script" &&
-      /\b(?:data_like_reaction_motion_map|data_likes_list)\b/.test(
-        node.textContent || "",
-      ),
+        node.tagName?.toLowerCase() === "script" &&
+        /\b(?:data_like_reaction_motion_map|data_likes_list)\b/.test(
+          node.textContent || "",
+        ),
     );
   }
 
@@ -1741,138 +1742,138 @@
     // These button rules mirror them; aria-current remains semantic only.
     // See docs/spec.md, "原站样式基线", for the verified source and selectors.
     style.textContent = `
-      #bangumi-friend-sorter.filters {
-        align-items: baseline;
-        display: flex;
-        flex-wrap: wrap;
-      }
-      #bangumi-friend-sorter .bangumi-friend-sorter-sort-options,
-      #bangumi-friend-sorter .bangumi-friend-sorter-direction-options {
-        align-items: baseline;
-        display: flex;
-        flex-wrap: wrap;
-      }
-      #bangumi-friend-sorter .bangumi-friend-sorter-direction-options {
-        margin-left: auto;
-      }
-      #browserTools.bangumi-friend-sorter-bar {
-        box-sizing: border-box;
-        width: 100%;
-      }
-      #bangumi-friend-sorter .bangumi-friend-sorter-dropdown {
-        display: inline-block;
-        position: relative;
-      }
-      #bangumi-friend-sorter .bangumi-friend-sorter-dropdown-menu {
-        -webkit-backdrop-filter: blur(5px);
-        backdrop-filter: blur(5px);
-        background-color: rgba(254, 254, 254, .9);
-        border-radius: 15px;
-        box-shadow: inset 0 1px 1px hsla(0, 100%, 100%, .3),
-          inset 0 -1px 0 hsla(0, 100%, 100%, .1),
-          0 3px 15px hsla(214, 100%, 0%, .2);
-        display: flex;
-        flex-direction: column;
-        left: -5px;
-        opacity: 0;
-        padding: 4px 0;
-        pointer-events: none;
-        position: absolute;
-        top: 100%;
-        transform: translateY(-4px);
-        transition: opacity .15s ease, transform .15s ease, visibility .15s;
-        visibility: hidden;
-        width: max-content;
-        min-width: 118px;
-        z-index: 10;
-      }
-      #bangumi-friend-sorter .bangumi-friend-sorter-dropdown[data-open="true"]
-        .bangumi-friend-sorter-dropdown-menu,
-      #bangumi-friend-sorter .bangumi-friend-sorter-dropdown:hover
-        .bangumi-friend-sorter-dropdown-menu,
-      #bangumi-friend-sorter .bangumi-friend-sorter-dropdown:focus-within
-        .bangumi-friend-sorter-dropdown-menu {
-        opacity: 1;
-        pointer-events: auto;
-        transform: translateY(0);
-        visibility: visible;
-      }
-      #bangumi-friend-sorter .bangumi-friend-sorter-dropdown-menu button.l {
-        border-radius: 100px;
-        box-sizing: border-box;
-        font-size: 12px;
-        line-height: 100%;
-        margin: 2px 5px;
-        padding: 7px 15px;
-        text-align: left;
-        transition: all .2s ease-in-out;
-      }
-      #bangumi-friend-sorter .bangumi-friend-sorter-dropdown-menu button.l:hover,
-      #bangumi-friend-sorter
-        .bangumi-friend-sorter-dropdown-menu button.l:focus-visible {
-        background: #369cf8;
-        color: #fff;
-      }
-      html[data-theme="dark"] #bangumi-friend-sorter
-        .bangumi-friend-sorter-dropdown-menu {
-        background-color: rgba(80, 80, 80, .7);
-      }
-      html[data-theme="dark"] #bangumi-friend-sorter
-        .bangumi-friend-sorter-dropdown-menu button.l {
-        color: #fff;
-      }
-      /* CSS has no // comments: one would be absorbed into the next
-         selector, silently dropping the whole rule. */
-      /* Keep a one-space gap between the fixed "按"/"排序" labels and the
-         adjacent buttons so hover/focus backgrounds never touch the text. */
-      #bangumi-friend-sorter .bangumi-friend-sorter-prefix {
-        margin-right: .25em;
-      }
-      #bangumi-friend-sorter .bangumi-friend-sorter-suffix {
-        margin-left: .25em;
-      }
-      #bangumi-friend-sorter button.l {
-        appearance: none;
-        background: none;
-        border: 0;
-        border-radius: 15px;
-        color: #0084b4;
-        cursor: pointer;
-        font: inherit;
-        margin: 0;
-        padding: 2px 8px;
-      }
-      html[data-theme="dark"] #bangumi-friend-sorter button.l {
-        color: #2ea6ff;
-      }
-      #bangumi-friend-sorter button.l:hover,
-      #bangumi-friend-sorter button.l:focus-visible {
-        background: var(--primary-color, #f09199);
-        color: #fff;
-        text-decoration: none;
-      }
-      #bangumi-friend-sorter-status {
-        color: #999;
-        margin-left: .6em;
-      }
-      /* 名次 badge: the host strong is the site's name block whose bottom
-         border is the gray rule; the badge hangs just below that line,
-         flush with its right end. */
-      #memberUserList div.userContainer > strong {
-        position: relative;
-      }
-      #memberUserList .bangumi-friend-sorter-rank {
-        color: #000;
-        font-weight: bold;
-        position: absolute;
-        right: 0;
-        top: 100%;
-      }
-      html[data-theme="dark"] #memberUserList
-        .bangumi-friend-sorter-rank {
-        color: #ddd;
-      }
-    `;
+    #bangumi-friend-sorter.filters {
+      align-items: baseline;
+      display: flex;
+      flex-wrap: wrap;
+    }
+    #bangumi-friend-sorter .bangumi-friend-sorter-sort-options,
+    #bangumi-friend-sorter .bangumi-friend-sorter-direction-options {
+      align-items: baseline;
+      display: flex;
+      flex-wrap: wrap;
+    }
+    #bangumi-friend-sorter .bangumi-friend-sorter-direction-options {
+      margin-left: auto;
+    }
+    #browserTools.bangumi-friend-sorter-bar {
+      box-sizing: border-box;
+      width: 100%;
+    }
+    #bangumi-friend-sorter .bangumi-friend-sorter-dropdown {
+      display: inline-block;
+      position: relative;
+    }
+    #bangumi-friend-sorter .bangumi-friend-sorter-dropdown-menu {
+      -webkit-backdrop-filter: blur(5px);
+      backdrop-filter: blur(5px);
+      background-color: rgba(254, 254, 254, .9);
+      border-radius: 15px;
+      box-shadow: inset 0 1px 1px hsla(0, 100%, 100%, .3),
+        inset 0 -1px 0 hsla(0, 100%, 100%, .1),
+        0 3px 15px hsla(214, 100%, 0%, .2);
+      display: flex;
+      flex-direction: column;
+      left: -5px;
+      opacity: 0;
+      padding: 4px 0;
+      pointer-events: none;
+      position: absolute;
+      top: 100%;
+      transform: translateY(-4px);
+      transition: opacity .15s ease, transform .15s ease, visibility .15s;
+      visibility: hidden;
+      width: max-content;
+      min-width: 118px;
+      z-index: 10;
+    }
+    #bangumi-friend-sorter .bangumi-friend-sorter-dropdown[data-open="true"]
+      .bangumi-friend-sorter-dropdown-menu,
+    #bangumi-friend-sorter .bangumi-friend-sorter-dropdown:hover
+      .bangumi-friend-sorter-dropdown-menu,
+    #bangumi-friend-sorter .bangumi-friend-sorter-dropdown:focus-within
+      .bangumi-friend-sorter-dropdown-menu {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateY(0);
+      visibility: visible;
+    }
+    #bangumi-friend-sorter .bangumi-friend-sorter-dropdown-menu button.l {
+      border-radius: 100px;
+      box-sizing: border-box;
+      font-size: 12px;
+      line-height: 100%;
+      margin: 2px 5px;
+      padding: 7px 15px;
+      text-align: left;
+      transition: all .2s ease-in-out;
+    }
+    #bangumi-friend-sorter .bangumi-friend-sorter-dropdown-menu button.l:hover,
+    #bangumi-friend-sorter
+      .bangumi-friend-sorter-dropdown-menu button.l:focus-visible {
+      background: #369cf8;
+      color: #fff;
+    }
+    html[data-theme="dark"] #bangumi-friend-sorter
+      .bangumi-friend-sorter-dropdown-menu {
+      background-color: rgba(80, 80, 80, .7);
+    }
+    html[data-theme="dark"] #bangumi-friend-sorter
+      .bangumi-friend-sorter-dropdown-menu button.l {
+      color: #fff;
+    }
+    /* CSS has no // comments: one would be absorbed into the next
+       selector, silently dropping the whole rule. */
+    /* Keep a one-space gap between the fixed "按"/"排序" labels and the
+       adjacent buttons so hover/focus backgrounds never touch the text. */
+    #bangumi-friend-sorter .bangumi-friend-sorter-prefix {
+      margin-right: .25em;
+    }
+    #bangumi-friend-sorter .bangumi-friend-sorter-suffix {
+      margin-left: .25em;
+    }
+    #bangumi-friend-sorter button.l {
+      appearance: none;
+      background: none;
+      border: 0;
+      border-radius: 15px;
+      color: #0084b4;
+      cursor: pointer;
+      font: inherit;
+      margin: 0;
+      padding: 2px 8px;
+    }
+    html[data-theme="dark"] #bangumi-friend-sorter button.l {
+      color: #2ea6ff;
+    }
+    #bangumi-friend-sorter button.l:hover,
+    #bangumi-friend-sorter button.l:focus-visible {
+      background: var(--primary-color, #f09199);
+      color: #fff;
+      text-decoration: none;
+    }
+    #bangumi-friend-sorter-status {
+      color: #999;
+      margin-left: .6em;
+    }
+    /* 名次 badge: the host strong is the site's name block whose bottom
+       border is the gray rule; the badge hangs just below that line,
+       flush with its right end. */
+    #memberUserList div.userContainer > strong {
+      position: relative;
+    }
+    #memberUserList .bangumi-friend-sorter-rank {
+      color: #000;
+      font-weight: bold;
+      position: absolute;
+      right: 0;
+      top: 100%;
+    }
+    html[data-theme="dark"] #memberUserList
+      .bangumi-friend-sorter-rank {
+      color: #ddd;
+    }
+  `;
     document.head.append(style);
   }
 
@@ -3378,29 +3379,7 @@
     session.start();
   }
 
-  const core = {
-    createFriendCache,
-    createFriendSortSession,
-    createSortBar,
-    createTaskScheduler,
-    currentVisitorIdentifier,
-    directionLabelsFor,
-    fetchProfile,
-    initialize,
-    parseProfileDocument,
-    parseTietieTimelineDocument,
-    parseTimelineDocument,
-    sortFriends,
-  };
-
-  if (
-    typeof module === "object" &&
-    module.exports &&
-    typeof document === "undefined"
-  ) {
-    module.exports = core;
-    return;
-  }
+  // src/main.mjs — browser entry (the only module that auto-starts).
 
   initialize();
 })();

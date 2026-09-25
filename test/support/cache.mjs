@@ -44,4 +44,10 @@ function completionSnapshotFor(cache, userIdentifier) {
   );
 }
 
-module.exports = { friendCacheStorage, persistentFriendCacheStorage, storedCompletion, refreshCache, completionSnapshotFor };
+export {
+  friendCacheStorage,
+  persistentFriendCacheStorage,
+  storedCompletion,
+  refreshCache,
+  completionSnapshotFor,
+};
