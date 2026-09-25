@@ -107,6 +107,13 @@ test("published browser entry fetches, parses and caches remote values before so
       ).records.amy.completion_all.value,
       20,
     );
+    button("动画").click();
+    assert.equal(button("动画").getAttribute("aria-current"), "true");
+    assert.equal(
+      requests.length,
+      4,
+      "cached profile fields serve menu choices",
+    );
     button("名称").click();
     assert.deepEqual(names(), ["Amy", "Zed"]);
     button("降序").click();

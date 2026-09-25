@@ -1405,7 +1405,6 @@
 
   // src/timeline-parser.mjs — activity timeline parsing.
 
-  const PAGE_REQUEST_TIMEOUT_MS$1 = 15_000;
   const SITE_OFFSET_SECONDS = 8 * 60 * 60;
 
   function siteDateFromEpochSeconds(epochSeconds) {
