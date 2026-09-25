@@ -5,13 +5,15 @@ import { createTaskProgressReporter } from "./refresh.mjs";
 
 const TIETIE_MAX_PAGES = 5;
 const TIETIE_TASK_TYPE = "tietie";
+const TIETIE_IDENTITY_FIELDS = [
+  { kind: "content", field: "contentKey" },
+  { kind: "dynamic", field: "dynamicIdentifier" },
+  { kind: "reaction", field: "reactionContainerIdentifier" },
+];
+
 function tietieIdentityDescriptorsFor(content) {
   const descriptors = [];
-  for (const [kind, field] of [
-    ["content", "contentKey"],
-    ["dynamic", "dynamicIdentifier"],
-    ["reaction", "reactionContainerIdentifier"],
-  ]) {
+  for (const { kind, field } of TIETIE_IDENTITY_FIELDS) {
     const value = content?.[field];
     if (typeof value === "string" && value.trim()) {
       descriptors.push({ kind, value: value.trim() });
@@ -60,11 +62,7 @@ function createTietieContentAccumulator() {
   }
 
   function mergeMetadata(record, content) {
-    for (const field of [
-      "contentKey",
-      "dynamicIdentifier",
-      "reactionContainerIdentifier",
-    ]) {
+    for (const { field } of TIETIE_IDENTITY_FIELDS) {
       if (!record[field] && content?.[field]) record[field] = content[field];
     }
     registerAll(record, content);
@@ -75,10 +73,12 @@ function createTietieContentAccumulator() {
     let record = candidateFor(descriptors);
     if (!record) {
       record = {
-        contentKey: content?.contentKey || null,
-        dynamicIdentifier: content?.dynamicIdentifier || null,
-        reactionContainerIdentifier:
-          content?.reactionContainerIdentifier || null,
+        ...Object.fromEntries(
+          TIETIE_IDENTITY_FIELDS.map(({ field }) => [
+            field,
+            content?.[field] || null,
+          ]),
+        ),
         reactorIdentifiers: new Set(),
       };
       records.push(record);
@@ -131,6 +131,8 @@ function createTietieTasks({
     }
   }
 
+  // 不复用 createRefreshLifecycle：贴贴只在整批成功后替换访客结果，
+  // 且排序和完成提示时机不同；共用其 onFinished 会改变批次语义。
   const lifecycle = {
     onFetching: progressReporter,
     onProgress: progressReporter,

@@ -111,22 +111,22 @@
     LOGIN_REQUIRED: "login",
   });
   const SORT_CHOICES = [
-    [SORT.ADDED, "加好友时间"],
-    [SORT.NAME, "名称"],
-    [SORT.ACTIVITY, "上次活跃"],
-    [SORT.TIETIE, "和我贴贴"],
+    { value: SORT.ADDED, label: "加好友时间" },
+    { value: SORT.NAME, label: "名称" },
+    { value: SORT.ACTIVITY, label: "上次活跃" },
+    { value: SORT.TIETIE, label: "和我贴贴" },
   ];
   const COMPLETION_CHOICES = [
-    [COMPLETION_SCOPE.ALL, "全部"],
-    [COMPLETION_SCOPE.ANIMATION, "动画"],
-    [COMPLETION_SCOPE.BOOK, "书籍"],
-    [COMPLETION_SCOPE.MUSIC, "音乐"],
-    [COMPLETION_SCOPE.GAME, "游戏"],
-    [COMPLETION_SCOPE.REAL_LIFE, "三次元"],
+    { value: COMPLETION_SCOPE.ALL, label: "全部" },
+    { value: COMPLETION_SCOPE.ANIMATION, label: "动画" },
+    { value: COMPLETION_SCOPE.BOOK, label: "书籍" },
+    { value: COMPLETION_SCOPE.MUSIC, label: "音乐" },
+    { value: COMPLETION_SCOPE.GAME, label: "游戏" },
+    { value: COMPLETION_SCOPE.REAL_LIFE, label: "三次元" },
   ];
   const RELATION_CHOICES = [
-    ["syncRate", "同步率"],
-    ["commonLikes", "共同喜好数"],
+    { value: "syncRate", label: "同步率" },
+    { value: "commonLikes", label: "共同喜好数" },
   ];
   const REMOTE_TARGET_SELECTION_KEYS = Object.freeze({
     [SORT.ACTIVITY]: null,
@@ -150,7 +150,7 @@
   const PREVIOUS_CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v2";
   const LEGACY_CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v1";
   const COMPLETION_CACHE_FIELD_PREFIX = "completion_";
-  const RELATION_METRICS = new Set(RELATION_CHOICES.map(([metric]) => metric));
+  const RELATION_METRICS = new Set(RELATION_CHOICES.map(({ value }) => value));
   // 空的访问者映射或空的访问者条目按原样接受：这类形状只来自外部损坏
   // 的存储载荷（脚本自身永不写出），整体拒绝会让混合映射中其他访问者
   // 的有效数据一并丢失；只有未知指标或无效的指标记录使整个映射判为损坏。
@@ -249,7 +249,7 @@
   // than taken from callers.
   function completionCacheFieldValidators() {
     return Object.fromEntries(
-      COMPLETION_CHOICES.map(([scope]) => [
+      COMPLETION_CHOICES.map(({ value: scope }) => [
         completionFieldFor(scope),
         isCompletionRecord,
       ]),
@@ -687,7 +687,7 @@
   }
 
   function relationSelectionFor(relationSelection) {
-    return { metric: RELATION_CHOICES[0][0], ...relationSelection };
+    return { metric: RELATION_CHOICES[0].value, ...relationSelection };
   }
 
   // 展示名称比较的唯一配置点：数值感知、大小写不敏感；sortFriends
@@ -934,7 +934,7 @@
     sortOptions.append(prefix);
 
     const buttons = new Map();
-    for (const [criterion, label] of SORT_CHOICES) {
+    for (const { value: criterion, label } of SORT_CHOICES) {
       const button = pageDocument.createElement("button");
       button.type = "button";
       button.className = "l";
@@ -972,7 +972,7 @@
       menu.className = "bangumi-friend-sorter-dropdown-menu";
       menu.setAttribute("role", "menu");
       const buttons = new Map();
-      for (const [value, choiceLabel] of choices) {
+      for (const { value, label: choiceLabel } of choices) {
         const button = pageDocument.createElement("button");
         button.type = "button";
         button.className = "l";
@@ -1061,7 +1061,7 @@
       label: "喜好契合",
       choices: RELATION_CHOICES,
       onDefaultSelect: () =>
-        handlers?.selectCriterion(SORT.RELATION, RELATION_CHOICES[0][0]),
+        handlers?.selectCriterion(SORT.RELATION, RELATION_CHOICES[0].value),
       onSelect: (metric) => handlers?.selectCriterion(SORT.RELATION, metric),
     });
     const relationDropdown = relationControl.dropdown;
@@ -1336,7 +1336,7 @@
     const outcomes = {};
     const childCount = container.children?.length ?? 0;
     if (childCount === 0 && container.textContent.trim() === "") {
-      for (const [scope] of COMPLETION_CHOICES) {
+      for (const { value: scope } of COMPLETION_CHOICES) {
         outcomes[scope] = successOutcome(0);
       }
       return outcomes;
@@ -1349,7 +1349,7 @@
     if (aggregateValue === null) return null;
     outcomes[COMPLETION_SCOPE.ALL] = successOutcome(aggregateValue);
 
-    for (const [scope] of COMPLETION_CHOICES.slice(1)) {
+    for (const { value: scope } of COMPLETION_CHOICES.slice(1)) {
       const stats = statsBlockFor(container, scope);
       if (stats.kind === "missing") {
         // 缺失的分类块可靠地为零（见 docs/spec/data.md）。
@@ -1914,44 +1914,64 @@
     }
   }
 
+  async function fetchDocumentPage(
+    url,
+    fetchImpl,
+    domParser,
+    parseDocument,
+    { now, timers } = {},
+  ) {
+    return fetchPageWithTimeout(
+      url,
+      fetchImpl,
+      async (response) => {
+        const html = await response.text();
+        const fetchedAt = now?.();
+        const document = domParser.parseFromString(html, "text/html");
+        const record = parseDocument(document, response, fetchedAt);
+        if (record?.kind === "invalid") return { kind: "parse-error" };
+        return { kind: "success", record };
+      },
+      timers,
+    );
+  }
+
   // 一次主页请求、一次文档提取：记录按字段携带三向结果，交给主页字段
   // 任务分别判定成功与失败。字段取值由任务按 REMOTE_TARGET_SELECTION_KEYS
   // 查询 fields，记录保持纯数据形状，方便测试适配器直接构造。
   async function fetchProfile(friend, fetchImpl, domParser, now) {
-    return fetchPageWithTimeout(
+    return fetchDocumentPage(
       `/user/${encodeURIComponent(userIdentifierFor(friend))}`,
       fetchImpl,
-      async (response) => {
-        const html = await response.text();
-        const fetchedAt = now();
-        const document = domParser.parseFromString(html, "text/html");
+      domParser,
+      (document, _response, fetchedAt) => {
         const fields = parseProfileFieldOutcomes(document);
         if (fields.completion === null && fields.relation === null) {
-          return { kind: "parse-error" };
+          return { kind: "invalid" };
         }
-        return { kind: "success", record: { fetchedAt, fields } };
+        return { fetchedAt, fields };
       },
+      { now },
     );
   }
 
   async function fetchActivity(friend, fetchImpl, domParser, now) {
-    return fetchPageWithTimeout(
+    return fetchDocumentPage(
       `/user/${encodeURIComponent(userIdentifierFor(friend))}/timeline`,
       fetchImpl,
-      async (response) => {
-        const html = await response.text();
-        const fetchedAt = now();
+      domParser,
+      (document, response, fetchedAt) => {
         const responseAt = Date.parse(response.headers?.get("date") || "");
-        const document = domParser.parseFromString(html, "text/html");
         const parsed = parseTimelineDocument(
           document,
           Math.trunc(
             (Number.isFinite(responseAt) ? responseAt : fetchedAt) / 1_000,
           ),
         );
-        if (parsed.kind === "invalid") return { kind: "parse-error" };
-        return { kind: "success", record: { ...parsed, fetchedAt } };
+        if (parsed.kind === "invalid") return parsed;
+        return { ...parsed, fetchedAt };
       },
+      { now },
     );
   }
 
@@ -1965,22 +1985,17 @@
     timers,
   ) {
     const pageQuery = page === 1 ? "" : `&page=${page}`;
-    return fetchPageWithTimeout(
+    return fetchDocumentPage(
       `/user/${encodeURIComponent(visitorIdentifier)}/timeline?type=${category}${pageQuery}`,
       fetchImpl,
-      async (response) => {
-        const html = await response.text();
-        const document = domParser.parseFromString(html, "text/html");
-        const parsed = parseTietieTimelineDocument(document, {
+      domParser,
+      (document) =>
+        parseTietieTimelineDocument(document, {
           baseUrl,
           category,
           page,
-        });
-        return parsed.kind === "invalid"
-          ? { kind: "parse-error" }
-          : { kind: "success", record: parsed };
-      },
-      timers,
+        }),
+      { timers },
     );
   }
 
@@ -2068,9 +2083,13 @@
     return count > 400;
   }
 
+  function isRateLimitedOutcome(outcome) {
+    return outcome?.kind === "http-error" && outcome.status === 429;
+  }
+
   function nextBatchState(state, outcome) {
     if (state.stopped) return state;
-    if (outcome.kind === "http-error" && outcome.status === 429) {
+    if (isRateLimitedOutcome(outcome)) {
       return { ...state, stopped: true };
     }
     if (
@@ -2092,10 +2111,6 @@
     let foregroundType = null;
     let inFlight = 0;
     let globallyStopped = false;
-
-    function isRateLimited(outcome) {
-      return outcome?.kind === "http-error" && outcome.status === 429;
-    }
 
     function normalizedOutcome(outcome) {
       return outcome && typeof outcome === "object"
@@ -2210,7 +2225,7 @@
           results.set(keyFor(item), { item, outcome, record });
           batchState = nextBatchState(batchState, outcome);
           lifecycle.onProgress?.(progress());
-          if (isRateLimited(outcome)) {
+          if (isRateLimitedOutcome(outcome)) {
             const shouldNotify = !globallyStopped;
             stopAll();
             if (shouldNotify) lifecycle.onRateLimited?.();
@@ -2726,13 +2741,15 @@
 
   const TIETIE_MAX_PAGES = 5;
   const TIETIE_TASK_TYPE = "tietie";
+  const TIETIE_IDENTITY_FIELDS = [
+    { kind: "content", field: "contentKey" },
+    { kind: "dynamic", field: "dynamicIdentifier" },
+    { kind: "reaction", field: "reactionContainerIdentifier" },
+  ];
+
   function tietieIdentityDescriptorsFor(content) {
     const descriptors = [];
-    for (const [kind, field] of [
-      ["content", "contentKey"],
-      ["dynamic", "dynamicIdentifier"],
-      ["reaction", "reactionContainerIdentifier"],
-    ]) {
+    for (const { kind, field } of TIETIE_IDENTITY_FIELDS) {
       const value = content?.[field];
       if (typeof value === "string" && value.trim()) {
         descriptors.push({ kind, value: value.trim() });
@@ -2781,11 +2798,7 @@
     }
 
     function mergeMetadata(record, content) {
-      for (const field of [
-        "contentKey",
-        "dynamicIdentifier",
-        "reactionContainerIdentifier",
-      ]) {
+      for (const { field } of TIETIE_IDENTITY_FIELDS) {
         if (!record[field] && content?.[field]) record[field] = content[field];
       }
       registerAll(record, content);
@@ -2796,10 +2809,12 @@
       let record = candidateFor(descriptors);
       if (!record) {
         record = {
-          contentKey: content?.contentKey || null,
-          dynamicIdentifier: content?.dynamicIdentifier || null,
-          reactionContainerIdentifier:
-            content?.reactionContainerIdentifier || null,
+          ...Object.fromEntries(
+            TIETIE_IDENTITY_FIELDS.map(({ field }) => [
+              field,
+              content?.[field] || null,
+            ]),
+          ),
           reactorIdentifiers: new Set(),
         };
         records.push(record);
@@ -2852,6 +2867,8 @@
       }
     }
 
+    // 不复用 createRefreshLifecycle：贴贴只在整批成功后替换访客结果，
+    // 且排序和完成提示时机不同；共用其 onFinished 会改变批次语义。
     const lifecycle = {
       onFetching: progressReporter,
       onProgress: progressReporter,
@@ -2956,7 +2973,7 @@
   // 错误模式：远程目标缺少登录访客标识时不抛错，转入登录前置提示；
   // 调度器已停止或无待请求好友的刷新静默忽略，返回 null。
   function choiceLabelFor(choices, value) {
-    return choices.find(([choiceValue]) => choiceValue === value)?.[1] || value;
+    return choices.find((choice) => choice.value === value)?.label || value;
   }
 
   function createFriendSortSession({
@@ -3067,12 +3084,12 @@
     // ---- 私有选择状态机：当前目标、子选项、方向与展示顺序。 ----
     let currentCriterion = SORT.ADDED;
     let completionScope = COMPLETION_SCOPE.ALL;
-    let relationMetric = RELATION_CHOICES[0][0];
+    let relationMetric = RELATION_CHOICES[0].value;
     let statusMessage = "";
     let started = false;
     const directionByCriterion = new Map(
       [
-        ...SORT_CHOICES.map(([criterion]) => criterion),
+        ...SORT_CHOICES.map(({ value }) => value),
         SORT.COMPLETION,
         SORT.RELATION,
       ].map((criterion) => [criterion, defaultDirectionFor(criterion)]),
@@ -3158,10 +3175,10 @@
       [SORT.RELATION]: {
         armMessageFor: (selection) =>
           choiceLabelFor(RELATION_CHOICES, selection),
-        defaultSelection: RELATION_CHOICES[0][0],
+        defaultSelection: RELATION_CHOICES[0].value,
         loginLabel: "喜好契合",
         requiresVisitor: true,
-        selections: RELATION_CHOICES.map(([value]) => value),
+        selections: RELATION_CHOICES.map(({ value }) => value),
         setSelection: (selection) => {
           relationMetric = selection;
         },
@@ -3178,7 +3195,7 @@
           choiceLabelFor(COMPLETION_CHOICES, selection),
         defaultSelection: COMPLETION_SCOPE.ALL,
         requiresVisitor: false,
-        selections: COMPLETION_CHOICES.map(([value]) => value),
+        selections: COMPLETION_CHOICES.map(({ value }) => value),
         setSelection: (selection) => {
           completionScope = selection;
         },

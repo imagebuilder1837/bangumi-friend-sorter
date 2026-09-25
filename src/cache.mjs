@@ -20,7 +20,7 @@ const FRIEND_CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v3";
 const PREVIOUS_CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v2";
 const LEGACY_CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v1";
 const COMPLETION_CACHE_FIELD_PREFIX = "completion_";
-const RELATION_METRICS = new Set(RELATION_CHOICES.map(([metric]) => metric));
+const RELATION_METRICS = new Set(RELATION_CHOICES.map(({ value }) => value));
 // 空的访问者映射或空的访问者条目按原样接受：这类形状只来自外部损坏
 // 的存储载荷（脚本自身永不写出），整体拒绝会让混合映射中其他访问者
 // 的有效数据一并丢失；只有未知指标或无效的指标记录使整个映射判为损坏。
@@ -119,7 +119,7 @@ function isRelationRecord(value, metric) {
 // than taken from callers.
 function completionCacheFieldValidators() {
   return Object.fromEntries(
-    COMPLETION_CHOICES.map(([scope]) => [
+    COMPLETION_CHOICES.map(({ value: scope }) => [
       completionFieldFor(scope),
       isCompletionRecord,
     ]),

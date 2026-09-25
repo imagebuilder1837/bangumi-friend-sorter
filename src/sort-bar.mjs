@@ -206,7 +206,7 @@ function createSortBar(pageDocument, { list, mutationObserver } = {}) {
   sortOptions.append(prefix);
 
   const buttons = new Map();
-  for (const [criterion, label] of SORT_CHOICES) {
+  for (const { value: criterion, label } of SORT_CHOICES) {
     const button = pageDocument.createElement("button");
     button.type = "button";
     button.className = "l";
@@ -244,7 +244,7 @@ function createSortBar(pageDocument, { list, mutationObserver } = {}) {
     menu.className = "bangumi-friend-sorter-dropdown-menu";
     menu.setAttribute("role", "menu");
     const buttons = new Map();
-    for (const [value, choiceLabel] of choices) {
+    for (const { value, label: choiceLabel } of choices) {
       const button = pageDocument.createElement("button");
       button.type = "button";
       button.className = "l";
@@ -333,7 +333,7 @@ function createSortBar(pageDocument, { list, mutationObserver } = {}) {
     label: "喜好契合",
     choices: RELATION_CHOICES,
     onDefaultSelect: () =>
-      handlers?.selectCriterion(SORT.RELATION, RELATION_CHOICES[0][0]),
+      handlers?.selectCriterion(SORT.RELATION, RELATION_CHOICES[0].value),
     onSelect: (metric) => handlers?.selectCriterion(SORT.RELATION, metric),
   });
   const relationDropdown = relationControl.dropdown;

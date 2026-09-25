@@ -29,22 +29,22 @@ const REFRESH_STATUS = Object.freeze({
   LOGIN_REQUIRED: "login",
 });
 const SORT_CHOICES = [
-  [SORT.ADDED, "加好友时间"],
-  [SORT.NAME, "名称"],
-  [SORT.ACTIVITY, "上次活跃"],
-  [SORT.TIETIE, "和我贴贴"],
+  { value: SORT.ADDED, label: "加好友时间" },
+  { value: SORT.NAME, label: "名称" },
+  { value: SORT.ACTIVITY, label: "上次活跃" },
+  { value: SORT.TIETIE, label: "和我贴贴" },
 ];
 const COMPLETION_CHOICES = [
-  [COMPLETION_SCOPE.ALL, "全部"],
-  [COMPLETION_SCOPE.ANIMATION, "动画"],
-  [COMPLETION_SCOPE.BOOK, "书籍"],
-  [COMPLETION_SCOPE.MUSIC, "音乐"],
-  [COMPLETION_SCOPE.GAME, "游戏"],
-  [COMPLETION_SCOPE.REAL_LIFE, "三次元"],
+  { value: COMPLETION_SCOPE.ALL, label: "全部" },
+  { value: COMPLETION_SCOPE.ANIMATION, label: "动画" },
+  { value: COMPLETION_SCOPE.BOOK, label: "书籍" },
+  { value: COMPLETION_SCOPE.MUSIC, label: "音乐" },
+  { value: COMPLETION_SCOPE.GAME, label: "游戏" },
+  { value: COMPLETION_SCOPE.REAL_LIFE, label: "三次元" },
 ];
 const RELATION_CHOICES = [
-  ["syncRate", "同步率"],
-  ["commonLikes", "共同喜好数"],
+  { value: "syncRate", label: "同步率" },
+  { value: "commonLikes", label: "共同喜好数" },
 ];
 const REMOTE_TARGET_SELECTION_KEYS = Object.freeze({
   [SORT.ACTIVITY]: null,

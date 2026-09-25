@@ -4,9 +4,13 @@ function needsLargeRequestConfirmation(count) {
   return count > 400;
 }
 
+function isRateLimitedOutcome(outcome) {
+  return outcome?.kind === "http-error" && outcome.status === 429;
+}
+
 function nextBatchState(state, outcome) {
   if (state.stopped) return state;
-  if (outcome.kind === "http-error" && outcome.status === 429) {
+  if (isRateLimitedOutcome(outcome)) {
     return { ...state, stopped: true };
   }
   if (
@@ -28,10 +32,6 @@ function createTaskScheduler({ concurrency = 4 } = {}) {
   let foregroundType = null;
   let inFlight = 0;
   let globallyStopped = false;
-
-  function isRateLimited(outcome) {
-    return outcome?.kind === "http-error" && outcome.status === 429;
-  }
 
   function normalizedOutcome(outcome) {
     return outcome && typeof outcome === "object"
@@ -146,7 +146,7 @@ function createTaskScheduler({ concurrency = 4 } = {}) {
         results.set(keyFor(item), { item, outcome, record });
         batchState = nextBatchState(batchState, outcome);
         lifecycle.onProgress?.(progress());
-        if (isRateLimited(outcome)) {
+        if (isRateLimitedOutcome(outcome)) {
           const shouldNotify = !globallyStopped;
           stopAll();
           if (shouldNotify) lifecycle.onRateLimited?.();

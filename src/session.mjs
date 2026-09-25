@@ -40,7 +40,7 @@ import { createTietieTasks } from "./tietie-tasks.mjs";
 // 错误模式：远程目标缺少登录访客标识时不抛错，转入登录前置提示；
 // 调度器已停止或无待请求好友的刷新静默忽略，返回 null。
 function choiceLabelFor(choices, value) {
-  return choices.find(([choiceValue]) => choiceValue === value)?.[1] || value;
+  return choices.find((choice) => choice.value === value)?.label || value;
 }
 
 function createFriendSortSession({
@@ -151,12 +151,12 @@ function createFriendSortSession({
   // ---- 私有选择状态机：当前目标、子选项、方向与展示顺序。 ----
   let currentCriterion = SORT.ADDED;
   let completionScope = COMPLETION_SCOPE.ALL;
-  let relationMetric = RELATION_CHOICES[0][0];
+  let relationMetric = RELATION_CHOICES[0].value;
   let statusMessage = "";
   let started = false;
   const directionByCriterion = new Map(
     [
-      ...SORT_CHOICES.map(([criterion]) => criterion),
+      ...SORT_CHOICES.map(({ value }) => value),
       SORT.COMPLETION,
       SORT.RELATION,
     ].map((criterion) => [criterion, defaultDirectionFor(criterion)]),
@@ -241,10 +241,10 @@ function createFriendSortSession({
     },
     [SORT.RELATION]: {
       armMessageFor: (selection) => choiceLabelFor(RELATION_CHOICES, selection),
-      defaultSelection: RELATION_CHOICES[0][0],
+      defaultSelection: RELATION_CHOICES[0].value,
       loginLabel: "喜好契合",
       requiresVisitor: true,
-      selections: RELATION_CHOICES.map(([value]) => value),
+      selections: RELATION_CHOICES.map(({ value }) => value),
       setSelection: (selection) => {
         relationMetric = selection;
       },
@@ -261,7 +261,7 @@ function createFriendSortSession({
         choiceLabelFor(COMPLETION_CHOICES, selection),
       defaultSelection: COMPLETION_SCOPE.ALL,
       requiresVisitor: false,
-      selections: COMPLETION_CHOICES.map(([value]) => value),
+      selections: COMPLETION_CHOICES.map(({ value }) => value),
       setSelection: (selection) => {
         completionScope = selection;
       },

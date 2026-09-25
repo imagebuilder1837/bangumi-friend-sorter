@@ -136,7 +136,7 @@ function isAscendingDirection(direction, criterion) {
 }
 
 function relationSelectionFor(relationSelection) {
-  return { metric: RELATION_CHOICES[0][0], ...relationSelection };
+  return { metric: RELATION_CHOICES[0].value, ...relationSelection };
 }
 
 // 展示名称比较的唯一配置点：数值感知、大小写不敏感；sortFriends

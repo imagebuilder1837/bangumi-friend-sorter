@@ -85,7 +85,7 @@ function completionFieldOutcomes(document) {
   const outcomes = {};
   const childCount = container.children?.length ?? 0;
   if (childCount === 0 && container.textContent.trim() === "") {
-    for (const [scope] of COMPLETION_CHOICES) {
+    for (const { value: scope } of COMPLETION_CHOICES) {
       outcomes[scope] = successOutcome(0);
     }
     return outcomes;
@@ -98,7 +98,7 @@ function completionFieldOutcomes(document) {
   if (aggregateValue === null) return null;
   outcomes[COMPLETION_SCOPE.ALL] = successOutcome(aggregateValue);
 
-  for (const [scope] of COMPLETION_CHOICES.slice(1)) {
+  for (const { value: scope } of COMPLETION_CHOICES.slice(1)) {
     const stats = statsBlockFor(container, scope);
     if (stats.kind === "missing") {
       // 缺失的分类块可靠地为零（见 docs/spec/data.md）。

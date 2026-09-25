@@ -36,44 +36,64 @@ async function fetchPageWithTimeout(
   }
 }
 
+async function fetchDocumentPage(
+  url,
+  fetchImpl,
+  domParser,
+  parseDocument,
+  { now, timers } = {},
+) {
+  return fetchPageWithTimeout(
+    url,
+    fetchImpl,
+    async (response) => {
+      const html = await response.text();
+      const fetchedAt = now?.();
+      const document = domParser.parseFromString(html, "text/html");
+      const record = parseDocument(document, response, fetchedAt);
+      if (record?.kind === "invalid") return { kind: "parse-error" };
+      return { kind: "success", record };
+    },
+    timers,
+  );
+}
+
 // 一次主页请求、一次文档提取：记录按字段携带三向结果，交给主页字段
 // 任务分别判定成功与失败。字段取值由任务按 REMOTE_TARGET_SELECTION_KEYS
 // 查询 fields，记录保持纯数据形状，方便测试适配器直接构造。
 async function fetchProfile(friend, fetchImpl, domParser, now) {
-  return fetchPageWithTimeout(
+  return fetchDocumentPage(
     `/user/${encodeURIComponent(userIdentifierFor(friend))}`,
     fetchImpl,
-    async (response) => {
-      const html = await response.text();
-      const fetchedAt = now();
-      const document = domParser.parseFromString(html, "text/html");
+    domParser,
+    (document, _response, fetchedAt) => {
       const fields = parseProfileFieldOutcomes(document);
       if (fields.completion === null && fields.relation === null) {
-        return { kind: "parse-error" };
+        return { kind: "invalid" };
       }
-      return { kind: "success", record: { fetchedAt, fields } };
+      return { fetchedAt, fields };
     },
+    { now },
   );
 }
 
 async function fetchActivity(friend, fetchImpl, domParser, now) {
-  return fetchPageWithTimeout(
+  return fetchDocumentPage(
     `/user/${encodeURIComponent(userIdentifierFor(friend))}/timeline`,
     fetchImpl,
-    async (response) => {
-      const html = await response.text();
-      const fetchedAt = now();
+    domParser,
+    (document, response, fetchedAt) => {
       const responseAt = Date.parse(response.headers?.get("date") || "");
-      const document = domParser.parseFromString(html, "text/html");
       const parsed = parseTimelineDocument(
         document,
         Math.trunc(
           (Number.isFinite(responseAt) ? responseAt : fetchedAt) / 1_000,
         ),
       );
-      if (parsed.kind === "invalid") return { kind: "parse-error" };
-      return { kind: "success", record: { ...parsed, fetchedAt } };
+      if (parsed.kind === "invalid") return parsed;
+      return { ...parsed, fetchedAt };
     },
+    { now },
   );
 }
 
@@ -87,22 +107,17 @@ async function fetchTietiePage(
   timers,
 ) {
   const pageQuery = page === 1 ? "" : `&page=${page}`;
-  return fetchPageWithTimeout(
+  return fetchDocumentPage(
     `/user/${encodeURIComponent(visitorIdentifier)}/timeline?type=${category}${pageQuery}`,
     fetchImpl,
-    async (response) => {
-      const html = await response.text();
-      const document = domParser.parseFromString(html, "text/html");
-      const parsed = parseTietieTimelineDocument(document, {
+    domParser,
+    (document) =>
+      parseTietieTimelineDocument(document, {
         baseUrl,
         category,
         page,
-      });
-      return parsed.kind === "invalid"
-        ? { kind: "parse-error" }
-        : { kind: "success", record: parsed };
-    },
-    timers,
+      }),
+    { timers },
   );
 }
 
