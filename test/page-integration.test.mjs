@@ -2,14 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { currentVisitorIdentifier } from "../src/identity.mjs";
 import { initialize } from "../src/entry.mjs";
+import { friendPageWith } from "./support/dom.mjs";
+import { mainSortControl, dropdownButtonFor } from "./support/sort-bar.mjs";
+import { timelineDocumentFromFixture } from "./support/timeline.mjs";
 import {
-  friendPageWith,
-  mainSortControl,
-  dropdownButtonFor,
-  timelineDocumentFromFixture,
   profileStatsDocument,
   relationProfileDocument,
-} from "./support/index.mjs";
+} from "./support/profile.mjs";
 
 test("页面初始化可以注入获取任务所需的运行时依赖", async () => {
   const page = friendPageWith([{ href: "/user/sai", name: "Sai" }]);

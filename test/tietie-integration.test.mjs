@@ -3,19 +3,22 @@ import assert from "node:assert/strict";
 import { createFriendCache } from "../src/cache.mjs";
 import { initialize } from "../src/entry.mjs";
 import { parseTietieTimelineDocument } from "../src/tietie-parser.mjs";
+import { friendPageWith } from "./support/dom.mjs";
 import {
-  friendPageWith,
   statusFor,
   mainSortControl,
-  persistentFriendCacheStorage,
-  waitForCondition,
+  directionButtonsFor,
+} from "./support/sort-bar.mjs";
+import { persistentFriendCacheStorage } from "./support/cache.mjs";
+import {
   initializeRefreshPage,
   createSessionHarness,
-  directionButtonsFor,
-  fakeTimers,
+} from "./support/session.mjs";
+import { waitForCondition, fakeTimers } from "./support/timing.mjs";
+import {
   timelineDocumentFromFixture,
   tietieDocumentFromFixture,
-} from "./support/index.mjs";
+} from "./support/timeline.mjs";
 
 test("和我贴贴完整结果跨缓存重建保存全部反应者并遵守七十二小时边界", () => {
   const hour = 60 * 60 * 1_000;

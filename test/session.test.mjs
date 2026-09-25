@@ -2,14 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createFriendCache } from "../src/cache.mjs";
 import { initialize } from "../src/entry.mjs";
-import {
-  friendPageWith,
-  mainSortControl,
-  refreshCache,
-  createSessionHarness,
-  directionButtonsFor,
-  timelineDocumentFromFixture,
-} from "./support/index.mjs";
+import { friendPageWith } from "./support/dom.mjs";
+import { mainSortControl, directionButtonsFor } from "./support/sort-bar.mjs";
+import { refreshCache } from "./support/cache.mjs";
+import { createSessionHarness } from "./support/session.mjs";
+import { timelineDocumentFromFixture } from "./support/timeline.mjs";
 
 test("页面交互按排序维度记忆方向并仅重排当前缓存", () => {
   const page = friendPageWith([

@@ -3,23 +3,29 @@ import assert from "node:assert/strict";
 import { createFriendCache } from "../src/cache.mjs";
 import { fetchProfile } from "../src/http.mjs";
 import { initialize } from "../src/entry.mjs";
+import { friendPageWith } from "./support/dom.mjs";
 import {
-  friendPageWith,
   statusFor,
   mainSortControl,
+  dropdownButtonFor,
+} from "./support/sort-bar.mjs";
+import {
   friendCacheStorage,
   storedCompletion,
   refreshCache,
+  completionSnapshotFor,
+} from "./support/cache.mjs";
+import {
   refreshResponseFor,
-  waitForCondition,
   initializeRefreshPage,
   createSessionHarness,
-  dropdownButtonFor,
-  completionSnapshotFor,
-  timelineDocumentFromFixture,
+} from "./support/session.mjs";
+import { waitForCondition } from "./support/timing.mjs";
+import { timelineDocumentFromFixture } from "./support/timeline.mjs";
+import {
   relationProfileDocument,
   duplicateCategoryProfileDocument,
-} from "./support/index.mjs";
+} from "./support/profile.mjs";
 
 test("仅为缺失或超过二十四小时的上次活跃缓存安排请求", () => {
   const hour = 60 * 60 * 1_000;

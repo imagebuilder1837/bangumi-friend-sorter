@@ -5,7 +5,7 @@ import {
   friendCacheStorage,
   storedCompletion,
   refreshCache,
-} from "./support/index.mjs";
+} from "./support/cache.mjs";
 
 test("持久存储不可用时上次活跃缓存仍在当前页面内工作", () => {
   const unavailableStorage = {

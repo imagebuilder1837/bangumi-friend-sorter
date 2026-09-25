@@ -2,26 +2,31 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createFriendCache } from "../src/cache.mjs";
 import { initialize } from "../src/entry.mjs";
+import { friendPageWith } from "./support/dom.mjs";
 import {
-  friendPageWith,
   mountedSortBar,
   statusFor,
   mainSortControl,
-  friendCacheStorage,
-  storedCompletion,
-  refreshResponseFor,
-  waitForCondition,
-  initializeRefreshPage,
   directionButtonsFor,
   dropdownButtonFor,
   menuItemFor,
+} from "./support/sort-bar.mjs";
+import {
+  friendCacheStorage,
+  storedCompletion,
   completionSnapshotFor,
-  fakeTimers,
-  timelineDocumentFromFixture,
+} from "./support/cache.mjs";
+import {
+  refreshResponseFor,
+  initializeRefreshPage,
+} from "./support/session.mjs";
+import { waitForCondition, fakeTimers } from "./support/timing.mjs";
+import { timelineDocumentFromFixture } from "./support/timeline.mjs";
+import {
   profileStatsDocument,
   relationProfileDocument,
   profileDocumentWithRelation,
-} from "./support/index.mjs";
+} from "./support/profile.mjs";
 
 test("初始化在时间胶囊和用户主页任务之间切换并恢复暂停队列", async () => {
   const page = friendPageWith(

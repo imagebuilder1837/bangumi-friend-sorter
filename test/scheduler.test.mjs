@@ -2,15 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createTaskScheduler } from "../src/scheduler.mjs";
 import { initialize } from "../src/entry.mjs";
-import {
-  friendPageWith,
-  mainSortControl,
-  storedCompletion,
-  waitForCondition,
-  dropdownButtonFor,
-  timelineDocumentFromFixture,
-  profileStatsDocument,
-} from "./support/index.mjs";
+import { friendPageWith } from "./support/dom.mjs";
+import { mainSortControl, dropdownButtonFor } from "./support/sort-bar.mjs";
+import { storedCompletion } from "./support/cache.mjs";
+import { waitForCondition } from "./support/timing.mjs";
+import { timelineDocumentFromFixture } from "./support/timeline.mjs";
+import { profileStatsDocument } from "./support/profile.mjs";
 
 test("页面任务调度器在全局四槽位内优先前台任务且不取消在途请求", async () => {
   const scheduler = createTaskScheduler({ concurrency: 4 });

@@ -6,12 +6,14 @@ import { parseTimelineDocument } from "../src/timeline-parser.mjs";
 import {
   timelineDocumentFromFixture,
   tietieDocumentFromFixture,
+} from "./support/timeline.mjs";
+import {
   ProfileNode,
   profileStatsDocument,
   profileStatsDocumentFromFixture,
   relationProfileDocument,
   duplicateCategoryProfileDocument,
-} from "./support/index.mjs";
+} from "./support/profile.mjs";
 
 test("贴贴时间胶囊解析反应者、内容链接和分页", () => {
   const parsed = parseTietieTimelineDocument(

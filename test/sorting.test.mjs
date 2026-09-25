@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createFriendCache } from "../src/cache.mjs";
 import { sortFriends } from "../src/sorting.mjs";
-import { refreshCache } from "./support/index.mjs";
+import { refreshCache } from "./support/cache.mjs";
 
 test("网页默认顺序默认从旧到新，也支持从新到旧", () => {
   const friends = [

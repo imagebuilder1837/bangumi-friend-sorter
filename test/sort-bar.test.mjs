@@ -3,15 +3,14 @@ import assert from "node:assert/strict";
 import { createSortBar } from "../src/sort-bar.mjs";
 import { directionLabelsFor } from "../src/sorting.mjs";
 import { initialize } from "../src/entry.mjs";
+import { friendPageWith } from "./support/dom.mjs";
 import {
-  friendPageWith,
   mountedSortBar,
   collectNodes,
   buttonsIn,
   rankFor,
   statusFor,
   mainSortControl,
-  friendCacheStorage,
   directionButtonsFor,
   dropdownButtonFor,
   dropdownItems,
@@ -21,9 +20,9 @@ import {
   setFriendVisible,
   fakeMutationObserverClass,
   assertPointerKeepsCompletionMenuOpen,
-  topLevelCssRules,
-  normalizeCssSelector,
-} from "./support/index.mjs";
+} from "./support/sort-bar.mjs";
+import { friendCacheStorage } from "./support/cache.mjs";
+import { topLevelCssRules, normalizeCssSelector } from "./support/css.mjs";
 
 test("纯空白展示名称不会阻止排序栏初始化", () => {
   const page = friendPageWith([
