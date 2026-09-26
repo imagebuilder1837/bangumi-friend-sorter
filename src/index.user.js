@@ -16,6 +16,7 @@
 // @downloadURL  https://raw.githubusercontent.com/imagebuilder1837/bangumi-friend-sorter/refs/heads/main/src/index.user.js
 // @updateURL    https://raw.githubusercontent.com/imagebuilder1837/bangumi-friend-sorter/refs/heads/main/src/index.user.js
 // ==/UserScript==
+
 // Generated from src/main.mjs and its src/*.mjs imports. Do not edit; run npm run build.
 (function () {
   "use strict";

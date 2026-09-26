@@ -61,7 +61,7 @@ export async function generate() {
     const formatted = await prettier.format(output[0].code, {
       filepath: artifact,
     });
-    return `${header}\n${notice}${formatted}`;
+    return `${header}\n\n${notice}${formatted}`;
   } finally {
     await bundle.close();
   }

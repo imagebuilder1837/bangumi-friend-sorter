@@ -137,7 +137,7 @@ test("the delivered file is the reproducible, self-contained metadata-bearing ou
   assert.match(code, /^\/\/ ==UserScript==\n/);
   assert.match(
     code,
-    /\/\/ ==\/UserScript==\n\/\/ Generated from src\/main\.mjs/,
+    /\/\/ ==\/UserScript==\n\n\/\/ Generated from src\/main\.mjs/,
   );
   for (const source of [
     "cache",
