@@ -894,6 +894,17 @@
     return element.style?.display !== "none";
   }
 
+  // 列表层可呈现判定（ADR 0007）：好友视图整体是否可呈现。与条目级
+  // 同构：checkVisibility 覆盖一切隐藏途径（含祖先驱动的显隐），不可用
+  // 时回退到内联 display 检查——回退下祖先驱动的显隐不可感知，属可
+  // 接受降级。最终是否可见统一由本判定决定，observer 只负责触发。
+  function isListPresentable(list) {
+    if (typeof list.checkVisibility === "function") {
+      return list.checkVisibility();
+    }
+    return list.style?.display !== "none";
+  }
+
   // 排序栏 deep module：排序交互与呈现的唯一边界。`bind` 一次性接收领域
   // 意图回调（选择排序目标、切换方向），`render` 幂等地接收可呈现状态；
   // 菜单、按钮、方向文案、状态提示、名次、ARIA、输入模态、焦点与展开
@@ -1166,6 +1177,9 @@
     let lastVisibleElements = null;
     // 最近一次收到的可呈现状态：可见性观察回调重放它以重排名次。
     let lastState = null;
+    // 最近一次已知的列表层表现状态：祖先观察回调的廉价门控基准，
+    // render 是唯一写入者；null 表示尚未渲染、状态未知。
+    let lastPresentable = null;
 
     // 幂等呈现：当前选择、方向文案、菜单选中态、刷新状态提示与好友名次
     // 都由这一次渲染更新。展示顺序与上次相同（例如只有状态提示变化）时
@@ -1200,6 +1214,18 @@
       }
       if (status.textContent !== statusMessage) {
         status.textContent = statusMessage;
+      }
+
+      // 列表层检查（ADR 0007）：整个好友视图不可呈现时进入呈现挂起——
+      // 只保留最新状态，把排序与可见性呈现缓存标记为未知（null），跳过
+      // 列表 DOM 重排与名次更新。恢复可呈现后凭 null 语义从真实 DOM
+      // 开始 reconciliation，补上挂起期间错过的重排与名次。
+      const presentable = isListPresentable(list);
+      lastPresentable = presentable;
+      if (!presentable) {
+        lastOrderElements = null;
+        lastVisibleElements = null;
+        return;
       }
 
       const renderEntries = orderedFriends.map(entryFor);
@@ -1244,6 +1270,30 @@
         attributeFilter: ["style", "class"],
         subtree: true,
       });
+    }
+
+    // 祖先观察（ADR 0007）：祖先链上的属性变化（如 bangumi-user-topics
+    // 在 #wrapperNeue 上翻转 data-user-topics-active）由样式表驱动整个
+    // 好友视图显隐，列表子树内无任何属性变化，子树观察必然漏掉。观察
+    // 列表之上的每个祖先直到文档根，不过滤属性名——任何组件换成其他
+    // data-* 标记也不失效， observer 只负责触发重新检查，最终是否可见
+    // 统一由 render 中的 isListPresentable 决定。回调先做廉价的列表级
+    // 表现状态门控：状态未变即早退，变化才重放最近一次渲染（主题切换
+    // 等高频无关属性变化不再触发整场重放）。首渲染前无状态可重放，
+    // 静默忽略。无 MutationObserver 时不观察，与子树观察同一降级。
+    if (typeof mutationObserver === "function") {
+      const ancestorObserver = new mutationObserver(() => {
+        const presentable = isListPresentable(list);
+        if (presentable === lastPresentable) return;
+        if (lastState) render(lastState);
+      });
+      for (
+        let ancestor = list.parentElement;
+        ancestor;
+        ancestor = ancestor.parentElement
+      ) {
+        ancestorObserver.observe(ancestor, { attributes: true });
+      }
     }
 
     return { bind, mount, render };

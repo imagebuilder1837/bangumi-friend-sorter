@@ -113,11 +113,13 @@ function fakeMutationObserverClass() {
   class FakeMutationObserver {
     constructor(callback) {
       this.callback = callback;
+      this.observations = [];
       instances.push(this);
     }
     observe(target, options) {
       this.observedTarget = target;
       this.observedOptions = options;
+      this.observations.push({ target, options });
     }
   }
   return { instances, FakeMutationObserver };
