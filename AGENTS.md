@@ -10,7 +10,7 @@ Use the default canonical triage labels: `needs-triage`, `needs-info`, `ready-fo
 
 ### Domain docs
 
-This is a single-context repo with root `CONTEXT.md` and `docs/adr/`. See `docs/agents/domain.md`.
+This is a single-context repo with root `GLOSSARY.md` and `docs/adr/`. See `docs/agents/domain.md`.
 
 ### Source navigation and delivery
 

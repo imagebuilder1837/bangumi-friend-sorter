@@ -1,6 +1,6 @@
 # 好友排序脚本规格
 
-本文记录脚本的当前行为。每项规则在主题文档中维护一次；术语见 [`CONTEXT.md`](../CONTEXT.md)，维护源导航见 [`docs/module-guide.md`](module-guide.md)，历史决策见 [`docs/adr/`](adr/)，交付与验证流程见 [`docs/development.md`](development.md)。
+本文记录脚本的当前行为。每项规则在主题文档中维护一次；术语见 [`GLOSSARY.md`](../GLOSSARY.md)，维护源导航见 [`docs/module-guide.md`](module-guide.md)，历史决策见 [`docs/adr/`](adr/)，交付与验证流程见 [`docs/development.md`](development.md)。
 
 ## 按任务阅读
 

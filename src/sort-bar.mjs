@@ -454,7 +454,7 @@ function createSortBar(pageDocument, { list, mutationObserver } = {}) {
 
   // 幂等呈现：当前选择、方向文案、菜单选中态、刷新状态提示与好友名次
   // 都由这一次渲染更新。展示顺序与上次相同（例如只有状态提示变化）时
-  // 跳过重排，保持既有 DOM 操作量级。名次只对可见好友（见 CONTEXT.md）
+  // 跳过重排，保持既有 DOM 操作量级。名次只对可见好友（见 GLOSSARY.md）
   // 连续编号：可见集合变化而顺序未变时只重写名次、不移动列表项，
   // 隐藏项徽章保留旧文本。调用方始终传入完整的可呈现状态。
   function render(state) {

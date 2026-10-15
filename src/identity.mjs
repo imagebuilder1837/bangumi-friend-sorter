@@ -1,7 +1,7 @@
 // src/identity.mjs — friend and visitor identifiers.
 
 // Normalizes a friend record to its stable cache and sort identity:
-// only a non-empty string identifier counts (see CONTEXT.md, 用户标识).
+// only a non-empty string identifier counts (see GLOSSARY.md, 用户标识).
 function userIdentifierFor(friend) {
   const identifier = friend?.userIdentifier;
   return typeof identifier === "string" && identifier ? identifier : null;
