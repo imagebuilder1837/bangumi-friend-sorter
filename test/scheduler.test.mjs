@@ -422,7 +422,7 @@ test("没有待请求好友的远程目标不会暂停后台任务", async () =>
     ]),
   );
 
-  initialize({
+  await initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/sai/friends" } },
     storage: {

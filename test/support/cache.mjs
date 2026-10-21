@@ -1,3 +1,6 @@
+import { IDBFactory } from "fake-indexeddb";
+import { createFriendCache } from "../../src/cache.mjs";
+
 function friendCacheStorage(records) {
   return {
     getItem(key) {
@@ -12,14 +15,26 @@ function friendCacheStorage(records) {
 function persistentFriendCacheStorage(initialValue = null) {
   let value = initialValue;
   return {
+    indexedDB: new IDBFactory(),
     getItem(key) {
       return key === "bangumi-friend-sorter:activity-cache:v3" ? value : null;
     },
     setItem(key, nextValue) {
       if (key === "bangumi-friend-sorter:activity-cache:v3") value = nextValue;
     },
-    removeItem() {},
+    removeItem(key) {
+      if (key === "bangumi-friend-sorter:activity-cache:v3") value = null;
+    },
   };
+}
+
+async function openPersistentCache(storage, options = {}) {
+  const cache = createFriendCache(storage, {
+    indexedDB: storage.indexedDB,
+    ...options,
+  });
+  await cache.ready;
+  return cache;
 }
 
 function storedCompletion(value, fetchedAt) {
@@ -47,6 +62,7 @@ function completionSnapshotFor(cache, userIdentifier) {
 export {
   friendCacheStorage,
   persistentFriendCacheStorage,
+  openPersistentCache,
   storedCompletion,
   refreshCache,
   completionSnapshotFor,

@@ -6,7 +6,7 @@
 | --- | --- |
 | 排序标准、方向、平局、选择配置 | `src/sorting.mjs`、`src/choices.mjs`；远程目标的两击决策见 `src/remote-selection.mjs` |
 | 好友与访客标识、页面好友读取 | `src/identity.mjs`、`src/entry.mjs` |
-| 缓存验证、过期、迁移与持久化 | `src/cache.mjs` |
+| 缓存验证、过期与领域读写 | `src/cache.mjs`；原生数据库事务、连接与一次性导入见 `src/cache-storage.mjs` |
 | 上次活跃、分类时间胶囊及主页字段解析 | `src/timeline-parser.mjs`、`src/tietie-parser.mjs`、`src/profile-parser.mjs` |
 | 请求 URL、超时、凭据和响应时间 | `src/http.mjs`；装配见 `src/entry.mjs` |
 | 并发、抢占、批次停止 | `src/scheduler.mjs` |

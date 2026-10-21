@@ -24,7 +24,7 @@ import {
 import { friendCacheStorage } from "./support/cache.mjs";
 import { topLevelCssRules, normalizeCssSelector } from "./support/css.mjs";
 
-test("纯空白展示名称不会阻止排序栏初始化", () => {
+test("纯空白展示名称不会阻止排序栏初始化", async () => {
   const page = friendPageWith([
     { href: "/user/normal", name: "正常好友" },
     { href: "/user/ato", name: "\u3000" },
@@ -42,7 +42,7 @@ test("纯空白展示名称不会阻止排序栏初始化", () => {
   };
 
   try {
-    initialize();
+    await initialize();
   } finally {
     global.document = previousDocument;
     global.window = previousWindow;
@@ -52,7 +52,7 @@ test("纯空白展示名称不会阻止排序栏初始化", () => {
   assert.equal(page.list.beforeNodes[0].dataset.friendSorter, "");
 });
 
-test("初始化后每个好友项显示网页默认顺序名次", () => {
+test("初始化后每个好友项显示网页默认顺序名次", async () => {
   const page = friendPageWith([
     { href: "/user/c", name: "Cara" },
     { href: "/user/a", name: "Ann" },
@@ -71,7 +71,7 @@ test("初始化后每个好友项显示网页默认顺序名次", () => {
   };
 
   try {
-    initialize();
+    await initialize();
   } finally {
     global.document = previousDocument;
     global.window = previousWindow;
@@ -80,7 +80,7 @@ test("初始化后每个好友项显示网页默认顺序名次", () => {
   assert.deepEqual(page.list.children.map(rankFor), ["#1", "#2", "#3"]);
 });
 
-test("名次随每次重排更新，#1 始终是当前展示顺序的第一位", () => {
+test("名次随每次重排更新，#1 始终是当前展示顺序的第一位", async () => {
   const page = friendPageWith([
     { href: "/user/z", name: "Zed" },
     { href: "/user/b", name: "Bob" },
@@ -99,7 +99,7 @@ test("名次随每次重排更新，#1 始终是当前展示顺序的第一位",
   };
 
   try {
-    initialize();
+    await initialize();
   } finally {
     global.document = previousDocument;
     global.window = previousWindow;
@@ -242,13 +242,13 @@ test("和我贴贴是位于上次活跃与喜好契合之间的独立排序按�
   ]);
 });
 
-test("页面初始化提供六个主排序目标、全部子项和各自主按钮方向", () => {
+test("页面初始化提供六个主排序目标、全部子项和各自主按钮方向", async () => {
   const page = friendPageWith([
     { href: "/user/z", name: "Zed" },
     { href: "/user/a", name: "Ada" },
   ]);
 
-  initialize({
+  await initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -731,13 +731,13 @@ test("祖先回调只在做表现状态门控后重放，未变化时零列表�
   assert.equal(reorderWrites, 3);
 });
 
-test("页面初始化把可见性观察器接到好友列表上", () => {
+test("页面初始化把可见性观察器接到好友列表上", async () => {
   const page = friendPageWith([
     { href: "/user/a", name: "A" },
     { href: "/user/b", name: "B" },
   ]);
   const { instances, FakeMutationObserver } = fakeMutationObserverClass();
-  initialize({
+  await initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -883,11 +883,11 @@ test("鼠标创建的焦点不因后续按键改为键盘模态（ADR-0001）", 
   assert.equal(toggle.getAttribute("aria-expanded"), "false");
 });
 
-test("缺少主内容布局时不修改好友页面", () => {
+test("缺少主内容布局时不修改好友页面", async () => {
   const page = friendPageWith([{ href: "/user/a", name: "A" }]);
   page.list.closest = () => null;
 
-  initialize({
+  await initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/sai/friends" } },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -897,9 +897,9 @@ test("缺少主内容布局时不修改好友页面", () => {
   assert.equal(page.document.head.children.length, 0);
 });
 
-test("注入样式支持固定标签与相邻按钮之间的空隙", () => {
+test("注入样式支持固定标签与相邻按钮之间的空隙", async () => {
   const page = friendPageWith([{ href: "/user/a", name: "A" }]);
-  initialize({
+  await initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/sai/friends" } },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },

@@ -40,9 +40,9 @@ function readFriends(list, baseUrl = window.location.href) {
   return friends.every(Boolean) ? friends : [];
 }
 
-function browserStorage(pageWindow = window) {
+function browserStorage(pageWindow, property) {
   try {
-    return pageWindow.localStorage;
+    return pageWindow[property];
   } catch {
     return null;
   }
@@ -60,7 +60,7 @@ function pageFetchDependencies(runtime, pageWindow) {
   return domParser && fetchImpl ? { domParser, fetchImpl } : null;
 }
 
-function initialize(runtime = {}) {
+async function initialize(runtime = {}) {
   const pageDocument = runtime.document ?? document;
   const pageWindow = runtime.window ?? window;
   const list = pageDocument.querySelector("#memberUserList");
@@ -71,9 +71,15 @@ function initialize(runtime = {}) {
 
   const now = runtime.now ?? Date.now;
   const cache = createFriendCache(
-    runtime.storage ?? browserStorage(pageWindow),
-    { now },
+    runtime.storage ?? browserStorage(pageWindow, "localStorage"),
+    {
+      now,
+      indexedDB: runtime.indexedDB ?? browserStorage(pageWindow, "indexedDB"),
+      setTimeoutImpl: runtime.setTimeout,
+      clearTimeoutImpl: runtime.clearTimeout,
+    },
   );
+  await cache.ready;
   const visitorIdentifier = currentVisitorIdentifier(pageDocument, pageWindow);
   const collator = nameCollator();
   const sortBar = createSortBar(pageDocument, {

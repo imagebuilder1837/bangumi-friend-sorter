@@ -13,7 +13,7 @@ function refreshResponseFor(url) {
   };
 }
 
-function initializeRefreshPage({
+async function initializeRefreshPage({
   confirm,
   domParser,
   entries,
@@ -23,7 +23,7 @@ function initializeRefreshPage({
   visitorIdentifier = "visitor",
 }) {
   const page = friendPageWith(entries);
-  initialize({
+  await initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: visitorIdentifier,

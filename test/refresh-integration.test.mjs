@@ -11,6 +11,8 @@ import {
 } from "./support/sort-bar.mjs";
 import {
   friendCacheStorage,
+  persistentFriendCacheStorage,
+  openPersistentCache,
   storedCompletion,
   refreshCache,
   completionSnapshotFor,
@@ -83,21 +85,16 @@ test("仅为缺失或超过二十四小时的上次活跃缓存安排请求", ()
 test("请求响应头的时间按整秒传给活跃时刻解析并写入整数 Unix 秒缓存", async () => {
   const document = timelineDocumentFromFixture("timeline-active-seconds.html");
   const responseTime = Date.UTC(2026, 7, 26, 9, 43, 36);
-  const writes = [];
+  const storage = persistentFriendCacheStorage();
   const page = friendPageWith([{ href: "/user/sai", name: "Sai" }]);
-  initialize({
+  await initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
       location: { href: "https://bgm.tv/user/sai/friends" },
     },
-    storage: {
-      getItem: () => null,
-      setItem(key, value) {
-        writes.push([key, JSON.parse(value)]);
-      },
-      removeItem() {},
-    },
+    storage,
+    indexedDB: storage.indexedDB,
     now: () => responseTime,
     setTimeout: () => 1,
     clearTimeout() {},
@@ -111,16 +108,11 @@ test("请求响应头的时间按整秒传给活跃时刻解析并写入整数 U
       text: async () => "fixture",
     }),
   });
-
   mainSortControl(page, "上次活跃").click();
-  await waitForCondition(() => writes.length > 0);
-
-  // 批次完成后重建缓存，通过领域读取验证响应头时间被截断到整秒。
-  const reloaded = createFriendCache({
-    getItem: () => JSON.stringify(writes.at(-1)[1]),
-    setItem() {},
-    removeItem() {},
-  });
+  await waitForCondition(() =>
+    statusFor(page).textContent.includes("获取完成"),
+  );
+  const reloaded = await openPersistentCache(storage);
   assert.deepEqual(reloaded.activityFor("sai"), {
     kind: "active",
     activityAtSeconds: Date.UTC(2026, 7, 26, 9, 42, 34) / 1_000,
@@ -254,7 +246,7 @@ test("用户主页请求超过十五秒时计入失败且保留旧缓存", async
   globalThis.clearTimeout = () => {};
 
   try {
-    initialize({
+    await initialize({
       document: page.document,
       window: {
         CHOBITS_USERNAME: "visitor",
@@ -394,7 +386,7 @@ test("过期同步率仍参与即时排序并触发刷新", async () => {
   const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
   const pending = new Map();
   const requests = [];
-  const page = initializeRefreshPage({
+  const page = await initializeRefreshPage({
     entries: [
       { href: "/user/low", name: "低" },
       { href: "/user/high", name: "高" },
@@ -441,20 +433,13 @@ test("过期同步率仍参与即时排序并触发刷新", async () => {
 test("同一主页响应分别刷新完成统计，失败范围保留旧缓存", async () => {
   const now = 10_000;
   const oldBook = { value: 99, fetchedAt: now - 1 };
-  const writes = [];
-  const storage = {
-    getItem(key) {
-      if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
-      return JSON.stringify({
-        version: 3,
-        records: { sai: { completion_1: oldBook } },
-      });
-    },
-    setItem(key, value) {
-      writes.push([key, JSON.parse(value)]);
-    },
-  };
-  const cache = createFriendCache(storage);
+  const storage = persistentFriendCacheStorage(
+    JSON.stringify({
+      version: 3,
+      records: { sai: { completion_1: oldBook } },
+    }),
+  );
+  const cache = await openPersistentCache(storage);
 
   const { finished, session } = createSessionHarness({
     cache,
@@ -494,26 +479,23 @@ test("同一主页响应分别刷新完成统计，失败范围保留旧缓存",
     4: { value: 4, fetchedAt: now },
     6: { value: 2, fetchedAt: now },
   });
-  assert.equal(writes.length, 1);
+  const reloaded = await openPersistentCache(storage);
+  assert.deepEqual(
+    completionSnapshotFor(reloaded, "sai"),
+    completionSnapshotFor(cache, "sai"),
+  );
 });
 
 test("某个完成范围解析无效只保留该范围旧缓存，其余范围和契合字段照常写入", async () => {
   const now = 10_000;
   const oldAnimation = { value: 77, fetchedAt: now - 1 };
-  const writes = [];
-  const storage = {
-    getItem(key) {
-      if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
-      return JSON.stringify({
-        version: 3,
-        records: { sai: { completion_2: oldAnimation } },
-      });
-    },
-    setItem(key, value) {
-      writes.push([key, JSON.parse(value)]);
-    },
-  };
-  const cache = createFriendCache(storage);
+  const storage = persistentFriendCacheStorage(
+    JSON.stringify({
+      version: 3,
+      records: { sai: { completion_2: oldAnimation } },
+    }),
+  );
+  const cache = await openPersistentCache(storage);
 
   const { finished, lastMessage, session } = createSessionHarness({
     cache,
@@ -573,5 +555,9 @@ test("某个完成范围解析无效只保留该范围旧缓存，其余范围�
     { value: 5, fetchedAt: now },
   );
   assert.equal(lastMessage(), "“完成条目数”获取完成");
-  assert.equal(writes.length, 1);
+  const reloaded = await openPersistentCache(storage);
+  assert.deepEqual(
+    completionSnapshotFor(reloaded, "sai"),
+    completionSnapshotFor(cache, "sai"),
+  );
 });

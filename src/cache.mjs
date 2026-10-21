@@ -6,24 +6,19 @@ import {
   COMPLETION_SCOPE,
 } from "./choices.mjs";
 import { userIdentifierFor } from "./identity.mjs";
+import { openFriendCacheStorage } from "./cache-storage.mjs";
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
 // Completion counts and relation metrics both come from profile pages and
 // share one validity window, so the TTL is named after the source.
 const PROFILE_CACHE_TTL_MS = 72 * 60 * 60 * 1_000;
 const TIETIE_CACHE_TTL_MS = 72 * 60 * 60 * 1_000;
-// The v3 store holds activity, visitor-nested relation, completion fields,
-// and visitor-scoped full tietie results, but the storage key keeps its
-// historical "activity-cache" name: renaming it would strand every
-// existing visitor's v3 payload.
+// v3 is an import-only localStorage format, independent of the database schema.
 const FRIEND_CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v3";
-const PREVIOUS_CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v2";
-const LEGACY_CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v1";
 const COMPLETION_CACHE_FIELD_PREFIX = "completion_";
 const RELATION_METRICS = new Set(RELATION_CHOICES.map(({ value }) => value));
-// 空的访问者映射或空的访问者条目按原样接受：这类形状只来自外部损坏
-// 的存储载荷（脚本自身永不写出），整体拒绝会让混合映射中其他访问者
-// 的有效数据一并丢失；只有未知指标或无效的指标记录使整个映射判为损坏。
+// 旧 v3 的空访问者映射不携带指标，但不能因此丢弃其他访问者的有效值；
+// 只有未知指标或无效指标记录使整个契合映射判为损坏。
 function isRelationMap(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return false;
@@ -126,46 +121,47 @@ function completionCacheFieldValidators() {
   );
 }
 
-// 好友缓存 deep module：好友级字段（上次活跃、完成统计、契合指标）
-// 与访问者级的和我贴贴完整统计的唯一读写边界。接口约定——
-// 读取：activityFor / completionFor / relationFor 只读，字段缺失或从未
-//   写入时返回 null，永不写存储。friendsNeedingRefresh 按目标与模式
-//   返回待请求好友：mode "full" 返回全部好友，"incremental" 只返回
-//   无记录或超出对应 TTL 的好友，未知目标返回空数组。不发起请求，
-//   也不改动缓存内容。tietieFor 按访问者读取完整结果；
-//   tietieNeedsRefresh 只判断其 72 小时有效期，不改动缓存。
-// 写入：beginRefresh 打开一个批次，accept 按好友写入校验通过的字段值，
-//   complete 恰好调用一次并触发持久化；重复 complete 抛错，批次内
-//   写入无效值时静默丢弃。replaceTietie 一次性替换某访问者的完整结果，
-//   只有整体结果通过校验才写入。调用方不直接接触存储或校验器。
-// 不变量：损坏或过期版本的存量数据在加载时被丢弃；字段值不通过校验
-//   则不落盘，因此无效结果永不覆盖仍有效的旧值；持久化失败时新记录
-//   保留在内存，下次成功写入再落盘。
-// 错误模式：localStorage 不可用或抛错一律按尽力而为处理，读取返回
-//   null、写入保持内存态，不向调用方抛出存储异常。
-function createFriendCache(storage, { now = Date.now } = {}) {
+// 好友字段与访问者级贴贴结果的唯一领域读写边界。
+// 先等待 ready 完成初始化；之后领域读取只访问内存，缺失返回 undefined。
+// beginRefresh.accept 同步接纳有效结果；complete 只能调用一次，返回
+// Promise<boolean> 表示本次持久化是否提交。replaceTietie 同步返回结果
+// 是否被接纳，不保证落盘；它只接受完整的访问者统计。
+// 存储失败不向调用方抛错，未落盘变更保留到下次正常提交；close 释放
+// 连接并停用本实例的持久化，不丢弃页面内存。首个参数仅供旧 v3 导入。
+function createFriendCache(
+  storage,
+  { now = Date.now, indexedDB, setTimeoutImpl, clearTimeoutImpl } = {},
+) {
   const records = new Map();
   const tietieRecords = new Map();
+  const dirty = new Map();
   const validators = new Map([
     ["activity", isActivityRecord],
     ["relation", isRelationMap],
     ...Object.entries(completionCacheFieldValidators()),
   ]);
 
-  function read(key) {
+  function readLegacy() {
     try {
-      const value = storage?.getItem?.(key);
-      return JSON.parse(value || "null");
+      if (!storage?.getItem) return { readable: false, entries: [] };
+      const raw = storage.getItem(FRIEND_CACHE_STORAGE_KEY);
+      let saved;
+      try {
+        saved = JSON.parse(raw || "null");
+      } catch {
+        saved = null;
+      }
+      return { readable: true, entries: entriesFromLegacy(saved) };
     } catch {
-      return null;
+      return { readable: false, entries: [] };
     }
   }
 
-  function remove(key) {
+  function removeLegacy() {
     try {
-      storage?.removeItem?.(key);
+      storage?.removeItem?.(FRIEND_CACHE_STORAGE_KEY);
     } catch {
-      // Removing obsolete data is best effort.
+      // The committed database marker prevents repeated import.
     }
   }
 
@@ -186,99 +182,103 @@ function createFriendCache(storage, { now = Date.now } = {}) {
     return fields;
   }
 
-  function loadFields(saved) {
+  function entriesFromLegacy(saved) {
+    const entries = [];
+    if (saved?.version !== 3) return entries;
     if (
-      saved?.version !== 3 ||
-      !saved.records ||
-      typeof saved.records !== "object" ||
-      Array.isArray(saved.records)
+      saved.records &&
+      typeof saved.records === "object" &&
+      !Array.isArray(saved.records)
     ) {
-      return false;
+      for (const [identifier, value] of Object.entries(saved.records)) {
+        for (const [field, record] of Object.entries(validateFields(value))) {
+          if (field === "relation") {
+            for (const [visitor, metrics] of Object.entries(record)) {
+              for (const [metric, result] of Object.entries(metrics || {})) {
+                entries.push({
+                  key: ["relation", identifier, visitor, metric],
+                  record: result,
+                });
+              }
+            }
+          } else {
+            entries.push({ key: [field, identifier], record });
+          }
+        }
+      }
     }
-
-    for (const [userIdentifier, value] of Object.entries(saved.records)) {
-      const fields = validateFields(value);
-      if (Object.keys(fields).length > 0) records.set(userIdentifier, fields);
+    if (
+      saved.tietie &&
+      typeof saved.tietie === "object" &&
+      !Array.isArray(saved.tietie)
+    ) {
+      for (const [visitor, value] of Object.entries(saved.tietie)) {
+        const record = normalizedTietieRecord(value);
+        if (visitor.trim() && record)
+          entries.push({
+            key: ["tietie", visitor],
+            record: serializedTietieRecord(record),
+          });
+      }
     }
-    return true;
+    return entries;
   }
 
-  function loadTietie(saved) {
-    if (
-      saved?.version !== 3 ||
-      !saved.tietie ||
-      typeof saved.tietie !== "object" ||
-      Array.isArray(saved.tietie)
-    ) {
+  function loadEntry({ key, record } = {}) {
+    if (!Array.isArray(key) || !key.every((part) => typeof part === "string"))
       return;
+    const [field, identifier, visitor, metric] = key;
+    if (field === "tietie" && key.length === 2) {
+      const value = normalizedTietieRecord(record);
+      if (identifier.trim() && value) tietieRecords.set(identifier, value);
+    } else if (field === "relation" && key.length === 4) {
+      if (visitor && isRelationRecord(record, metric))
+        setRelationField(identifier, visitor, metric, record);
+    } else if (field !== "relation" && key.length === 2) {
+      setField(identifier, field, record);
     }
+  }
 
-    for (const [visitorIdentifier, value] of Object.entries(saved.tietie)) {
-      if (!visitorIdentifier.trim()) continue;
-      const record = normalizedTietieRecord(value);
-      if (record) tietieRecords.set(visitorIdentifier, record);
-    }
+  function remember(key, record) {
+    const entry = { key, record };
+    dirty.set(JSON.stringify(key), entry);
   }
 
   function persist() {
-    try {
-      if (!storage?.setItem) return false;
-      const payload = {
-        version: 3,
-        records: Object.fromEntries(records),
-      };
-      if (tietieRecords.size > 0) {
-        payload.tietie = Object.fromEntries(
-          [...tietieRecords.entries()].map(([visitorIdentifier, record]) => [
-            visitorIdentifier,
-            serializedTietieRecord(record),
-          ]),
-        );
+    const snapshot = [...dirty.values()];
+    if (!persistence?.write || closed) return Promise.resolve(false);
+    return persistence.write(snapshot).then((committed) => {
+      if (committed) {
+        for (const entry of snapshot) {
+          const token = JSON.stringify(entry.key);
+          if (dirty.get(token) === entry) dirty.delete(token);
+        }
       }
-      storage.setItem(FRIEND_CACHE_STORAGE_KEY, JSON.stringify(payload));
-      return true;
-    } catch {
-      // Keep newly written records in memory when persistence is unavailable.
-      return false;
-    }
+      return committed;
+    });
   }
 
-  const current = read(FRIEND_CACHE_STORAGE_KEY);
-  const hasCurrentCache = loadFields(current);
-  loadTietie(current);
-  const previous = read(PREVIOUS_CACHE_STORAGE_KEY);
-  if (
-    previous?.version === 2 &&
-    previous.records &&
-    typeof previous.records === "object" &&
-    !Array.isArray(previous.records)
-  ) {
-    const migrationNow = now();
-    let migrated = false;
-    for (const [userIdentifier, record] of Object.entries(previous.records)) {
-      if (
-        validators.get("activity")?.(record) &&
-        Number.isFinite(migrationNow) &&
-        migrationNow - record.fetchedAt <= CACHE_TTL_MS &&
-        !records.get(userIdentifier)?.activity
-      ) {
-        records.set(userIdentifier, {
-          ...records.get(userIdentifier),
-          activity: record,
-        });
-        migrated = true;
-      }
-    }
-    if (migrated) {
-      if (persist()) remove(PREVIOUS_CACHE_STORAGE_KEY);
-    } else if (hasCurrentCache) {
-      remove(PREVIOUS_CACHE_STORAGE_KEY);
-    } else if (persist()) {
-      remove(PREVIOUS_CACHE_STORAGE_KEY);
-    }
-  }
-
-  remove(LEGACY_CACHE_STORAGE_KEY);
+  let persistence;
+  let closed = false;
+  const ready = indexedDB
+    ? openFriendCacheStorage({
+        indexedDB,
+        readLegacy,
+        removeLegacy,
+        setTimeoutImpl,
+        clearTimeoutImpl,
+      }).then((result) => {
+        if (closed) {
+          result.close?.();
+          return;
+        }
+        persistence = result;
+        for (const entry of result.entries) loadEntry(entry);
+        dirty.clear();
+      })
+    : (readLegacy().entries.forEach(loadEntry),
+      dirty.clear(),
+      Promise.resolve());
 
   function fieldFor(userIdentifier, field) {
     return records.get(userIdentifier)?.[field];
@@ -295,6 +295,7 @@ function createFriendCache(storage, { now = Date.now } = {}) {
     const fields = records.get(userIdentifier) || {};
     fields[field] = value;
     records.set(userIdentifier, fields);
+    remember([field, userIdentifier], value);
   }
 
   function setRelationField(userIdentifier, visitorIdentifier, metric, value) {
@@ -310,6 +311,7 @@ function createFriendCache(storage, { now = Date.now } = {}) {
         },
       },
     });
+    remember(["relation", userIdentifier, visitorIdentifier, metric], value);
   }
 
   function tietieFor(visitorIdentifier) {
@@ -320,6 +322,11 @@ function createFriendCache(storage, { now = Date.now } = {}) {
   }
 
   const cache = {
+    ready,
+    close() {
+      closed = true;
+      persistence?.close?.();
+    },
     activityFor(userIdentifier) {
       return fieldFor(userIdentifier, "activity");
     },
@@ -341,6 +348,7 @@ function createFriendCache(storage, { now = Date.now } = {}) {
       const record = normalizedTietieRecord(result);
       if (!record) return false;
       tietieRecords.set(visitorIdentifier, record);
+      remember(["tietie", visitorIdentifier], serializedTietieRecord(record));
       persist();
       return true;
     },
@@ -405,8 +413,8 @@ function createFriendCache(storage, { now = Date.now } = {}) {
           if (completed) {
             throw new Error("好友缓存刷新批次只能完成一次");
           }
-          persist();
           completed = true;
+          return persist();
         },
       };
     },

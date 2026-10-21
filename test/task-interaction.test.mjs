@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createFriendCache } from "../src/cache.mjs";
 import { initialize } from "../src/entry.mjs";
 import { friendPageWith } from "./support/dom.mjs";
 import {
@@ -13,6 +12,8 @@ import {
 } from "./support/sort-bar.mjs";
 import {
   friendCacheStorage,
+  persistentFriendCacheStorage,
+  openPersistentCache,
   storedCompletion,
   completionSnapshotFor,
 } from "./support/cache.mjs";
@@ -48,7 +49,7 @@ test("初始化在时间胶囊和用户主页任务之间切换并恢复暂停�
     pending.delete(url);
     resolve(responseFor(url));
   };
-  initialize({
+  await initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -113,7 +114,7 @@ test("页面初始化全局最多四并发且限流会停止两类页面任务",
   const started = [];
   const pending = new Map();
 
-  initialize({
+  await initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/viewed/friends" } },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -158,7 +159,7 @@ test("同一页面任务收到 429 时立即显示全局限流提示", async () 
   const pending = new Map();
   const started = [];
 
-  initialize({
+  await initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/viewed/friends" } },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -197,7 +198,7 @@ test("同一页面任务收到 429 时立即显示全局限流提示", async () 
 });
 
 test("已有完成提示时收到 429 会立即抢占完成队列", async () => {
-  const page = initializeRefreshPage({
+  const page = await initializeRefreshPage({
     entries: ["a", "b", "c", "d", "e"].map((userIdentifier) => ({
       href: `/user/${userIdentifier}`,
       name: userIdentifier.toUpperCase(),
@@ -247,7 +248,7 @@ test("本地排序不改变当前远程任务的前台优先级", async () => {
     resolve(responseFor(url));
   };
 
-  initialize({
+  await initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -297,7 +298,7 @@ test("主页连续五次服务端错误后停止并恢复暂停的时间胶囊�
   );
   const started = [];
   const pending = new Map();
-  initialize({
+  await initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/viewed/friends" } },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -347,11 +348,11 @@ test("主页连续五次服务端错误后停止并恢复暂停的时间胶囊�
   await new Promise((resolve) => setImmediate(resolve));
 });
 
-test("未登录时选择喜好契合不请求且登录提示不会因重复选择续时并允许切换子项", () => {
+test("未登录时选择喜好契合不请求且登录提示不会因重复选择续时并允许切换子项", async () => {
   const page = friendPageWith([{ href: "/user/friend", name: "好友" }]);
   let requests = 0;
   const clock = fakeTimers();
-  initialize({
+  await initialize({
     document: page.document,
     window: {
       location: { href: "https://bgm.tv/user/viewed/friends" },
@@ -406,9 +407,9 @@ test("未登录时选择喜好契合不请求且登录提示不会因重复选�
   );
 });
 
-test("选择喜好契合会清除已激活的上次活跃全量刷新提示", () => {
+test("选择喜好契合会清除已激活的上次活跃全量刷新提示", async () => {
   const page = friendPageWith([{ href: "/user/friend", name: "好友" }]);
-  initialize({
+  await initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -433,7 +434,7 @@ test("登录提示不会被完成任务完成状态覆盖", async () => {
   const pendingProfile = new Promise((resolve) => {
     releaseProfile = resolve;
   });
-  initialize({
+  await initialize({
     document: page.document,
     window: {
       location: { href: "https://bgm.tv/user/viewed/friends" },
@@ -476,7 +477,7 @@ test("不同页面类型的完成提示按队头出现时间各保持五秒", as
     releaseProfile = resolve;
   });
 
-  initialize({
+  await initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -535,48 +536,38 @@ test("主页同步率与共同喜好数切换复用任务、去重请求并按�
     { href: "/user/b", name: "B" },
   ]);
   const now = 100_000;
-  const writes = [];
   const requests = [];
   const progress = [];
   let releaseA;
   const pendingA = new Promise((resolve) => {
     releaseA = resolve;
   });
-  const storage = {
-    getItem(key) {
-      if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
-      // Serve the latest persisted state so the test can reload the cache
-      // through the domain interface instead of reading raw write payloads.
-      if (writes.length) return JSON.stringify(writes.at(-1)[1]);
-      return JSON.stringify({
-        version: 3,
-        records: {
-          a: {
-            relation: {
-              visitor: { commonLikes: { value: 1, fetchedAt: now } },
-            },
-          },
-          b: {
-            relation: {
-              visitor: { syncRate: { value: 10, fetchedAt: now } },
-            },
+  const storage = persistentFriendCacheStorage(
+    JSON.stringify({
+      version: 3,
+      records: {
+        a: {
+          relation: {
+            visitor: { commonLikes: { value: 1, fetchedAt: now } },
           },
         },
-      });
-    },
-    setItem(key, value) {
-      writes.push([key, JSON.parse(value)]);
-    },
-    removeItem() {},
-  };
+        b: {
+          relation: {
+            visitor: { syncRate: { value: 10, fetchedAt: now } },
+          },
+        },
+      },
+    }),
+  );
 
-  initialize({
+  await initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
       location: { href: "https://bgm.tv/user/viewed/friends" },
     },
     storage,
+    indexedDB: storage.indexedDB,
     now: () => now,
     domParser: {
       parseFromString: (userIdentifier) =>
@@ -610,7 +601,9 @@ test("主页同步率与共同喜好数切换复用任务、去重请求并按�
   releaseA({ ok: true, text: async () => "a" });
 
   await waitForCondition(() => requests.length >= 2);
-  await waitForCondition(() => writes.length >= 1);
+  await waitForCondition(() =>
+    statusFor(page).textContent.includes("获取完成"),
+  );
 
   assert.deepEqual(requests, ["a", "b"]);
   assert.ok(
@@ -627,7 +620,7 @@ test("主页同步率与共同喜好数切换复用任务、去重请求并按�
 
   // 完成批次后重建缓存，通过领域读取接口验证最终缓存结果，不读取原始
   // 写入 payload 或 raw cache field。
-  const reloaded = createFriendCache(storage, { now: () => now });
+  const reloaded = await openPersistentCache(storage, { now: () => now });
   assert.deepEqual(
     reloaded.relationFor("a", {
       metric: "syncRate",
@@ -688,7 +681,7 @@ test("同步率切换到完成条目数时复用同一主页任务", async () =>
     removeItem() {},
   };
 
-  initialize({
+  await initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -754,7 +747,7 @@ test("切换字段但未新增好友时立即更新进行中提示的主按钮�
   });
   const requests = [];
 
-  initialize({
+  await initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -807,7 +800,7 @@ test("获取中重复选择同一远程目标被忽略且不打断进行中任�
   });
   const requests = [];
 
-  initialize({
+  await initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -876,7 +869,7 @@ test("取消大批量扩充后恢复旧主页任务目标", async () => {
   const requests = [];
   const confirmations = [];
 
-  const page = initializeRefreshPage({
+  const page = await initializeRefreshPage({
     entries,
     now,
     records: cachedRecords,
@@ -930,7 +923,7 @@ test("取消大批量主页扩充后恢复先前时间胶囊任务", async () =>
   const pending = new Map();
   const confirmations = [];
 
-  const page = initializeRefreshPage({
+  const page = await initializeRefreshPage({
     entries,
     now,
     records: cachedRecords,
@@ -1002,7 +995,7 @@ test("取消大批量主页扩充后保留前台时间胶囊进度提示", async
   const pending = new Map();
   const confirmations = [];
 
-  const page = initializeRefreshPage({
+  const page = await initializeRefreshPage({
     entries,
     now,
     records: cachedRecords,
@@ -1058,7 +1051,7 @@ test("主页任务按好友用户标识去重重复条目", async () => {
     { href: "/user/a", name: "A2" },
   ]);
   const requests = [];
-  initialize({
+  await initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
@@ -1099,7 +1092,7 @@ test("初始化将排序栏挂在主内容列之前并使用完成条目数方�
   page.list.closest = (selector) =>
     selector === ".mainWrapper" ? wrapper : null;
 
-  initialize({
+  await initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/sai/friends" } },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -1156,7 +1149,6 @@ test("完成统计范围在刷新期间切换后补取新增缺失好友", async
   ]);
   const now = 100_000;
   const requests = [];
-  const writes = [];
   let releaseA;
   const responseFor = (userIdentifier) => ({
     ok: true,
@@ -1165,29 +1157,20 @@ test("完成统计范围在刷新期间切换后补取新增缺失好友", async
   const responseA = new Promise((resolve) => {
     releaseA = resolve;
   });
-  const storage = {
-    getItem(key) {
-      if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
-      // Serve the latest persisted state so the final cache can be verified
-      // through a reloaded cache's domain reads instead of raw payloads.
-      if (writes.length) return JSON.stringify(writes.at(-1)[1]);
-      return JSON.stringify({
-        version: 3,
-        records: {
-          b: storedCompletion(5, now),
-        },
-      });
-    },
-    setItem(key, value) {
-      writes.push([key, JSON.parse(value)]);
-    },
-    removeItem() {},
-  };
+  const storage = persistentFriendCacheStorage(
+    JSON.stringify({
+      version: 3,
+      records: {
+        b: storedCompletion(5, now),
+      },
+    }),
+  );
 
-  initialize({
+  await initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/sai/friends" } },
     storage,
+    indexedDB: storage.indexedDB,
     now: () => now,
     domParser: {
       parseFromString: (userIdentifier) =>
@@ -1214,15 +1197,12 @@ test("完成统计范围在刷新期间切换后补取新增缺失好友", async
   releaseA(responseFor("a"));
 
   await waitForCondition(() => requests.length >= 2);
-  await waitForCondition(() => writes.length > 0);
-  // b 的结果在任务结束的批次完成时落盘；轮询领域读取直到最终值可见。
-  await waitForCondition(() => {
-    const probe = createFriendCache(storage, { now: () => now });
-    return probe.completionFor("b", "1")?.value === 20;
-  });
+  await waitForCondition(() =>
+    statusFor(page).textContent.includes("获取完成"),
+  );
 
   assert.deepEqual(requests, ["a", "b"]);
-  const reloaded = createFriendCache(storage, { now: () => now });
+  const reloaded = await openPersistentCache(storage, { now: () => now });
   assert.deepEqual(completionSnapshotFor(reloaded, "b"), {
     all: { value: 2, fetchedAt: now },
     1: { value: 20, fetchedAt: now },
@@ -1244,7 +1224,7 @@ test("完成条目数两击全量刷新使用实际范围名称并忽略有效�
   ]);
   const now = 100_000;
   const requests = [];
-  initialize({
+  await initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/sai/friends" } },
     storage: {
@@ -1299,7 +1279,7 @@ test("完成条目数两击全量刷新使用实际范围名称并忽略有效�
   );
 });
 
-test("取消全量刷新后必须重新两击才会再次触发", () => {
+test("取消全量刷新后必须重新两击才会再次触发", async () => {
   const entries = Array.from({ length: 401 }, (_, index) => ({
     href: `/user/friend-${index}`,
     name: `好友${index}`,
@@ -1317,7 +1297,7 @@ test("取消全量刷新后必须重新两击才会再次触发", () => {
   );
   const requests = [];
   const confirmations = [];
-  const page = initializeRefreshPage({
+  const page = await initializeRefreshPage({
     entries,
     now,
     records,
@@ -1364,7 +1344,7 @@ test("页面增量刷新恰好新增四百个请求时不确认", async () => {
   );
   const requests = [];
   const confirmations = [];
-  initialize({
+  await initialize({
     document: page.document,
     window: { location: { href: "https://bgm.tv/user/sai/friends" } },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },

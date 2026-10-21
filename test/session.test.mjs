@@ -8,7 +8,7 @@ import { refreshCache } from "./support/cache.mjs";
 import { createSessionHarness } from "./support/session.mjs";
 import { timelineDocumentFromFixture } from "./support/timeline.mjs";
 
-test("页面交互按排序维度记忆方向并仅重排当前缓存", () => {
+test("页面交互按排序维度记忆方向并仅重排当前缓存", async () => {
   const page = friendPageWith([
     { href: "/user/z", name: "Zed" },
     { href: "/user/b", name: "Bob" },
@@ -27,7 +27,7 @@ test("页面交互按排序维度记忆方向并仅重排当前缓存", () => {
   };
 
   try {
-    initialize();
+    await initialize();
   } finally {
     global.document = previousDocument;
     global.window = previousWindow;
@@ -94,14 +94,16 @@ test("上次活跃刷新完成后沿用刷新期间选择的方向", async () =>
     }),
     localStorage: {
       getItem(key) {
-        if (key !== "bangumi-friend-sorter:activity-cache:v2") return null;
+        if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
         return JSON.stringify({
-          version: 2,
+          version: 3,
           records: {
             b: {
-              kind: "active",
-              activityAtSeconds: Date.UTC(2026, 7, 27) / 1_000,
-              fetchedAt,
+              activity: {
+                kind: "active",
+                activityAtSeconds: Date.UTC(2026, 7, 27) / 1_000,
+                fetchedAt,
+              },
             },
           },
         });
@@ -113,7 +115,7 @@ test("上次活跃刷新完成后沿用刷新期间选择的方向", async () =>
   };
 
   try {
-    initialize();
+    await initialize();
     const directionButtons = directionButtonsFor(page);
 
     mainSortControl(page, "上次活跃").click();

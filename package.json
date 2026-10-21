@@ -10,6 +10,7 @@
     "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {
+    "fake-indexeddb": "^6.2.6",
     "jsdom": "^20.0.3",
     "prettier": "3.6.2",
     "rollup": "4.60.0"

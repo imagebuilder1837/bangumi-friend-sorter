@@ -2,6 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { JSDOM } from "jsdom";
+import { IDBFactory } from "fake-indexeddb";
+import { createFriendCache } from "../src/cache.mjs";
+import { waitForCondition } from "./support/timing.mjs";
 import { artifact, generate } from "../scripts/build.mjs";
 
 const html = `<!doctype html><html><head></head><body>
@@ -18,7 +21,15 @@ test("published userscript starts itself in a browser and sorts friends", async 
     runScripts: "outside-only",
   });
   try {
+    page.window.indexedDB = new IDBFactory();
     page.window.eval(code);
+    await waitForCondition(() =>
+      Boolean(
+        page.window.document.querySelector(
+          '#browserTools[aria-label="好友排序"]',
+        ),
+      ),
+    );
     const { document } = page.window;
     const bar = document.querySelector('#browserTools[aria-label="好友排序"]');
     assert.ok(bar, "automatic browser entry mounts the sort bar");
@@ -73,7 +84,15 @@ test("published browser entry fetches, parses and caches remote values before so
             : profile,
       };
     };
+    page.window.indexedDB = new IDBFactory();
     page.window.eval(code);
+    await waitForCondition(() =>
+      Boolean(
+        page.window.document.querySelector(
+          '#browserTools[aria-label="好友排序"]',
+        ),
+      ),
+    );
     const { document } = page.window;
     const bar = document.querySelector('#browserTools[aria-label="好友排序"]');
     const names = () =>
@@ -88,25 +107,21 @@ test("published browser entry fetches, parses and caches remote values before so
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(names(), ["Amy", "Zed"]);
     assert.deepEqual(requests, ["/user/zed/timeline", "/user/amy/timeline"]);
-    const stored = JSON.parse(
-      page.window.localStorage.getItem(
-        "bangumi-friend-sorter:activity-cache:v3",
-      ),
-    );
-    assert.equal(stored.records.amy.activity.kind, "active");
-    assert.equal(stored.records.zed.activity.kind, "empty");
+    let reopened = createFriendCache(null, {
+      indexedDB: page.window.indexedDB,
+    });
+    await reopened.ready;
+    assert.equal(reopened.activityFor("amy")?.kind, "active");
+    assert.equal(reopened.activityFor("zed")?.kind, "empty");
+    reopened.close();
 
     button("完成条目数").click();
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(requests.length, 4);
-    assert.equal(
-      JSON.parse(
-        page.window.localStorage.getItem(
-          "bangumi-friend-sorter:activity-cache:v3",
-        ),
-      ).records.amy.completion_all.value,
-      20,
-    );
+    reopened = createFriendCache(null, { indexedDB: page.window.indexedDB });
+    await reopened.ready;
+    assert.equal(reopened.completionFor("amy", "all")?.value, 20);
+    reopened.close();
     button("动画").click();
     assert.equal(button("动画").getAttribute("aria-current"), "true");
     assert.equal(
@@ -141,6 +156,7 @@ test("the delivered file is the reproducible, self-contained metadata-bearing ou
   );
   for (const source of [
     "cache",
+    "cache-storage",
     "sorting",
     "sort-bar",
     "session",
@@ -152,7 +168,6 @@ test("the delivered file is the reproducible, self-contained metadata-bearing ou
       `${source} source is identifiable`,
     );
   }
-  assert.match(code, /The v3 store holds activity/);
   assert.doesNotMatch(
     code,
     /\bmodule\.exports\b|\brequire\s*\(|sourceMappingURL|^\s*(?:import|export)\s/m,

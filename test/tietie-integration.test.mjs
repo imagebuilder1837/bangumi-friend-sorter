@@ -9,23 +9,27 @@ import {
   mainSortControl,
   directionButtonsFor,
 } from "./support/sort-bar.mjs";
-import { persistentFriendCacheStorage } from "./support/cache.mjs";
+import {
+  persistentFriendCacheStorage,
+  openPersistentCache,
+} from "./support/cache.mjs";
 import {
   initializeRefreshPage,
   createSessionHarness,
 } from "./support/session.mjs";
 import { waitForCondition, fakeTimers } from "./support/timing.mjs";
+import { controlledIndexedDB } from "./support/indexeddb.mjs";
 import {
   timelineDocumentFromFixture,
   tietieDocumentFromFixture,
 } from "./support/timeline.mjs";
 
-test("和我贴贴完整结果跨缓存重建保存全部反应者并遵守七十二小时边界", () => {
+test("和我贴贴完整结果跨缓存重建保存全部反应者并遵守七十二小时边界", async () => {
   const hour = 60 * 60 * 1_000;
   const now = 100 * hour;
   const fetchedAt = now - 72 * hour;
   const storage = persistentFriendCacheStorage();
-  const cache = createFriendCache(storage, { now: () => now });
+  const cache = await openPersistentCache(storage, { now: () => now });
 
   cache.replaceTietie("visitor", {
     counts: new Map([
@@ -35,7 +39,7 @@ test("和我贴贴完整结果跨缓存重建保存全部反应者并遵守七�
     fetchedAt,
   });
 
-  const reloaded = createFriendCache(storage, { now: () => now });
+  const reloaded = await openPersistentCache(storage, { now: () => now });
 
   assert.deepEqual(reloaded.tietieFor("visitor"), {
     counts: new Map([
@@ -46,7 +50,7 @@ test("和我贴贴完整结果跨缓存重建保存全部反应者并遵守七�
   });
   assert.equal(reloaded.tietieNeedsRefresh("visitor"), false);
 
-  const expired = createFriendCache(storage, {
+  const expired = await openPersistentCache(storage, {
     now: () => now + 1,
   });
   assert.equal(expired.tietieNeedsRefresh("visitor"), true);
@@ -54,7 +58,7 @@ test("和我贴贴完整结果跨缓存重建保存全部反应者并遵守七�
 
 test("和我贴贴使用当前访问者身份并从吐槽和收藏第一页开始获取", async () => {
   const requests = [];
-  const page = initializeRefreshPage({
+  const page = await initializeRefreshPage({
     entries: [{ href: "/user/friend", name: "好友" }],
     now: 1_000,
     domParser: {
@@ -79,9 +83,9 @@ test("和我贴贴使用当前访问者身份并从吐槽和收藏第一页开�
   ]);
 });
 
-test("未登录时选择和我贴贴只提示登录且不发起请求", () => {
+test("未登录时选择和我贴贴只提示登录且不发起请求", async () => {
   const requests = [];
-  const page = initializeRefreshPage({
+  const page = await initializeRefreshPage({
     entries: [{ href: "/user/friend", name: "好友" }],
     now: 100_000,
     visitorIdentifier: "",
@@ -102,7 +106,7 @@ test("未登录时选择和我贴贴只提示登录且不发起请求", () => {
 
 test("和我贴贴完整获取后按内容链接去重并稳定排序可靠零", async () => {
   const requests = [];
-  const page = initializeRefreshPage({
+  const page = await initializeRefreshPage({
     entries: [
       { href: "/user/friend-a", name: "甲" },
       { href: "/user/friend-b", name: "乙" },
@@ -152,7 +156,7 @@ test("和我贴贴完整获取后按内容链接去重并稳定排序可靠零",
 test("和我贴贴完整获取成功后持久化全部统计结果", async () => {
   const now = 100_000;
   const storage = persistentFriendCacheStorage();
-  const cache = createFriendCache(storage, { now: () => now });
+  const cache = await openPersistentCache(storage, { now: () => now });
   const requests = [];
   const { finished, session } = createSessionHarness({
     cache,
@@ -189,7 +193,7 @@ test("和我贴贴完整获取成功后持久化全部统计结果", async () =>
   await finished;
 
   assert.deepEqual(requests, ["say", "subject"]);
-  const reloaded = createFriendCache(storage, { now: () => now });
+  const reloaded = await openPersistentCache(storage, { now: () => now });
   assert.deepEqual(reloaded.tietieFor("visitor"), {
     counts: new Map([
       ["friend-a", 1],
@@ -398,10 +402,10 @@ test("和我贴贴按内容链接、动态和反应容器标识逐级去重", as
   });
 });
 
-test("和我贴贴有效缓存直接排序并跨好友列表复用而不发起任务", () => {
+test("和我贴贴有效缓存直接排序并跨好友列表复用而不发起任务", async () => {
   const now = 100_000;
   const storage = persistentFriendCacheStorage();
-  const cache = createFriendCache(storage, { now: () => now });
+  const cache = await openPersistentCache(storage, { now: () => now });
   cache.replaceTietie("visitor", {
     counts: new Map([
       ["friend-b", 5],
@@ -412,7 +416,7 @@ test("和我贴贴有效缓存直接排序并跨好友列表复用而不发起�
 
   const requests = [];
   const first = createSessionHarness({
-    cache: createFriendCache(storage, { now: () => now }),
+    cache: await openPersistentCache(storage, { now: () => now }),
     friends: [
       { userIdentifier: "friend-a", originalIndex: 0 },
       { userIdentifier: "friend-b", originalIndex: 1 },
@@ -439,7 +443,7 @@ test("和我贴贴有效缓存直接排序并跨好友列表复用而不发起�
   assert.deepEqual(requests, []);
 
   const second = createSessionHarness({
-    cache: createFriendCache(storage, { now: () => now }),
+    cache: await openPersistentCache(storage, { now: () => now }),
     friends: [
       { userIdentifier: "friend-c", originalIndex: 0 },
       { userIdentifier: "friend-b", originalIndex: 1 },
@@ -481,13 +485,14 @@ test("和我贴贴有效缓存两击后强制刷新，待命五秒后重新开�
     }),
   );
   const page = friendPageWith([{ href: "/user/friend", name: "好友" }]);
-  initialize({
+  await initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
       location: { href: "https://bgm.tv/user/viewed/friends" },
     },
     storage,
+    indexedDB: storage.indexedDB,
     now: clock.now,
     setTimeout: clock.setTimer,
     clearTimeout: clock.clearTimer,
@@ -537,7 +542,7 @@ test("和我贴贴有效缓存两击后强制刷新，待命五秒后重新开�
   assert.equal(status.textContent, "");
   button.click();
   assert.equal(status.textContent, "5 秒内再次点击“和我贴贴”以全量刷新");
-  const reloaded = createFriendCache(storage, { now: clock.now });
+  const reloaded = await openPersistentCache(storage, { now: clock.now });
   assert.deepEqual(reloaded.tietieFor("visitor"), {
     counts: new Map([["friend", 2]]),
     fetchedAt: 6_000,
@@ -560,13 +565,14 @@ test("和我贴贴主动刷新失败时保留旧结果和获取时间", async ()
   );
   const requests = [];
   const page = friendPageWith([{ href: "/user/friend", name: "好友" }]);
-  initialize({
+  await initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
       location: { href: "https://bgm.tv/user/viewed/friends" },
     },
     storage,
+    indexedDB: storage.indexedDB,
     now: () => now,
     setTimeout: () => 1,
     clearTimeout() {},
@@ -600,7 +606,7 @@ test("和我贴贴主动刷新失败时保留旧结果和获取时间", async ()
 
   assert.deepEqual(requests, ["say", "subject"]);
   assert.equal(status.textContent, "“和我贴贴”获取失败，本次结果未更新");
-  const reloaded = createFriendCache(storage, { now: () => now });
+  const reloaded = await openPersistentCache(storage, { now: () => now });
   assert.deepEqual(reloaded.tietieFor("visitor"), {
     counts: new Map([["friend", 4]]),
     fetchedAt: now,
@@ -611,7 +617,7 @@ test("和我贴贴过期时先排旧结果，成功后整体替换并继承刷�
   const now = 100_000;
   const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
   const storage = persistentFriendCacheStorage();
-  const cache = createFriendCache(storage, { now: () => now });
+  const cache = await openPersistentCache(storage, { now: () => now });
   cache.replaceTietie("visitor", {
     counts: new Map([
       ["friend-a", 1],
@@ -667,7 +673,7 @@ test("和我贴贴过期时先排旧结果，成功后整体替换并继承刷�
     lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
     ["friend-b", "friend-a", "friend-old", "friend-c"],
   );
-  const reloaded = createFriendCache(storage, { now: () => now });
+  const reloaded = await openPersistentCache(storage, { now: () => now });
   assert.deepEqual(reloaded.tietieFor("visitor"), {
     counts: new Map([
       ["friend-a", 1],
@@ -681,7 +687,7 @@ test("和我贴贴刷新部分失败时保留旧结果且不续期", async () =>
   const now = 100_000;
   const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
   const storage = persistentFriendCacheStorage();
-  const cache = createFriendCache(storage, { now: () => now });
+  const cache = await openPersistentCache(storage, { now: () => now });
   cache.replaceTietie("visitor", {
     counts: new Map([["friend-b", 5]]),
     fetchedAt: staleFetchedAt,
@@ -723,7 +729,7 @@ test("和我贴贴刷新部分失败时保留旧结果且不续期", async () =>
     lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
     ["friend-b", "friend-a"],
   );
-  const reloaded = createFriendCache(storage, { now: () => now });
+  const reloaded = await openPersistentCache(storage, { now: () => now });
   assert.deepEqual(reloaded.tietieFor("visitor"), {
     counts: new Map([["friend-b", 5]]),
     fetchedAt: staleFetchedAt,
@@ -735,7 +741,7 @@ test("和我贴贴任务中止时保留旧结果且不续期", async () => {
   const now = 100_000;
   const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
   const storage = persistentFriendCacheStorage();
-  const cache = createFriendCache(storage, { now: () => now });
+  const cache = await openPersistentCache(storage, { now: () => now });
   cache.replaceTietie("visitor", {
     counts: new Map([["friend", 4]]),
     fetchedAt: staleFetchedAt,
@@ -765,7 +771,7 @@ test("和我贴贴任务中止时保留旧结果且不续期", async () => {
     lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
     ["friend"],
   );
-  const reloaded = createFriendCache(storage, { now: () => now });
+  const reloaded = await openPersistentCache(storage, { now: () => now });
   assert.deepEqual(reloaded.tietieFor("visitor"), {
     counts: new Map([["friend", 4]]),
     fetchedAt: staleFetchedAt,
@@ -848,26 +854,21 @@ test("和我贴贴缓存按访问者隔离，损坏记录不影响已有主页�
   });
 });
 
-test("和我贴贴持久化写入不可用时保留当前页面结果且不破坏主页字段", () => {
+test("和我贴贴持久化写入不可用时保留当前页面结果且不破坏主页字段", async () => {
   const now = 100_000;
-  const storage = {
-    getItem(key) {
-      if (key !== "bangumi-friend-sorter:activity-cache:v3") return null;
-      return JSON.stringify({
-        version: 3,
-        records: {
-          friend: {
-            completion_all: { value: 8, fetchedAt: now },
-          },
-        },
-      });
-    },
-    setItem() {
-      throw new Error("quota exceeded");
-    },
-    removeItem() {},
-  };
-  const cache = createFriendCache(storage, { now: () => now });
+  const storage = persistentFriendCacheStorage(
+    JSON.stringify({
+      version: 3,
+      records: { friend: { completion_all: { value: 8, fetchedAt: now } } },
+    }),
+  );
+  const boundary = controlledIndexedDB();
+  const cache = createFriendCache(storage, {
+    indexedDB: boundary.indexedDB,
+    now: () => now,
+  });
+  await cache.ready;
+  boundary.abortNextTransaction();
 
   assert.equal(
     cache.replaceTietie("visitor", {
@@ -881,6 +882,13 @@ test("和我贴贴持久化写入不可用时保留当前页面结果且不破�
     fetchedAt: now,
   });
   assert.deepEqual(cache.completionFor("friend", "all"), {
+    value: 8,
+    fetchedAt: now,
+  });
+  const reopened = createFriendCache(null, { indexedDB: boundary.indexedDB });
+  await reopened.ready;
+  assert.equal(reopened.tietieFor("visitor"), undefined);
+  assert.deepEqual(reopened.completionFor("friend", "all"), {
     value: 8,
     fetchedAt: now,
   });
