@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createFriendCache } from "../src/cache.mjs";
+import { createFriendSortSession } from "../src/session.mjs";
+import { waitForCondition } from "./support/timing.mjs";
 import { initialize } from "../src/entry.mjs";
 import { friendPageWith } from "./support/dom.mjs";
 import { mainSortControl, directionButtonsFor } from "./support/sort-bar.mjs";
@@ -309,6 +311,64 @@ test("远程刷新完成后的平局继承刷新前的缓存排序", async () =>
     lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
     ["z", "a", "b"],
   );
+});
+
+test("同步启动生命周期或适配器异常原样同步抛出，清理后其他远程任务仍可运行", async () => {
+  for (const failAt of ["progress", "fetch"]) {
+    const failure = new Error(`sync ${failAt} bug`);
+    const reported = [];
+    let shouldFail = true;
+    let lastState;
+    let profileRequests = 0;
+    const now = () => 1_000;
+    const session = createFriendSortSession({
+      cache: createFriendCache(null, { now }),
+      collator: new Intl.Collator(),
+      friends: [{ userIdentifier: "a", displayName: "A", originalIndex: 0 }],
+      now,
+      pageWindow: {},
+      visitorIdentifier: null,
+      reportError: (_stage, error) => reported.push(error),
+      sortBar: {
+        render(state) {
+          lastState = state;
+        },
+      },
+      runtime: {
+        setTimeout: () => 1,
+        clearTimeout() {},
+        onProgress() {
+          if (failAt === "progress" && shouldFail) {
+            shouldFail = false;
+            throw failure;
+          }
+        },
+      },
+      http: {
+        fetchActivity() {
+          throw failure;
+        },
+        fetchProfile: async () => {
+          profileRequests += 1;
+          return { kind: "http-error", status: 404 };
+        },
+      },
+    });
+    session.start();
+
+    assert.throws(
+      () => session.choose("activity"),
+      (error) => error === failure,
+    );
+    assert.deepEqual(reported, [failure]);
+    assert.doesNotMatch(lastState.statusMessage, /正在获取/);
+    session.choose("completion", "all");
+    await waitForCondition(
+      () =>
+        profileRequests === 1 && lastState.statusMessage.includes("获取完成"),
+    );
+    assert.deepEqual(reported, [failure]);
+  }
 });
 
 test("会话对未知排序目标、子选项、方向与重复启动同步抛出", () => {

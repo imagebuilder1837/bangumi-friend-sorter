@@ -11,6 +11,7 @@
 | 请求 URL、超时、凭据和响应时间 | `src/http.mjs`；装配见 `src/entry.mjs` |
 | 并发、抢占、批次停止 | `src/scheduler.mjs` |
 | 状态提示及刷新任务生命周期 | `src/status.mjs`、`src/refresh.mjs` |
+| 页面故障提示与原始异常诊断 | `src/page-errors.mjs`；入口、排序栏和会话负责接入各自失败边界 |
 | 主页字段与贴贴任务 | `src/profile-tasks.mjs`、`src/tietie-tasks.mjs` |
 | 当前选择、排序记忆、刷新编排 | `src/session.mjs` |
 | 排序栏 DOM、菜单、焦点、名次、隐藏好友观察与现有样式 | `src/sort-bar.mjs` |

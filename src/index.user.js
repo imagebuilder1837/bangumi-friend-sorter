@@ -909,6 +909,26 @@
     return sorted;
   }
 
+  // src/page-errors.mjs — visible failures, separate from refresh progress.
+  function createPageErrorReporter(
+    pageDocument,
+    { list, logger = pageDocument.defaultView?.console ?? console },
+  ) {
+    const reported = new Set();
+    let notice;
+    return (stage, error) => {
+      if (reported.has(error)) return;
+      reported.add(error);
+      logger.error(`好友排序：${stage}失败`, error);
+      if (!notice) {
+        notice = pageDocument.createElement("p");
+        notice.setAttribute("role", "alert");
+        list.before(notice);
+      }
+      notice.textContent = `好友排序：${stage}失败：${error?.message ?? String(error)}`;
+    };
+  }
+
   // src/sort-bar.mjs — sort controls and DOM presentation.
 
   function installStyles(document) {
@@ -1088,7 +1108,15 @@
   // 接口约定：bind 必须在首次 render 前恰好调用一次（相对 mount 的先后
   // 不限）；render 接收完整的可呈现状态，重复调用安全，展示顺序不变时
   // 跳过重排与名次更新。
-  function createSortBar(pageDocument, { list, mutationObserver } = {}) {
+  function createSortBar(
+    pageDocument,
+    {
+      list,
+      elements = Array.from(list.children),
+      mutationObserver,
+      reportError = createPageErrorReporter(pageDocument, { list }),
+    } = {},
+  ) {
     const bar = pageDocument.createElement("div");
     // Reuse the site's #browserTools frame, including its horizontal borders.
     bar.id = "browserTools";
@@ -1100,9 +1128,25 @@
     // 时序下不可能）被静默忽略。
     let handlers = null;
 
+    function run(stage, operation) {
+      try {
+        return operation();
+      } catch (error) {
+        lastOrderElements = null;
+        lastVisibleElements = null;
+        reportError(stage, error);
+        throw error;
+      }
+    }
+
     function bind({ selectCriterion, selectDirection }) {
       if (handlers) throw new Error("排序栏的意图回调只能绑定一次");
-      handlers = { selectCriterion, selectDirection };
+      handlers = {
+        selectCriterion: (...args) =>
+          run("排序选择", () => selectCriterion(...args)),
+        selectDirection: (direction) =>
+          run("排序方向切换", () => selectDirection(direction)),
+      };
     }
 
     const filters = pageDocument.createElement("div");
@@ -1320,9 +1364,8 @@
     // 列表项与名次锚点由排序栏一次性自读，调用方的好友记录只携带
     // 领域数据；条目按网页默认顺序定位，与记录的 originalIndex 对齐。
     function readFriendEntries() {
-      friendEntries = Array.from(list.children, (element) => ({
+      friendEntries = Array.from(elements, (element) => ({
         element,
-        rankHost: element.querySelector(".userContainer strong"),
       }));
       return friendEntries;
     }
@@ -1338,9 +1381,12 @@
 
     function rankBadgeFor(entry) {
       if (!entry.badge) {
+        const rankHost = entry.element.querySelector(".userContainer strong");
+        if (!rankHost)
+          throw new Error("名次渲染缺少好友名称块 .userContainer strong");
         const badge = pageDocument.createElement("span");
         badge.className = "bangumi-friend-sorter-rank";
-        entry.rankHost.append(badge);
+        rankHost.append(badge);
         entry.badge = badge;
       }
       return entry.badge;
@@ -1360,6 +1406,10 @@
     // 连续编号：可见集合变化而顺序未变时只重写名次、不移动列表项，
     // 隐藏项徽章保留旧文本。调用方始终传入完整的可呈现状态。
     function render(state) {
+      return run("排序栏渲染", () => renderState(state));
+    }
+
+    function renderState(state) {
       lastState = state;
       const { criterion, direction, selection, statusMessage, orderedFriends } =
         state;
@@ -1455,11 +1505,13 @@
     // 等高频无关属性变化不再触发整场重放）。首渲染前无状态可重放，
     // 静默忽略。无 MutationObserver 时不观察，与子树观察同一降级。
     if (typeof mutationObserver === "function") {
-      const ancestorObserver = new mutationObserver(() => {
-        const presentable = isListPresentable(list);
-        if (presentable === lastPresentable) return;
-        if (lastState) render(lastState);
-      });
+      const ancestorObserver = new mutationObserver(() =>
+        run("可见性更新", () => {
+          const presentable = isListPresentable(list);
+          if (presentable === lastPresentable) return;
+          if (lastState) render(lastState);
+        }),
+      );
       for (
         let ancestor = list.parentElement;
         ancestor;
@@ -2111,12 +2163,14 @@
   async function fetchPageWithTimeout(
     url,
     fetchImpl,
-    parseResponse,
     {
       clearTimeoutImpl = globalThis.clearTimeout,
       setTimeoutImpl = globalThis.setTimeout,
     } = {},
   ) {
+    if (typeof fetchImpl !== "function") {
+      throw new Error("远程获取缺少 fetch 支持");
+    }
     const controller = new AbortController();
     const timeout = setTimeoutImpl(
       () => controller.abort(),
@@ -2130,7 +2184,7 @@
       });
       if (!response.ok) return { kind: "http-error", status: response.status };
 
-      return await parseResponse(response);
+      return { kind: "success", response, html: await response.text() };
     } catch {
       return { kind: "network-error" };
     } finally {
@@ -2145,19 +2199,16 @@
     parseDocument,
     { now, timers } = {},
   ) {
-    return fetchPageWithTimeout(
-      url,
-      fetchImpl,
-      async (response) => {
-        const html = await response.text();
-        const fetchedAt = now?.();
-        const document = domParser.parseFromString(html, "text/html");
-        const record = parseDocument(document, response, fetchedAt);
-        if (record?.kind === "invalid") return { kind: "parse-error" };
-        return { kind: "success", record };
-      },
-      timers,
-    );
+    const outcome = await fetchPageWithTimeout(url, fetchImpl, timers);
+    if (outcome.kind !== "success") return outcome;
+    const fetchedAt = now?.();
+    if (typeof domParser?.parseFromString !== "function") {
+      throw new Error("远程页面解析缺少 DOMParser 支持");
+    }
+    const document = domParser.parseFromString(outcome.html, "text/html");
+    const record = parseDocument(document, outcome.response, fetchedAt);
+    if (record?.kind === "invalid") return { kind: "parse-error" };
+    return { kind: "success", record };
   }
 
   // 一次主页请求、一次文档提取：记录按字段携带三向结果，交给主页字段
@@ -2234,7 +2285,6 @@
     now,
     setTimeoutImpl,
   }) {
-    if (!domParser || !fetchImpl) return null;
     return {
       fetchActivity: (friend) =>
         fetchActivity(friend, fetchImpl, domParser, now),
@@ -2329,7 +2379,12 @@
     return { consecutiveServerFailures: 0, stopped: false };
   }
 
-  function createTaskScheduler({ concurrency = 4 } = {}) {
+  function createTaskScheduler({
+    concurrency = 4,
+    onError = (error) => {
+      throw error;
+    },
+  } = {}) {
     const maxConcurrency = Math.max(1, Math.floor(concurrency));
     const tasks = new Map();
     let foregroundType = null;
@@ -2337,9 +2392,10 @@
     let globallyStopped = false;
 
     function normalizedOutcome(outcome) {
-      return outcome && typeof outcome === "object"
-        ? outcome
-        : { kind: "network-error" };
+      if (!outcome || typeof outcome !== "object") {
+        throw new Error("远程任务未返回有效获取结果");
+      }
+      return outcome;
     }
 
     function runnableTask() {
@@ -2347,6 +2403,14 @@
       if (foreground?.canSchedule()) return foreground;
       if (foreground?.hasInFlight()) return null;
       return [...tasks.values()].find((task) => task.canSchedule()) || null;
+    }
+
+    function abortAndReport(task, error) {
+      try {
+        task.abort();
+      } finally {
+        onError(error);
+      }
     }
 
     function pump() {
@@ -2357,20 +2421,33 @@
         const item = task.take();
         if (!item) continue;
         inFlight += 1;
-        task.begin();
         let request;
         try {
+          task.begin();
           request = task.fetch(item);
-        } catch {
-          request = { kind: "network-error" };
+        } catch (error) {
+          inFlight -= 1;
+          try {
+            abortAndReport(task, error);
+          } finally {
+            queueMicrotask(pump);
+          }
+          throw error;
         }
-        Promise.resolve(request)
-          .catch(() => ({ kind: "network-error" }))
-          .then((outcome) => {
-            inFlight -= 1;
+        const settle = (outcome) => {
+          inFlight -= 1;
+          try {
+            if (outcome?.kind === "unexpected-error") throw outcome.error;
             task.complete(item, normalizedOutcome(outcome));
+          } catch (error) {
+            abortAndReport(task, error);
+          } finally {
             pump();
-          });
+          }
+        };
+        Promise.resolve(request).then(settle, (error) =>
+          settle({ kind: "unexpected-error", error }),
+        );
       }
     }
 
@@ -2441,6 +2518,7 @@
         },
         complete(item, outcome) {
           inFlightForTask -= 1;
+          if (finished) return;
           completed += 1;
           const record = outcome.kind === "success" ? outcome.record : null;
           if (outcome.kind === "success") {
@@ -2485,6 +2563,13 @@
             lifecycle.onQueue?.(progress());
           }
           return { added: newItems.length, accepted: true };
+        },
+        abort() {
+          if (finished) return;
+          finished = true;
+          queue.length = 0;
+          if (tasks.get(type) === task) tasks.delete(type);
+          lifecycle.onAborted?.();
         },
         fetch: options.fetch,
         getState() {
@@ -2753,6 +2838,9 @@
       onProgress: progressReporter,
       onQueue: progressReporter,
       onRateLimited: status.showRateLimit,
+      onAborted() {
+        status.clearProgress(taskType);
+      },
       onFinished({ failures, globallyStopped, target }) {
         status.clearProgress(taskType);
         applySort();
@@ -2819,11 +2907,16 @@
       onSuccess(friend, record) {
         batch?.accept(userIdentifierFor(friend), projectResult(record));
       },
+      onAborted() {
+        batch?.complete();
+        batch = null;
+        base.onAborted();
+      },
     };
   }
 
-  // Starts a foreground scheduler task for one refresh; guarded so a
-  // stopped scheduler or missing fetch adapter never enqueue work.
+  // Starts a foreground scheduler task when there is work to fetch.
+  // Missing request capabilities fail at use, not during local sorting.
   function startForegroundTask({
     confirmRequest,
     fetch,
@@ -2835,7 +2928,7 @@
     target,
     taskType,
   }) {
-    if (scheduler.isGloballyStopped() || !fetch) return null;
+    if (scheduler.isGloballyStopped()) return null;
     if (pending.length === 0 && !scheduler.getTask(taskType)) return null;
     const { task } = scheduler.enqueue(
       taskType,
@@ -2862,8 +2955,7 @@
   // 请求、任务合并扩充与字段级成功失败统计。调用方只声明当前排序需要的
   // 字段，不再拼装解析、调度或缓存写入细节。
   // 接口约定：唯一入口 refresh(field, mode)，声明一个当前排序需要的字段
-  // 并返回前台调度任务（无 HTTP adapter，或调度器已停止且无在跑任务、
-  // 待请求为空时返回 null）。调用顺序不限：新字段声明的待请求好友优先
+  // 并返回前台调度任务（调度器已停止，或无在跑任务且待请求为空时返回 null）。调用顺序不限：新字段声明的待请求好友优先
   // 合并进运行中的主页任务，同一好友在整个任务内最多请求一次。不变量：
   // 一次响应服务全部字段，只有解析成功的字段写入缓存，缺失或无效字段
   // 不覆盖旧值。错误模式：单好友请求失败只计入该次任务的失败统计，
@@ -2945,7 +3037,7 @@
     function refresh(field, mode = "incremental") {
       return startForegroundTask({
         confirmRequest,
-        fetch: http && ((friend) => http.fetchProfile(friend)),
+        fetch: (friend) => http.fetchProfile(friend),
         isSuccess: isFieldSuccess,
         keyFor: userIdentifierFor,
         lifecycle,
@@ -3098,6 +3190,10 @@
       onProgress: progressReporter,
       onQueue: progressReporter,
       onRateLimited: status.showRateLimit,
+      onAborted() {
+        batch = null;
+        status.clearProgress(TIETIE_TASK_TYPE);
+      },
       onSuccess(item, record) {
         mergePage(record);
         if (record.hasNextPage && item.page < TIETIE_MAX_PAGES) {
@@ -3147,7 +3243,7 @@
     };
 
     function refresh(mode = "incremental") {
-      if (!http?.fetchTietiePage || !visitorIdentifier) return null;
+      if (!visitorIdentifier) return null;
       const existingTask = scheduler.getTask(TIETIE_TASK_TYPE);
       if (existingTask) {
         // Re-selecting the target while its pages are already being fetched
@@ -3210,10 +3306,16 @@
     runtime,
     sortBar,
     visitorIdentifier,
+    reportError = (_stage, error) => {
+      throw error;
+    },
   }) {
     // ---- 私有任务登记表：调度器、状态提示与两类页面任务的生命周期。 ----
     const ACTIVITY_TASK_TYPE = "activity";
-    const scheduler = createTaskScheduler({ concurrency: 4 });
+    const scheduler = createTaskScheduler({
+      concurrency: 4,
+      onError: (error) => reportError("远程任务", error),
+    });
     const status = createStatusController({
       clearTimeout: runtime.clearTimeout ?? globalThis.clearTimeout,
       now,
@@ -3291,7 +3393,7 @@
     function startActivity(target, mode) {
       return startForegroundTask({
         confirmRequest,
-        fetch: http && ((friend) => http.fetchActivity(friend)),
+        fetch: (friend) => http.fetchActivity(friend),
         keyFor: userIdentifierFor,
         lifecycle: activityLifecycle,
         pending: cache.friendsNeedingRefresh(
@@ -3540,35 +3642,44 @@
 
   // src/entry.mjs — page assembly.
 
-  function readFriends(list, baseUrl = window.location.href) {
-    const elements = [...list.children];
-    const friends = elements.map((element, originalIndex) => {
-      const anchor = element.querySelector('a.avatar[href*="/user/"]');
-      if (!anchor) return null;
+  function readFriends(list, baseUrl, logger) {
+    const seen = new Set();
+    const records = new Map();
+    let duplicates = 0;
+    let invalid = 0;
+    for (const element of [...list.children]) {
+      const anchor = element.querySelector("a.avatar");
+      if (!anchor && !element.matches?.("li.user")) continue;
 
-      const userIdentifier = userIdentifierFromHref(
-        anchor.getAttribute("href"),
-        baseUrl,
-      );
-      if (!userIdentifier) return null;
+      const userIdentifier =
+        anchor && userIdentifierFromHref(anchor.getAttribute("href"), baseUrl);
+      if (!userIdentifier) {
+        element.remove();
+        invalid += 1;
+        continue;
+      }
+      if (seen.has(userIdentifier)) {
+        element.remove();
+        duplicates += 1;
+        continue;
+      }
+      seen.add(userIdentifier);
 
       const displayName = anchor.textContent.trim();
 
-      // The gray rule inside a friend item is the site's own border-bottom
-      // on ul.usersMedium div.userContainer strong; the 名次 badge anchors
-      // to that block. The anchor is resolved by the sort bar, which owns
-      // every page node; reading here only validates that it exists — the
-      // friend records stay pure domain data.
-      if (!element.querySelector(".userContainer strong")) return null;
-
-      return {
-        displayName,
-        originalIndex,
-        userIdentifier,
-      };
+      records.set(element, { displayName, userIdentifier });
+    }
+    if (duplicates || invalid) {
+      logger.info(
+        `好友排序：已移除 ${duplicates} 个重复好友项、${invalid} 个无有效用户标识的好友项`,
+      );
+    }
+    const elements = [...list.children];
+    const friends = elements.flatMap((element, originalIndex) => {
+      const record = records.get(element);
+      return record ? [{ ...record, originalIndex }] : [];
     });
-
-    return friends.every(Boolean) ? friends : [];
+    return { friends, elements };
   }
 
   function browserStorage(pageWindow, property) {
@@ -3582,13 +3693,16 @@
   function pageFetchDependencies(runtime, pageWindow) {
     const domParser =
       runtime.domParser ??
+      (typeof pageWindow.DOMParser === "function"
+        ? new pageWindow.DOMParser()
+        : null) ??
       (typeof DOMParser === "function" ? new DOMParser() : null);
     const fetchImpl =
       runtime.fetchImpl ??
       (typeof pageWindow.fetch === "function"
         ? pageWindow.fetch.bind(pageWindow)
         : null);
-    return domParser && fetchImpl ? { domParser, fetchImpl } : null;
+    return { domParser, fetchImpl };
   }
 
   async function initialize(runtime = {}) {
@@ -3597,62 +3711,80 @@
     const list = pageDocument.querySelector("#memberUserList");
     if (!list || list.children.length === 0) return;
 
-    const friends = readFriends(list, pageWindow.location.href);
-    if (friends.length !== list.children.length) return;
+    const logger = pageWindow.console ?? console;
+    const reportError = createPageErrorReporter(pageDocument, { list, logger });
+    try {
+      const { friends, elements } = readFriends(
+        list,
+        pageWindow.location.href,
+        logger,
+      );
+      if (friends.length === 0) return;
 
-    const now = runtime.now ?? Date.now;
-    const cache = createFriendCache(
-      runtime.storage ?? browserStorage(pageWindow, "localStorage"),
-      {
-        now,
-        indexedDB: runtime.indexedDB ?? browserStorage(pageWindow, "indexedDB"),
-        setTimeoutImpl: runtime.setTimeout,
-        clearTimeoutImpl: runtime.clearTimeout,
-      },
-    );
-    await cache.ready;
-    const visitorIdentifier = currentVisitorIdentifier(
-      pageDocument,
-      pageWindow,
-    );
-    const collator = nameCollator();
-    const sortBar = createSortBar(pageDocument, {
-      list,
-      // 浏览器注入可见性观察器（ADR 0002）；测试可注入替身，缺省时
-      // 排序栏静默降级为仅在后续渲染中修正名次。
-      mutationObserver: runtime.mutationObserver ?? pageWindow.MutationObserver,
-    });
-    if (!sortBar.mount()) return;
-    // 生产 HTTP adapter 在装配时创建；测试可以直接注入返回规范化领域结果
-    // 的 mock adapter，不伪造 HTTP Response 或 DOM。
-    const http =
-      runtime.http ??
-      createBangumiHttpAdapter({
-        baseUrl: pageWindow.location.href,
-        clearTimeoutImpl: runtime.clearTimeout,
-        ...pageFetchDependencies(runtime, pageWindow),
-        now,
-        setTimeoutImpl: runtime.setTimeout,
+      const now = runtime.now ?? Date.now;
+      const cache = createFriendCache(
+        runtime.storage ?? browserStorage(pageWindow, "localStorage"),
+        {
+          now,
+          indexedDB:
+            runtime.indexedDB ?? browserStorage(pageWindow, "indexedDB"),
+          setTimeoutImpl: runtime.setTimeout,
+          clearTimeoutImpl: runtime.clearTimeout,
+        },
+      );
+      await cache.ready;
+      const visitorIdentifier = currentVisitorIdentifier(
+        pageDocument,
+        pageWindow,
+      );
+      const collator = nameCollator();
+      const sortBar = createSortBar(pageDocument, {
+        list,
+        elements,
+        reportError,
+        // 浏览器注入可见性观察器（ADR 0002）；测试可注入替身，缺省时
+        // 排序栏静默降级为仅在后续渲染中修正名次。
+        mutationObserver:
+          runtime.mutationObserver ?? pageWindow.MutationObserver,
       });
-    const session = createFriendSortSession({
-      cache,
-      collator,
-      friends,
-      http,
-      now,
-      pageWindow,
-      runtime,
-      sortBar,
-      visitorIdentifier,
-    });
-    // 页面入口只创建会话并启动：后续交互全部经 choose 与 changeDirection
-    // 进入业务流程。
-    sortBar.bind({
-      selectCriterion: (criterion, selection) =>
-        session.choose(criterion, selection),
-      selectDirection: (direction) => session.changeDirection(direction),
-    });
-    session.start();
+      if (!sortBar.mount()) {
+        throw new Error("找不到排序栏挂载位置 .mainWrapper > .columns");
+      }
+      // 生产 HTTP adapter 在装配时创建；测试可以直接注入返回规范化领域结果
+      // 的 mock adapter，不伪造 HTTP Response 或 DOM。
+      const http =
+        runtime.http ??
+        createBangumiHttpAdapter({
+          baseUrl: pageWindow.location.href,
+          clearTimeoutImpl: runtime.clearTimeout,
+          ...pageFetchDependencies(runtime, pageWindow),
+          now,
+          setTimeoutImpl: runtime.setTimeout,
+        });
+      const session = createFriendSortSession({
+        cache,
+        collator,
+        friends,
+        http,
+        now,
+        pageWindow,
+        runtime,
+        sortBar,
+        visitorIdentifier,
+        reportError,
+      });
+      // 页面入口只创建会话并启动：后续交互全部经 choose 与 changeDirection
+      // 进入业务流程。
+      sortBar.bind({
+        selectCriterion: (criterion, selection) =>
+          session.choose(criterion, selection),
+        selectDirection: (direction) => session.changeDirection(direction),
+      });
+      session.start();
+    } catch (error) {
+      reportError("初始化", error);
+      throw error;
+    }
   }
 
   // src/main.mjs — browser entry (the only module that auto-starts).

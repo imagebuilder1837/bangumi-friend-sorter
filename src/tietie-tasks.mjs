@@ -138,6 +138,10 @@ function createTietieTasks({
     onProgress: progressReporter,
     onQueue: progressReporter,
     onRateLimited: status.showRateLimit,
+    onAborted() {
+      batch = null;
+      status.clearProgress(TIETIE_TASK_TYPE);
+    },
     onSuccess(item, record) {
       mergePage(record);
       if (record.hasNextPage && item.page < TIETIE_MAX_PAGES) {
@@ -187,7 +191,7 @@ function createTietieTasks({
   };
 
   function refresh(mode = "incremental") {
-    if (!http?.fetchTietiePage || !visitorIdentifier) return null;
+    if (!visitorIdentifier) return null;
     const existingTask = scheduler.getTask(TIETIE_TASK_TYPE);
     if (existingTask) {
       // Re-selecting the target while its pages are already being fetched

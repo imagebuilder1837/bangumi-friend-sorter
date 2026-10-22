@@ -8,6 +8,7 @@ import {
   RELATION_CHOICES,
 } from "./choices.mjs";
 import { directionLabelsFor } from "./sorting.mjs";
+import { createPageErrorReporter } from "./page-errors.mjs";
 
 function installStyles(document) {
   const style = document.createElement("style");
@@ -186,7 +187,15 @@ function isListPresentable(list) {
 // 接口约定：bind 必须在首次 render 前恰好调用一次（相对 mount 的先后
 // 不限）；render 接收完整的可呈现状态，重复调用安全，展示顺序不变时
 // 跳过重排与名次更新。
-function createSortBar(pageDocument, { list, mutationObserver } = {}) {
+function createSortBar(
+  pageDocument,
+  {
+    list,
+    elements = Array.from(list.children),
+    mutationObserver,
+    reportError = createPageErrorReporter(pageDocument, { list }),
+  } = {},
+) {
   const bar = pageDocument.createElement("div");
   // Reuse the site's #browserTools frame, including its horizontal borders.
   bar.id = "browserTools";
@@ -198,9 +207,25 @@ function createSortBar(pageDocument, { list, mutationObserver } = {}) {
   // 时序下不可能）被静默忽略。
   let handlers = null;
 
+  function run(stage, operation) {
+    try {
+      return operation();
+    } catch (error) {
+      lastOrderElements = null;
+      lastVisibleElements = null;
+      reportError(stage, error);
+      throw error;
+    }
+  }
+
   function bind({ selectCriterion, selectDirection }) {
     if (handlers) throw new Error("排序栏的意图回调只能绑定一次");
-    handlers = { selectCriterion, selectDirection };
+    handlers = {
+      selectCriterion: (...args) =>
+        run("排序选择", () => selectCriterion(...args)),
+      selectDirection: (direction) =>
+        run("排序方向切换", () => selectDirection(direction)),
+    };
   }
 
   const filters = pageDocument.createElement("div");
@@ -418,9 +443,8 @@ function createSortBar(pageDocument, { list, mutationObserver } = {}) {
   // 列表项与名次锚点由排序栏一次性自读，调用方的好友记录只携带
   // 领域数据；条目按网页默认顺序定位，与记录的 originalIndex 对齐。
   function readFriendEntries() {
-    friendEntries = Array.from(list.children, (element) => ({
+    friendEntries = Array.from(elements, (element) => ({
       element,
-      rankHost: element.querySelector(".userContainer strong"),
     }));
     return friendEntries;
   }
@@ -436,9 +460,12 @@ function createSortBar(pageDocument, { list, mutationObserver } = {}) {
 
   function rankBadgeFor(entry) {
     if (!entry.badge) {
+      const rankHost = entry.element.querySelector(".userContainer strong");
+      if (!rankHost)
+        throw new Error("名次渲染缺少好友名称块 .userContainer strong");
       const badge = pageDocument.createElement("span");
       badge.className = "bangumi-friend-sorter-rank";
-      entry.rankHost.append(badge);
+      rankHost.append(badge);
       entry.badge = badge;
     }
     return entry.badge;
@@ -458,6 +485,10 @@ function createSortBar(pageDocument, { list, mutationObserver } = {}) {
   // 连续编号：可见集合变化而顺序未变时只重写名次、不移动列表项，
   // 隐藏项徽章保留旧文本。调用方始终传入完整的可呈现状态。
   function render(state) {
+    return run("排序栏渲染", () => renderState(state));
+  }
+
+  function renderState(state) {
     lastState = state;
     const { criterion, direction, selection, statusMessage, orderedFriends } =
       state;
@@ -553,11 +584,13 @@ function createSortBar(pageDocument, { list, mutationObserver } = {}) {
   // 等高频无关属性变化不再触发整场重放）。首渲染前无状态可重放，
   // 静默忽略。无 MutationObserver 时不观察，与子树观察同一降级。
   if (typeof mutationObserver === "function") {
-    const ancestorObserver = new mutationObserver(() => {
-      const presentable = isListPresentable(list);
-      if (presentable === lastPresentable) return;
-      if (lastState) render(lastState);
-    });
+    const ancestorObserver = new mutationObserver(() =>
+      run("可见性更新", () => {
+        const presentable = isListPresentable(list);
+        if (presentable === lastPresentable) return;
+        if (lastState) render(lastState);
+      }),
+    );
     for (
       let ancestor = list.parentElement;
       ancestor;

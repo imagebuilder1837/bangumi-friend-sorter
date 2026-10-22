@@ -383,9 +383,10 @@ test("未登录时选择喜好契合不请求且登录提示不会因重复选�
     [5_000],
   );
   dropdownButtonFor(page, "完成条目数").click();
+  assert.equal(requests, 1, "完成条目数不依赖登录或预先具备解析能力");
   assert.equal(status.textContent, "请登录后使用喜好契合排序");
   menuItemFor(page, "喜好契合", "共同喜好数").click();
-  assert.equal(requests, 0);
+  assert.equal(requests, 1, "切回契合指标没有新增请求");
   assert.equal(status.textContent, "请登录后使用喜好契合排序");
   assert.equal(relationButton.getAttribute("aria-current"), "true");
   assert.equal(
@@ -409,13 +410,20 @@ test("未登录时选择喜好契合不请求且登录提示不会因重复选�
 
 test("选择喜好契合会清除已激活的上次活跃全量刷新提示", async () => {
   const page = friendPageWith([{ href: "/user/friend", name: "好友" }]);
+  const now = 100_000;
   await initialize({
     document: page.document,
     window: {
       CHOBITS_USERNAME: "visitor",
       location: { href: "https://bgm.tv/user/viewed/friends" },
     },
-    storage: { getItem: () => null, setItem() {}, removeItem() {} },
+    storage: friendCacheStorage({
+      friend: {
+        activity: { kind: "empty", fetchedAt: now },
+        relation: { visitor: { syncRate: { value: 50, fetchedAt: now } } },
+      },
+    }),
+    now: () => now,
   });
 
   const status = statusFor(page);
@@ -1045,7 +1053,7 @@ test("取消大批量主页扩充后保留前台时间胶囊进度提示", async
   await new Promise((resolve) => setImmediate(resolve));
 });
 
-test("主页任务按好友用户标识去重重复条目", async () => {
+test("页面按用户标识去重后主页任务只请求保留的好友", async () => {
   const page = friendPageWith([
     { href: "/user/a", name: "A1" },
     { href: "/user/a", name: "A2" },

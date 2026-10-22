@@ -9,12 +9,14 @@ const PAGE_REQUEST_TIMEOUT_MS = 15_000;
 async function fetchPageWithTimeout(
   url,
   fetchImpl,
-  parseResponse,
   {
     clearTimeoutImpl = globalThis.clearTimeout,
     setTimeoutImpl = globalThis.setTimeout,
   } = {},
 ) {
+  if (typeof fetchImpl !== "function") {
+    throw new Error("远程获取缺少 fetch 支持");
+  }
   const controller = new AbortController();
   const timeout = setTimeoutImpl(
     () => controller.abort(),
@@ -28,7 +30,7 @@ async function fetchPageWithTimeout(
     });
     if (!response.ok) return { kind: "http-error", status: response.status };
 
-    return await parseResponse(response);
+    return { kind: "success", response, html: await response.text() };
   } catch {
     return { kind: "network-error" };
   } finally {
@@ -43,19 +45,16 @@ async function fetchDocumentPage(
   parseDocument,
   { now, timers } = {},
 ) {
-  return fetchPageWithTimeout(
-    url,
-    fetchImpl,
-    async (response) => {
-      const html = await response.text();
-      const fetchedAt = now?.();
-      const document = domParser.parseFromString(html, "text/html");
-      const record = parseDocument(document, response, fetchedAt);
-      if (record?.kind === "invalid") return { kind: "parse-error" };
-      return { kind: "success", record };
-    },
-    timers,
-  );
+  const outcome = await fetchPageWithTimeout(url, fetchImpl, timers);
+  if (outcome.kind !== "success") return outcome;
+  const fetchedAt = now?.();
+  if (typeof domParser?.parseFromString !== "function") {
+    throw new Error("远程页面解析缺少 DOMParser 支持");
+  }
+  const document = domParser.parseFromString(outcome.html, "text/html");
+  const record = parseDocument(document, outcome.response, fetchedAt);
+  if (record?.kind === "invalid") return { kind: "parse-error" };
+  return { kind: "success", record };
 }
 
 // 一次主页请求、一次文档提取：记录按字段携带三向结果，交给主页字段
@@ -132,7 +131,6 @@ function createBangumiHttpAdapter({
   now,
   setTimeoutImpl,
 }) {
-  if (!domParser || !fetchImpl) return null;
   return {
     fetchActivity: (friend) => fetchActivity(friend, fetchImpl, domParser, now),
     fetchProfile: (friend) => fetchProfile(friend, fetchImpl, domParser, now),

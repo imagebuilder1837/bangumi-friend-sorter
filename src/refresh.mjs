@@ -14,6 +14,9 @@ function createRefreshLifecycle({
     onProgress: progressReporter,
     onQueue: progressReporter,
     onRateLimited: status.showRateLimit,
+    onAborted() {
+      status.clearProgress(taskType);
+    },
     onFinished({ failures, globallyStopped, target }) {
       status.clearProgress(taskType);
       applySort();
@@ -80,11 +83,16 @@ function createCacheBatchLifecycle({
     onSuccess(friend, record) {
       batch?.accept(userIdentifierFor(friend), projectResult(record));
     },
+    onAborted() {
+      batch?.complete();
+      batch = null;
+      base.onAborted();
+    },
   };
 }
 
-// Starts a foreground scheduler task for one refresh; guarded so a
-// stopped scheduler or missing fetch adapter never enqueue work.
+// Starts a foreground scheduler task when there is work to fetch.
+// Missing request capabilities fail at use, not during local sorting.
 function startForegroundTask({
   confirmRequest,
   fetch,
@@ -96,7 +104,7 @@ function startForegroundTask({
   target,
   taskType,
 }) {
-  if (scheduler.isGloballyStopped() || !fetch) return null;
+  if (scheduler.isGloballyStopped()) return null;
   if (pending.length === 0 && !scheduler.getTask(taskType)) return null;
   const { task } = scheduler.enqueue(
     taskType,

@@ -13,8 +13,7 @@ import {
 // 请求、任务合并扩充与字段级成功失败统计。调用方只声明当前排序需要的
 // 字段，不再拼装解析、调度或缓存写入细节。
 // 接口约定：唯一入口 refresh(field, mode)，声明一个当前排序需要的字段
-// 并返回前台调度任务（无 HTTP adapter，或调度器已停止且无在跑任务、
-// 待请求为空时返回 null）。调用顺序不限：新字段声明的待请求好友优先
+// 并返回前台调度任务（调度器已停止，或无在跑任务且待请求为空时返回 null）。调用顺序不限：新字段声明的待请求好友优先
 // 合并进运行中的主页任务，同一好友在整个任务内最多请求一次。不变量：
 // 一次响应服务全部字段，只有解析成功的字段写入缓存，缺失或无效字段
 // 不覆盖旧值。错误模式：单好友请求失败只计入该次任务的失败统计，
@@ -96,7 +95,7 @@ function createProfileFieldTasks({
   function refresh(field, mode = "incremental") {
     return startForegroundTask({
       confirmRequest,
-      fetch: http && ((friend) => http.fetchProfile(friend)),
+      fetch: (friend) => http.fetchProfile(friend),
       isSuccess: isFieldSuccess,
       keyFor: userIdentifierFor,
       lifecycle,

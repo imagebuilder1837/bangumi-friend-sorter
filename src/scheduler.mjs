@@ -26,7 +26,12 @@ function nextBatchState(state, outcome) {
   return { consecutiveServerFailures: 0, stopped: false };
 }
 
-function createTaskScheduler({ concurrency = 4 } = {}) {
+function createTaskScheduler({
+  concurrency = 4,
+  onError = (error) => {
+    throw error;
+  },
+} = {}) {
   const maxConcurrency = Math.max(1, Math.floor(concurrency));
   const tasks = new Map();
   let foregroundType = null;
@@ -34,9 +39,10 @@ function createTaskScheduler({ concurrency = 4 } = {}) {
   let globallyStopped = false;
 
   function normalizedOutcome(outcome) {
-    return outcome && typeof outcome === "object"
-      ? outcome
-      : { kind: "network-error" };
+    if (!outcome || typeof outcome !== "object") {
+      throw new Error("远程任务未返回有效获取结果");
+    }
+    return outcome;
   }
 
   function runnableTask() {
@@ -44,6 +50,14 @@ function createTaskScheduler({ concurrency = 4 } = {}) {
     if (foreground?.canSchedule()) return foreground;
     if (foreground?.hasInFlight()) return null;
     return [...tasks.values()].find((task) => task.canSchedule()) || null;
+  }
+
+  function abortAndReport(task, error) {
+    try {
+      task.abort();
+    } finally {
+      onError(error);
+    }
   }
 
   function pump() {
@@ -54,20 +68,33 @@ function createTaskScheduler({ concurrency = 4 } = {}) {
       const item = task.take();
       if (!item) continue;
       inFlight += 1;
-      task.begin();
       let request;
       try {
+        task.begin();
         request = task.fetch(item);
-      } catch {
-        request = { kind: "network-error" };
+      } catch (error) {
+        inFlight -= 1;
+        try {
+          abortAndReport(task, error);
+        } finally {
+          queueMicrotask(pump);
+        }
+        throw error;
       }
-      Promise.resolve(request)
-        .catch(() => ({ kind: "network-error" }))
-        .then((outcome) => {
-          inFlight -= 1;
+      const settle = (outcome) => {
+        inFlight -= 1;
+        try {
+          if (outcome?.kind === "unexpected-error") throw outcome.error;
           task.complete(item, normalizedOutcome(outcome));
+        } catch (error) {
+          abortAndReport(task, error);
+        } finally {
           pump();
-        });
+        }
+      };
+      Promise.resolve(request).then(settle, (error) =>
+        settle({ kind: "unexpected-error", error }),
+      );
     }
   }
 
@@ -138,6 +165,7 @@ function createTaskScheduler({ concurrency = 4 } = {}) {
       },
       complete(item, outcome) {
         inFlightForTask -= 1;
+        if (finished) return;
         completed += 1;
         const record = outcome.kind === "success" ? outcome.record : null;
         if (outcome.kind === "success") {
@@ -182,6 +210,13 @@ function createTaskScheduler({ concurrency = 4 } = {}) {
           lifecycle.onQueue?.(progress());
         }
         return { added: newItems.length, accepted: true };
+      },
+      abort() {
+        if (finished) return;
+        finished = true;
+        queue.length = 0;
+        if (tasks.get(type) === task) tasks.delete(type);
+        lifecycle.onAborted?.();
       },
       fetch: options.fetch,
       getState() {

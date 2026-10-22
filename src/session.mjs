@@ -53,10 +53,16 @@ function createFriendSortSession({
   runtime,
   sortBar,
   visitorIdentifier,
+  reportError = (_stage, error) => {
+    throw error;
+  },
 }) {
   // ---- 私有任务登记表：调度器、状态提示与两类页面任务的生命周期。 ----
   const ACTIVITY_TASK_TYPE = "activity";
-  const scheduler = createTaskScheduler({ concurrency: 4 });
+  const scheduler = createTaskScheduler({
+    concurrency: 4,
+    onError: (error) => reportError("远程任务", error),
+  });
   const status = createStatusController({
     clearTimeout: runtime.clearTimeout ?? globalThis.clearTimeout,
     now,
@@ -134,7 +140,7 @@ function createFriendSortSession({
   function startActivity(target, mode) {
     return startForegroundTask({
       confirmRequest,
-      fetch: http && ((friend) => http.fetchActivity(friend)),
+      fetch: (friend) => http.fetchActivity(friend),
       keyFor: userIdentifierFor,
       lifecycle: activityLifecycle,
       pending: cache.friendsNeedingRefresh(

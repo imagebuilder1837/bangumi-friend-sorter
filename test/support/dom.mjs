@@ -62,6 +62,12 @@ function friendPageWith(entries) {
       }
     }
 
+    remove() {
+      const siblings = this.parentElement?.children;
+      if (siblings) siblings.splice(siblings.indexOf(this), 1);
+      this.parentElement = null;
+    }
+
     contains(target) {
       return (
         this === target ||
@@ -97,6 +103,7 @@ function friendPageWith(entries) {
     container.className = "userContainer";
     container.append(strong);
     const item = new Element("li");
+    item.parentElement = list;
     item.textContent = name;
     // 浏览器可见性语义的模拟（ADR 0002）：内联 display:none 即不可见。
     item.style = { display: "" };
@@ -104,7 +111,8 @@ function friendPageWith(entries) {
       return this.style.display !== "none";
     };
     item.querySelector = (selector) => {
-      if (selector === 'a.avatar[href*="/user/"]') return anchor;
+      if (selector === "a.avatar" || selector === 'a.avatar[href*="/user/"]')
+        return anchor;
       if (selector === ".userContainer strong") return strong;
       assert.fail(`unexpected selector: ${selector}`);
     };

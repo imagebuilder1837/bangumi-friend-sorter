@@ -243,6 +243,7 @@ test("和我贴贴是位于上次活跃与喜好契合之间的独立排序按�
 });
 
 test("页面初始化提供六个主排序目标、全部子项和各自主按钮方向", async () => {
+  const failedRequest = async () => ({ kind: "http-error", status: 404 });
   const page = friendPageWith([
     { href: "/user/z", name: "Zed" },
     { href: "/user/a", name: "Ada" },
@@ -255,6 +256,11 @@ test("页面初始化提供六个主排序目标、全部子项和各自主按�
       location: { href: "https://bgm.tv/user/sai/friends" },
     },
     storage: { getItem: () => null, setItem() {}, removeItem() {} },
+    http: {
+      fetchActivity: failedRequest,
+      fetchProfile: failedRequest,
+      fetchTietiePage: failedRequest,
+    },
     setTimeout: () => 1,
     clearTimeout() {},
   });
@@ -883,17 +889,28 @@ test("鼠标创建的焦点不因后续按键改为键盘模态（ADR-0001）", 
   assert.equal(toggle.getAttribute("aria-expanded"), "false");
 });
 
-test("缺少主内容布局时不修改好友页面", async () => {
+test("非空好友列表缺少挂载布局时明确报错，保留列表且不注入样式", async () => {
   const page = friendPageWith([{ href: "/user/a", name: "A" }]);
+  const original = [...page.list.children];
+  const errors = [];
   page.list.closest = () => null;
 
-  await initialize({
-    document: page.document,
-    window: { location: { href: "https://bgm.tv/user/sai/friends" } },
-    storage: { getItem: () => null, setItem() {}, removeItem() {} },
-  });
+  await assert.rejects(
+    initialize({
+      document: page.document,
+      window: {
+        location: { href: "https://bgm.tv/user/sai/friends" },
+        console: { error: (...args) => errors.push(args) },
+      },
+      storage: { getItem: () => null, setItem() {}, removeItem() {} },
+    }),
+    /排序栏挂载/,
+  );
 
-  assert.equal(page.list.beforeNodes.length, 0);
+  assert.deepEqual(page.list.children, original);
+  assert.equal(page.list.beforeNodes[0].getAttribute("role"), "alert");
+  assert.match(page.list.beforeNodes[0].textContent, /排序栏挂载/);
+  assert.equal(errors.length, 1);
   assert.equal(page.document.head.children.length, 0);
 });
 
