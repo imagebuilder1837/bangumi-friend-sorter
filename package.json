@@ -4,10 +4,10 @@
   "private": true,
   "scripts": {
     "build": "node scripts/build.mjs",
-    "format": "prettier --write src/*.mjs scripts/*.mjs test/*.mjs test/support/*.mjs",
-    "format:check": "prettier --check src/index.user.js src/*.mjs scripts/*.mjs test/*.mjs test/support/*.mjs",
+    "format": "prettier --write \"src/**/*.mjs\" \"scripts/**/*.mjs\" \"test/**/*.mjs\"",
+    "format:check": "prettier --check src/index.user.js \"src/**/*.mjs\" \"scripts/**/*.mjs\" \"test/**/*.mjs\"",
     "check": "node scripts/check.mjs",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test \"test/**/*.test.mjs\""
   },
   "devDependencies": {
     "fake-indexeddb": "^6.2.6",

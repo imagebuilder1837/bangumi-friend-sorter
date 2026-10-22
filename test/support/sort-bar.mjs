@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createSortBar } from "../../src/sort-bar.mjs";
+import { createSortBar } from "../../src/page/sort-bar.mjs";
 import { friendPageWith } from "./dom.mjs";
 
 function mountedSortBar(page) {

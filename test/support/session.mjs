@@ -1,45 +1,4 @@
-import { createFriendSortSession } from "../../src/session.mjs";
-import { initialize } from "../../src/entry.mjs";
-
-import { friendPageWith } from "./dom.mjs";
-
-import { friendCacheStorage } from "./cache.mjs";
-
-function refreshResponseFor(url) {
-  return {
-    ok: true,
-    headers: { get: () => null },
-    text: async () => (url.endsWith("/timeline") ? "timeline" : "profile"),
-  };
-}
-
-async function initializeRefreshPage({
-  confirm,
-  domParser,
-  entries,
-  fetchImpl,
-  now,
-  records,
-  visitorIdentifier = "visitor",
-}) {
-  const page = friendPageWith(entries);
-  await initialize({
-    document: page.document,
-    window: {
-      CHOBITS_USERNAME: visitorIdentifier,
-      location: { href: "https://bgm.tv/user/viewed/friends" },
-    },
-    storage: friendCacheStorage(records),
-    now: () => now,
-    setTimeout: () => 1,
-    clearTimeout() {},
-    domParser,
-    fetchImpl,
-    confirm,
-  });
-  return page;
-}
-
+import { createFriendSortSession } from "../../src/workflow/session.mjs";
 // Drives the production remote-sort session (createFriendSortSession) with a
 // recording sort-bar substitute and a mock Bangumi HTTP adapter that returns
 // normalized domain results, so tests exercise the same boundary the page uses
@@ -84,4 +43,4 @@ function createSessionHarness({
   };
 }
 
-export { refreshResponseFor, initializeRefreshPage, createSessionHarness };
+export { createSessionHarness };

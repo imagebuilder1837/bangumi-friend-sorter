@@ -1,5 +1,5 @@
 import { IDBFactory } from "fake-indexeddb";
-import { createFriendCache } from "../../src/cache.mjs";
+import { createFriendCache } from "../../src/cache/friend-cache.mjs";
 
 function friendCacheStorage(records) {
   return {

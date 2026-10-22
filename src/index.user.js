@@ -17,11 +17,11 @@
 // @updateURL    https://raw.githubusercontent.com/imagebuilder1837/bangumi-friend-sorter/refs/heads/main/src/index.user.js
 // ==/UserScript==
 
-// Generated from src/main.mjs and its src/*.mjs imports. Do not edit; run npm run build.
+// Generated from src/main.mjs and its source module imports. Do not edit; run npm run build.
 (function () {
   "use strict";
 
-  // src/identity.mjs — friend and visitor identifiers.
+  // src/bangumi/identity.mjs — friend and visitor identifiers.
 
   // Normalizes a friend record to its stable cache and sort identity:
   // only a non-empty string identifier counts (see GLOSSARY.md, 用户标识).
@@ -81,7 +81,7 @@
     return null;
   }
 
-  // src/choices.mjs — sorting choices and remote field shape.
+  // src/sorting/choices.mjs — sorting choices and remote field shape.
 
   const SORT = Object.freeze({
     ACTIVITY: "activity",
@@ -136,7 +136,7 @@
     [SORT.TIETIE]: null,
   });
 
-  // src/cache-storage.mjs — native IndexedDB connection and atomic v3 import.
+  // src/cache/storage.mjs — native IndexedDB connection and atomic v3 import.
   const DATABASE_NAME = "bangumi-friend-sorter:cache";
   const MIGRATION_KEY = "legacy-v3-imported";
 
@@ -302,7 +302,7 @@
     });
   }
 
-  // src/cache.mjs — friend and visitor-scoped persistence.
+  // src/cache/friend-cache.mjs — friend and visitor-scoped persistence.
 
   const CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
   // Completion counts and relation metrics both come from profile pages and
@@ -729,7 +729,7 @@
     return cache;
   }
 
-  // src/sorting.mjs — stable ordering and direction labels.
+  // src/sorting/order.mjs — stable ordering and direction labels.
 
   function compareReliableNumbers(
     left,
@@ -909,7 +909,7 @@
     return sorted;
   }
 
-  // src/page-errors.mjs — visible failures, separate from refresh progress.
+  // src/page/errors.mjs — visible failures, separate from refresh progress.
   function createPageErrorReporter(
     pageDocument,
     { list, logger = pageDocument.defaultView?.console ?? console },
@@ -929,7 +929,7 @@
     };
   }
 
-  // src/sort-bar.mjs — sort controls and DOM presentation.
+  // src/page/sort-bar.mjs — sort controls and DOM presentation.
 
   function installStyles(document) {
     const style = document.createElement("style");
@@ -1524,7 +1524,7 @@
     return { bind, mount, render };
   }
 
-  // src/profile-parser.mjs — profile field parsing.
+  // src/bangumi/profile-parser.mjs — profile field parsing.
 
   function parseCompletionCount(block) {
     const descriptions = [...(block?.querySelectorAll?.(".desc") || [])];
@@ -1679,7 +1679,7 @@
     return parsed;
   }
 
-  // src/timeline-parser.mjs — activity timeline parsing.
+  // src/bangumi/timeline-parser.mjs — activity timeline parsing.
 
   const SITE_OFFSET_SECONDS = 8 * 60 * 60;
 
@@ -1821,7 +1821,7 @@
       : { kind: "active", activityAtSeconds };
   }
 
-  // src/tietie-parser.mjs — categorized reaction timeline parsing.
+  // src/bangumi/tietie-parser.mjs — categorized reaction timeline parsing.
 
   const TIETIE_REACTION_TEMPLATE_IDS = new Set([
     "likes_reaction_menu",
@@ -2156,7 +2156,7 @@
     };
   }
 
-  // src/http.mjs — Bangumi page request adapter.
+  // src/bangumi/http.mjs — Bangumi page request adapter.
 
   const PAGE_REQUEST_TIMEOUT_MS = 15_000;
 
@@ -2302,7 +2302,7 @@
     };
   }
 
-  // src/remote-selection.mjs — remote target transition decisions.
+  // src/sorting/remote-selection.mjs — remote target transition decisions.
 
   function remoteTargetFor(criterion, selection) {
     const selectionKey = REMOTE_TARGET_SELECTION_KEYS[criterion];
@@ -2351,7 +2351,7 @@
     return { kind: "ignore" };
   }
 
-  // src/scheduler.mjs — bounded concurrent page-task scheduling.
+  // src/workflow/scheduler.mjs — bounded concurrent page-task scheduling.
 
   function needsLargeRequestConfirmation(count) {
     return count > 400;
@@ -2634,7 +2634,7 @@
     };
   }
 
-  // src/status.mjs — status priority and lifetime.
+  // src/workflow/status.mjs — status priority and lifetime.
 
   function createStatusController({
     clearTimeout: clearStatusTimeout = globalThis.clearTimeout,
@@ -2824,7 +2824,7 @@
     };
   }
 
-  // src/refresh.mjs — refresh task lifecycle bridges.
+  // src/workflow/refresh-lifecycle.mjs — refresh task lifecycle bridges.
 
   function createRefreshLifecycle({
     applySort,
@@ -2948,7 +2948,7 @@
     return task;
   }
 
-  // src/profile-tasks.mjs — profile field refresh tasks.
+  // src/workflow/profile-tasks.mjs — profile field refresh tasks.
 
   // 主页字段任务 deep module：拥有八个主页字段（六个完成统计范围与同步
   // 率、共同喜好数两个契合指标）的字段语义、同一批次内单次可复用的主页
@@ -3053,7 +3053,7 @@
     return { refresh };
   }
 
-  // src/tietie-tasks.mjs — categorized reaction refresh tasks.
+  // src/workflow/tietie-tasks.mjs — categorized reaction refresh tasks.
 
   const TIETIE_MAX_PAGES = 5;
   const TIETIE_TASK_TYPE = "tietie";
@@ -3276,7 +3276,7 @@
     };
   }
 
-  // src/session.mjs — sort session orchestration.
+  // src/workflow/session.mjs — sort session orchestration.
 
   // 远程排序会话 deep module：页面初始化后的最高层业务边界。会话只通过
   // start、choose 与 changeDirection 接收外部命令；内部私有状态机与任务
@@ -3640,7 +3640,7 @@
     return { start, choose, changeDirection };
   }
 
-  // src/entry.mjs — page assembly.
+  // src/page/initialize.mjs — page assembly.
 
   function readFriends(list, baseUrl, logger) {
     const seen = new Set();
