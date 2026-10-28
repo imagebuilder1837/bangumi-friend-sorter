@@ -313,7 +313,7 @@ test("页面初始化提供六个主排序目标、全部子项和各自主按�
   });
 
   const directionButtons = directionButtonsFor(page);
-  const directButtons = ["加好友时间", "名称", "上次活跃", "和我贴贴"].map(
+  const directButtons = ["加好友时间", "名称", "上次活跃", "和 TA 贴贴"].map(
     (label) => mainSortControl(page, label),
   );
   const relationToggle = dropdownButtonFor(page, "喜好契合");
@@ -325,7 +325,7 @@ test("页面初始化提供六个主排序目标、全部子项和各自主按�
       relationToggle.textContent,
       completionToggle.textContent,
     ],
-    ["加好友时间", "名称", "上次活跃", "和我贴贴", "喜好契合", "完成条目数"],
+    ["加好友时间", "名称", "上次活跃", "和 TA 贴贴", "喜好契合", "完成条目数"],
   );
   assert.deepEqual(
     dropdownItems(page, "喜好契合").map(({ textContent }) => textContent),

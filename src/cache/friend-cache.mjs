@@ -1,4 +1,4 @@
-// src/cache/friend-cache.mjs — friend and visitor-scoped persistence.
+// src/cache/friend-cache.mjs — friend metrics and recipient-scoped reactions.
 import {
   SORT,
   COMPLETION_CHOICES,
@@ -121,11 +121,11 @@ function completionCacheFieldValidators() {
   );
 }
 
-// 好友字段与访问者级贴贴结果的唯一领域读写边界。
+// 好友字段与接收方级贴贴结果的唯一领域读写边界。
 // 先等待 ready 完成初始化；之后领域读取只访问内存，缺失返回 undefined。
 // beginRefresh.accept 同步接纳有效结果；complete 只能调用一次，返回
 // Promise<boolean> 表示本次持久化是否提交。replaceTietie 同步返回结果
-// 是否被接纳，不保证落盘；它只接受完整的访问者统计。
+// 是否被接纳，不保证落盘；它只接受完整的接收方统计。
 // 存储失败不向调用方抛错，未落盘变更保留到下次正常提交；close 释放
 // 连接并停用本实例的持久化，不丢弃页面内存。首个参数仅供旧 v3 导入。
 function createFriendCache(
@@ -212,11 +212,11 @@ function createFriendCache(
       typeof saved.tietie === "object" &&
       !Array.isArray(saved.tietie)
     ) {
-      for (const [visitor, value] of Object.entries(saved.tietie)) {
+      for (const [recipient, value] of Object.entries(saved.tietie)) {
         const record = normalizedTietieRecord(value);
-        if (visitor.trim() && record)
+        if (recipient.trim() && record)
           entries.push({
-            key: ["tietie", visitor],
+            key: ["tietie", recipient],
             record: serializedTietieRecord(record),
           });
       }
@@ -314,8 +314,11 @@ function createFriendCache(
     remember(["relation", userIdentifier, visitorIdentifier, metric], value);
   }
 
-  function tietieFor(visitorIdentifier) {
-    const record = tietieRecords.get(visitorIdentifier);
+  // 兼容旧贴贴接口与持久化键 ["tietie", identifier]，不迁移格式。
+  // identifier 现指贴贴接收方；旧实现中登录访问者恰好也是接收方，
+  // 因此旧结果仍可复用，但不能按当前登录身份选表或自动合并别名。
+  function tietieFor(recipientIdentifier) {
+    const record = tietieRecords.get(recipientIdentifier);
     return record
       ? { counts: new Map(record.counts), fetchedAt: record.fetchedAt }
       : undefined;
@@ -337,18 +340,21 @@ function createFriendCache(
       return relationRecordFor(userIdentifier, relationSelection);
     },
     tietieFor,
-    tietieNeedsRefresh(visitorIdentifier) {
-      const record = tietieRecords.get(visitorIdentifier);
+    tietieNeedsRefresh(recipientIdentifier) {
+      const record = tietieRecords.get(recipientIdentifier);
       return !record || now() - record.fetchedAt > TIETIE_CACHE_TTL_MS;
     },
-    replaceTietie(visitorIdentifier, result) {
-      if (typeof visitorIdentifier !== "string" || !visitorIdentifier.trim()) {
+    replaceTietie(recipientIdentifier, result) {
+      if (
+        typeof recipientIdentifier !== "string" ||
+        !recipientIdentifier.trim()
+      ) {
         return false;
       }
       const record = normalizedTietieRecord(result);
       if (!record) return false;
-      tietieRecords.set(visitorIdentifier, record);
-      remember(["tietie", visitorIdentifier], serializedTietieRecord(record));
+      tietieRecords.set(recipientIdentifier, record);
+      remember(["tietie", recipientIdentifier], serializedTietieRecord(record));
       persist();
       return true;
     },

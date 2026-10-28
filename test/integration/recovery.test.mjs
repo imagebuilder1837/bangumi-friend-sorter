@@ -192,7 +192,7 @@ test("远程任务程序异常停止该批未发出的请求，不继续刷屏�
 });
 
 test("三类远程任务缺少实际调用方法时都明确报错，不静默忽略", async (t) => {
-  for (const label of ["上次活跃", "完成条目数", "和我贴贴"]) {
+  for (const label of ["上次活跃", "完成条目数", "和 TA 贴贴"]) {
     const page = pageFor(t, friend("zed"));
     page.window.CHOBITS_USERNAME = "visitor";
     await initialize({

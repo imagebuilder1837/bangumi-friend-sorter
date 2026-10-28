@@ -92,7 +92,7 @@ test("排序栏通过 bind 回传意图并经 render 更新方向文案", () => 
   assert.equal(directionButtons[0].getAttribute("aria-current"), "true");
 });
 
-test("和我贴贴是位于上次活跃与喜好契合之间的独立排序按钮", () => {
+test("和 TA 贴贴是位于上次活跃与喜好契合之间的独立排序按钮", () => {
   const page = friendPageWith([]);
   const sortBar = createSortBar(page.document, { list: page.list });
   sortBar.bind({ selectCriterion() {}, selectDirection() {} });
@@ -121,7 +121,7 @@ test("和我贴贴是位于上次活跃与喜好契合之间的独立排序按�
     "加好友时间",
     "名称",
     "上次活跃",
-    "和我贴贴",
+    "和 TA 贴贴",
     "喜好契合",
     "完成条目数",
   ]);

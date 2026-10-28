@@ -81,6 +81,27 @@
     return null;
   }
 
+  function currentPageOwnerIdentifier(pageDocument, pageWindow) {
+    // 只读主页用户区，不能把全站页头的登录头像当作主页用户。
+    const avatar = pageDocument.querySelector(
+      "#headerProfile .headerAvatar a[href]",
+    );
+    const canonical = userIdentifierFromHref(
+      avatar?.getAttribute("href"),
+      pageWindow?.location?.href,
+    );
+    if (canonical) return canonical;
+    try {
+      const pathname = new URL(pageWindow?.location?.href).pathname;
+      const match = /^\/user\/([^/]+)\/(?:friends|rev_friends)\/?$/.exec(
+        pathname,
+      );
+      return match ? decodeURIComponent(match[1]) || null : null;
+    } catch {
+      return null;
+    }
+  }
+
   // src/sorting/choices.mjs — sorting choices and remote field shape.
 
   const SORT = Object.freeze({
@@ -109,13 +130,13 @@
     IDLE: "idle",
     // 两阶段全量刷新的待命状态：提示再次点击以全量刷新，5 秒后自动清除。
     AWAITING_FULL_REFRESH: "armed",
-    LOGIN_REQUIRED: "login",
+    IDENTITY_REQUIRED: "identity",
   });
   const SORT_CHOICES = [
     { value: SORT.ADDED, label: "加好友时间" },
     { value: SORT.NAME, label: "名称" },
     { value: SORT.ACTIVITY, label: "上次活跃" },
-    { value: SORT.TIETIE, label: "和我贴贴" },
+    { value: SORT.TIETIE, label: "和 TA 贴贴" },
   ];
   const COMPLETION_CHOICES = [
     { value: COMPLETION_SCOPE.ALL, label: "全部" },
@@ -302,7 +323,7 @@
     });
   }
 
-  // src/cache/friend-cache.mjs — friend and visitor-scoped persistence.
+  // src/cache/friend-cache.mjs — friend metrics and recipient-scoped reactions.
 
   const CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
   // Completion counts and relation metrics both come from profile pages and
@@ -417,11 +438,11 @@
     );
   }
 
-  // 好友字段与访问者级贴贴结果的唯一领域读写边界。
+  // 好友字段与接收方级贴贴结果的唯一领域读写边界。
   // 先等待 ready 完成初始化；之后领域读取只访问内存，缺失返回 undefined。
   // beginRefresh.accept 同步接纳有效结果；complete 只能调用一次，返回
   // Promise<boolean> 表示本次持久化是否提交。replaceTietie 同步返回结果
-  // 是否被接纳，不保证落盘；它只接受完整的访问者统计。
+  // 是否被接纳，不保证落盘；它只接受完整的接收方统计。
   // 存储失败不向调用方抛错，未落盘变更保留到下次正常提交；close 释放
   // 连接并停用本实例的持久化，不丢弃页面内存。首个参数仅供旧 v3 导入。
   function createFriendCache(
@@ -509,11 +530,11 @@
         typeof saved.tietie === "object" &&
         !Array.isArray(saved.tietie)
       ) {
-        for (const [visitor, value] of Object.entries(saved.tietie)) {
+        for (const [recipient, value] of Object.entries(saved.tietie)) {
           const record = normalizedTietieRecord(value);
-          if (visitor.trim() && record)
+          if (recipient.trim() && record)
             entries.push({
-              key: ["tietie", visitor],
+              key: ["tietie", recipient],
               record: serializedTietieRecord(record),
             });
         }
@@ -618,8 +639,11 @@
       remember(["relation", userIdentifier, visitorIdentifier, metric], value);
     }
 
-    function tietieFor(visitorIdentifier) {
-      const record = tietieRecords.get(visitorIdentifier);
+    // 兼容旧贴贴接口与持久化键 ["tietie", identifier]，不迁移格式。
+    // identifier 现指贴贴接收方；旧实现中登录访问者恰好也是接收方，
+    // 因此旧结果仍可复用，但不能按当前登录身份选表或自动合并别名。
+    function tietieFor(recipientIdentifier) {
+      const record = tietieRecords.get(recipientIdentifier);
       return record
         ? { counts: new Map(record.counts), fetchedAt: record.fetchedAt }
         : undefined;
@@ -641,21 +665,24 @@
         return relationRecordFor(userIdentifier, relationSelection);
       },
       tietieFor,
-      tietieNeedsRefresh(visitorIdentifier) {
-        const record = tietieRecords.get(visitorIdentifier);
+      tietieNeedsRefresh(recipientIdentifier) {
+        const record = tietieRecords.get(recipientIdentifier);
         return !record || now() - record.fetchedAt > TIETIE_CACHE_TTL_MS;
       },
-      replaceTietie(visitorIdentifier, result) {
+      replaceTietie(recipientIdentifier, result) {
         if (
-          typeof visitorIdentifier !== "string" ||
-          !visitorIdentifier.trim()
+          typeof recipientIdentifier !== "string" ||
+          !recipientIdentifier.trim()
         ) {
           return false;
         }
         const record = normalizedTietieRecord(result);
         if (!record) return false;
-        tietieRecords.set(visitorIdentifier, record);
-        remember(["tietie", visitorIdentifier], serializedTietieRecord(record));
+        tietieRecords.set(recipientIdentifier, record);
+        remember(
+          ["tietie", recipientIdentifier],
+          serializedTietieRecord(record),
+        );
         persist();
         return true;
       },
@@ -2251,7 +2278,7 @@
   }
 
   async function fetchTietiePage(
-    visitorIdentifier,
+    recipientIdentifier,
     category,
     page,
     fetchImpl,
@@ -2260,16 +2287,61 @@
     timers,
   ) {
     const pageQuery = page === 1 ? "" : `&page=${page}`;
+    const path = `/user/${encodeURIComponent(recipientIdentifier)}/timeline`;
     return fetchDocumentPage(
-      `/user/${encodeURIComponent(visitorIdentifier)}/timeline?type=${category}${pageQuery}`,
+      `${path}?type=${category}${pageQuery}`,
       fetchImpl,
       domParser,
-      (document) =>
-        parseTietieTimelineDocument(document, {
+      (document, response) => {
+        const expected = new URL(path, baseUrl);
+        let actual;
+        try {
+          actual = new URL(response.url);
+        } catch {
+          return { kind: "invalid" };
+        }
+        // 最终 URL 与正文分类导航都必须确认目标，不能接受丢失分类的重定向。
+        if (
+          actual.origin !== expected.origin ||
+          actual.pathname !== expected.pathname ||
+          actual.searchParams.get("type") !== category ||
+          Number(actual.searchParams.get("page") || 1) !== page
+        ) {
+          return { kind: "invalid" };
+        }
+        const activeCategory = [
+          ...document.querySelectorAll("#timelineTabs a.focus[href]"),
+        ].some((anchor) => {
+          const href = anchor.getAttribute("href");
+          let url;
+          try {
+            url = new URL(href, actual);
+          } catch {
+            return false;
+          }
+          return (
+            url.origin === expected.origin &&
+            url.pathname === path &&
+            url.searchParams.get("type") === category
+          );
+        });
+        const owner = document.querySelector(
+          "#headerProfile .headerAvatar a[href]",
+        );
+        if (
+          !activeCategory ||
+          (owner &&
+            userIdentifierFromHref(owner.getAttribute("href"), actual) !==
+              recipientIdentifier)
+        ) {
+          return { kind: "invalid" };
+        }
+        return parseTietieTimelineDocument(document, {
           baseUrl,
           category,
           page,
-        }),
+        });
+      },
       { timers },
     );
   }
@@ -2289,9 +2361,9 @@
       fetchActivity: (friend) =>
         fetchActivity(friend, fetchImpl, domParser, now),
       fetchProfile: (friend) => fetchProfile(friend, fetchImpl, domParser, now),
-      fetchTietiePage: (visitorIdentifier, category, page) =>
+      fetchTietiePage: (recipientIdentifier, category, page) =>
         fetchTietiePage(
-          visitorIdentifier,
+          recipientIdentifier,
           category,
           page,
           fetchImpl,
@@ -2648,7 +2720,7 @@
     let statusTimer = null;
     let statusKind = REFRESH_STATUS.IDLE;
     let transientStatus = null;
-    let loginStatus = null;
+    let identityStatus = null;
     let completionTimer = null;
     const completionStatuses = [];
     const progressStatuses = new Map();
@@ -2703,9 +2775,9 @@
         completionTimer = null;
       }
 
-      if (loginStatus) {
-        statusKind = REFRESH_STATUS.LOGIN_REQUIRED;
-        present(loginStatus.message);
+      if (identityStatus) {
+        statusKind = REFRESH_STATUS.IDENTITY_REQUIRED;
+        present(identityStatus.message);
         return;
       }
 
@@ -2751,7 +2823,7 @@
       clearStatusTimeout(statusTimer);
       statusTimer = null;
       transientStatus = null;
-      loginStatus = null;
+      identityStatus = null;
       render();
     }
 
@@ -2768,14 +2840,14 @@
         return;
       }
 
-      if (kind !== REFRESH_STATUS.LOGIN_REQUIRED && loginStatus) return;
+      if (kind !== REFRESH_STATUS.IDENTITY_REQUIRED && identityStatus) return;
       clearStatusTimeout(statusTimer);
       statusTimer = null;
-      if (kind === REFRESH_STATUS.LOGIN_REQUIRED) {
+      if (kind === REFRESH_STATUS.IDENTITY_REQUIRED) {
         transientStatus = null;
-        loginStatus = { message };
+        identityStatus = { message };
       } else {
-        loginStatus = null;
+        identityStatus = null;
         transientStatus = { kind, message };
       }
       render();
@@ -2783,7 +2855,7 @@
         statusTimer = setStatusTimeout(() => {
           statusTimer = null;
           transientStatus = null;
-          loginStatus = null;
+          identityStatus = null;
           render();
         }, clearAfterMs);
       }
@@ -2810,7 +2882,7 @@
       clearStatusTimeout(statusTimer);
       statusTimer = null;
       transientStatus = null;
-      loginStatus = null;
+      identityStatus = null;
       set(REFRESH_STATUS.COMPLETED, "请求受限，已停止全部获取", 5_000);
     }
 
@@ -3149,7 +3221,7 @@
     return { add };
   }
 
-  // 和我贴贴任务按分类和页排队，而不是按好友排队。每个成功页面只在
+  // 和 TA 贴贴任务按分类和页排队，而不是按好友排队。每个成功页面只在
   // 页面明确提供下一页时追加同一分类的下一页，最多读取前五页；两分类
   // 的页面结果先在批次内按内容链接、动态编号或表情容器标识逐级去重，
   // 无可用标识的动态直接累计。全部必要页面成功后才交给会话发布；
@@ -3163,14 +3235,14 @@
     publishResult,
     scheduler,
     status,
-    visitorIdentifier,
+    recipientIdentifier,
   }) {
     const progressReporter = createTaskProgressReporter({
       onProgress,
       status,
       taskType: TIETIE_TASK_TYPE,
       messageFor: ({ completed, total }) =>
-        `正在获取“和我贴贴” ${completed}/${total}`,
+        `正在获取“和 TA 贴贴” ${completed}/${total}`,
     });
     let batch = null;
     let enqueueNextPage = null;
@@ -3183,7 +3255,7 @@
       }
     }
 
-    // 不复用 createRefreshLifecycle：贴贴只在整批成功后替换访客结果，
+    // 不复用 createRefreshLifecycle：贴贴只在整批成功后替换接收方结果，
     // 且排序和完成提示时机不同；共用其 onFinished 会改变批次语义。
     const lifecycle = {
       onFetching: progressReporter,
@@ -3214,15 +3286,15 @@
             counts: completedBatch.counts,
             fetchedAt: now(),
           };
-          cache.replaceTietie(visitorIdentifier, result);
+          cache.replaceTietie(recipientIdentifier, result);
           publishResult(result);
           applySort();
-          status.set(REFRESH_STATUS.COMPLETED, "“和我贴贴”获取完成", 5_000);
+          status.set(REFRESH_STATUS.COMPLETED, "“和 TA 贴贴”获取完成", 5_000);
           return;
         }
         status.set(
           REFRESH_STATUS.COMPLETED,
-          "“和我贴贴”获取失败，本次结果未更新",
+          "“和 TA 贴贴”获取失败，本次结果未更新",
           5_000,
         );
       },
@@ -3230,7 +3302,7 @@
 
     const taskOptions = {
       fetch: (item) =>
-        http.fetchTietiePage(visitorIdentifier, item.category, item.page),
+        http.fetchTietiePage(recipientIdentifier, item.category, item.page),
       isSuccess: (record) =>
         record?.kind === "success" || record?.kind === "empty",
       keyFor: (item) => `${item.category}:${item.page}`,
@@ -3243,7 +3315,7 @@
     };
 
     function refresh(mode = "incremental") {
-      if (!visitorIdentifier) return null;
+      if (!recipientIdentifier) return null;
       const existingTask = scheduler.getTask(TIETIE_TASK_TYPE);
       if (existingTask) {
         // Re-selecting the target while its pages are already being fetched
@@ -3254,7 +3326,7 @@
         });
         return existingTask;
       }
-      if (mode !== "full" && !cache.tietieNeedsRefresh(visitorIdentifier)) {
+      if (mode !== "full" && !cache.tietieNeedsRefresh(recipientIdentifier)) {
         return null;
       }
 
@@ -3290,7 +3362,7 @@
   // 修改任何状态。不变量：展示顺序只在排序输入（目标、方向、子选项）
   // 或条件重排后变化，状态提示等纯呈现更新复用上一次排序结果；任务
   // 结束后只有目标仍是当前目标时才重排，迟到结果不覆盖已切换的选择。
-  // 错误模式：远程目标缺少登录访客标识时不抛错，转入登录前置提示；
+  // 错误模式：远程目标缺少必要的访问者或主页身份时不抛错，转入身份提示；
   // 调度器已停止或无待请求好友的刷新静默忽略，返回 null。
   function choiceLabelFor(choices, value) {
     return choices.find((choice) => choice.value === value)?.label || value;
@@ -3305,6 +3377,7 @@
     pageWindow,
     runtime,
     sortBar,
+    pageOwnerIdentifier,
     visitorIdentifier,
     reportError = (_stage, error) => {
       throw error;
@@ -3387,7 +3460,7 @@
       },
       scheduler,
       status,
-      visitorIdentifier,
+      recipientIdentifier: pageOwnerIdentifier,
     });
 
     function startActivity(target, mode) {
@@ -3478,32 +3551,30 @@
       render();
     }
 
-    function showLoginRequiredStatus(label) {
-      if (status.getKind() === REFRESH_STATUS.LOGIN_REQUIRED) return;
-      status.set(
-        REFRESH_STATUS.LOGIN_REQUIRED,
-        `请登录后使用${label}排序`,
-        5_000,
-      );
+    function showIdentityRequiredStatus(message) {
+      if (
+        status.getKind() === REFRESH_STATUS.IDENTITY_REQUIRED &&
+        statusMessage === message
+      )
+        return;
+      status.set(REFRESH_STATUS.IDENTITY_REQUIRED, message, 5_000);
     }
 
     function cachedTietieResult() {
-      const cached = cache.tietieFor(visitorIdentifier);
+      const cached = cache.tietieFor(pageOwnerIdentifier);
       return cached ? { complete: true, ...cached } : null;
     }
 
     const remoteTargetConfigurations = {
       [SORT.ACTIVITY]: {
         armMessageFor: () => "上次活跃",
-        requiresVisitor: false,
         startRefresh: (target, mode) => startActivity(target, mode),
       },
       [SORT.RELATION]: {
         armMessageFor: (selection) =>
           choiceLabelFor(RELATION_CHOICES, selection),
         defaultSelection: RELATION_CHOICES[0].value,
-        loginLabel: "喜好契合",
-        requiresVisitor: true,
+        identityMessage: visitorIdentifier ? null : "请登录后使用喜好契合排序",
         selections: RELATION_CHOICES.map(({ value }) => value),
         setSelection: (selection) => {
           relationMetric = selection;
@@ -3511,16 +3582,14 @@
         startRefresh: (target, mode) => profileFields.refresh(target, mode),
       },
       [SORT.TIETIE]: {
-        armMessageFor: () => "和我贴贴",
-        loginLabel: "和我贴贴",
-        requiresVisitor: true,
+        armMessageFor: () => "和 TA 贴贴",
+        identityMessage: pageOwnerIdentifier ? null : "无法识别主页用户",
         startRefresh: (_target, mode) => tietieTasks.refresh(mode),
       },
       [SORT.COMPLETION]: {
         armMessageFor: (selection) =>
           choiceLabelFor(COMPLETION_CHOICES, selection),
         defaultSelection: COMPLETION_SCOPE.ALL,
-        requiresVisitor: false,
         selections: COMPLETION_CHOICES.map(({ value }) => value),
         setSelection: (selection) => {
           completionScope = selection;
@@ -3543,13 +3612,10 @@
       );
       const requestedTarget = remoteTargetFor(criterion, selection);
       if (
-        configuration.requiresVisitor &&
-        sameRemoteTarget(currentTarget, requestedTarget) &&
-        !visitorIdentifier
+        configuration.identityMessage &&
+        sameRemoteTarget(currentTarget, requestedTarget)
       ) {
-        showLoginRequiredStatus(
-          configuration.loginLabel ?? configuration.armMessageFor(selection),
-        );
+        showIdentityRequiredStatus(configuration.identityMessage);
         return;
       }
 
@@ -3572,15 +3638,13 @@
       configuration.setSelection?.(selection);
       currentCriterion = criterion;
       if (criterion === SORT.TIETIE) {
-        tietieResult = visitorIdentifier ? cachedTietieResult() : null;
+        tietieResult = pageOwnerIdentifier ? cachedTietieResult() : null;
       }
       applyCurrentSort();
 
       if (!action.refreshMode) return;
-      if (configuration.requiresVisitor && !visitorIdentifier) {
-        showLoginRequiredStatus(
-          configuration.loginLabel ?? configuration.armMessageFor(selection),
-        );
+      if (configuration.identityMessage) {
+        showIdentityRequiredStatus(configuration.identityMessage);
         return;
       }
       configuration.startRefresh(requestedTarget, action.refreshMode);
@@ -3770,6 +3834,10 @@
         pageWindow,
         runtime,
         sortBar,
+        pageOwnerIdentifier: currentPageOwnerIdentifier(
+          pageDocument,
+          pageWindow,
+        ),
         visitorIdentifier,
         reportError,
       });

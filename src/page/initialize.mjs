@@ -2,6 +2,7 @@
 import {
   userIdentifierFromHref,
   currentVisitorIdentifier,
+  currentPageOwnerIdentifier,
 } from "../bangumi/identity.mjs";
 import { createFriendCache } from "../cache/friend-cache.mjs";
 import { nameCollator } from "../sorting/order.mjs";
@@ -136,6 +137,7 @@ async function initialize(runtime = {}) {
       pageWindow,
       runtime,
       sortBar,
+      pageOwnerIdentifier: currentPageOwnerIdentifier(pageDocument, pageWindow),
       visitorIdentifier,
       reportError,
     });

@@ -6,7 +6,7 @@ import {
   openPersistentCache,
 } from "../support/cache.mjs";
 import { controlledIndexedDB } from "../support/indexeddb.mjs";
-test("和我贴贴完整结果跨缓存重建保存全部反应者并遵守七十二小时边界", async () => {
+test("和 TA 贴贴完整结果跨缓存重建保存全部反应者并遵守七十二小时边界", async () => {
   const hour = 60 * 60 * 1_000;
   const now = 100 * hour;
   const fetchedAt = now - 72 * hour;
@@ -38,7 +38,7 @@ test("和我贴贴完整结果跨缓存重建保存全部反应者并遵守七�
   assert.equal(expired.tietieNeedsRefresh("visitor"), true);
 });
 
-test("和我贴贴缓存按访问者隔离，损坏记录不影响已有主页字段", () => {
+test("旧贴贴接口的用户键按接收方隔离，损坏记录不影响已有主页字段", () => {
   const now = 100_000;
   const storage = {
     getItem(key) {
@@ -86,7 +86,7 @@ test("和我贴贴缓存按访问者隔离，损坏记录不影响已有主页�
   });
 });
 
-test("和我贴贴持久化写入不可用时保留当前页面结果且不破坏主页字段", async () => {
+test("和 TA 贴贴持久化写入不可用时保留当前页面结果且不破坏主页字段", async () => {
   const now = 100_000;
   const storage = persistentFriendCacheStorage(
     JSON.stringify({

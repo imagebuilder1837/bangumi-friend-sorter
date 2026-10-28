@@ -8,7 +8,7 @@ import {
 } from "../support/cache.mjs";
 import { createSessionHarness } from "../support/session.mjs";
 import { documentFromFixture } from "../support/html.mjs";
-test("和我贴贴完整获取成功后持久化全部统计结果", async () => {
+test("和 TA 贴贴完整获取成功后持久化全部统计结果", async () => {
   const now = 100_000;
   const storage = persistentFriendCacheStorage();
   const cache = await openPersistentCache(storage, { now: () => now });
@@ -58,7 +58,7 @@ test("和我贴贴完整获取成功后持久化全部统计结果", async () =>
   });
 });
 
-test("和我贴贴前页有结果且末页省略动态容器时仍发布完整统计", async () => {
+test("和 TA 贴贴前页有结果且末页省略动态容器时仍发布完整统计", async () => {
   const now = 100_000;
   const cache = createFriendCache(null, { now: () => now });
   cache.replaceTietie("visitor", {
@@ -103,7 +103,7 @@ test("和我贴贴前页有结果且末页省略动态容器时仍发布完整�
   session.choose("tietie");
   await finished;
 
-  assert.equal(lastMessage(), "“和我贴贴”获取完成");
+  assert.equal(lastMessage(), "“和 TA 贴贴”获取完成");
   assert.deepEqual(requests, ["say:1", "subject:1", "say:2", "subject:2"]);
   assert.deepEqual(cache.tietieFor("visitor"), {
     counts: new Map([
@@ -116,7 +116,7 @@ test("和我贴贴前页有结果且末页省略动态容器时仍发布完整�
   });
 });
 
-test("和我贴贴按内容链接、动态和反应容器标识逐级去重", async () => {
+test("和 TA 贴贴按内容链接、动态和反应容器标识逐级去重", async () => {
   const cache = createFriendCache(null);
   const { finished, session } = createSessionHarness({
     cache,
@@ -212,7 +212,7 @@ test("和我贴贴按内容链接、动态和反应容器标识逐级去重", as
   });
 });
 
-test("和我贴贴每个分类最多获取五页", async () => {
+test("和 TA 贴贴每个分类最多获取五页", async () => {
   const pages = [];
   const { finished, session } = createSessionHarness({
     cache: createFriendCache(null),
@@ -257,7 +257,7 @@ test("和我贴贴每个分类最多获取五页", async () => {
   ]);
 });
 
-test("和我贴贴任一分类失败时不发布部分计数", async () => {
+test("和 TA 贴贴任一分类失败时不发布部分计数", async () => {
   const friends = [
     { userIdentifier: "first", originalIndex: 0 },
     { userIdentifier: "second", originalIndex: 1 },
@@ -291,14 +291,14 @@ test("和我贴贴任一分类失败时不发布部分计数", async () => {
   session.choose("tietie");
   await finished;
 
-  assert.equal(lastMessage(), "“和我贴贴”获取失败，本次结果未更新");
+  assert.equal(lastMessage(), "“和 TA 贴贴”获取失败，本次结果未更新");
   assert.deepEqual(
     lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
     ["first", "second"],
   );
 });
 
-test("和我贴贴收到 429 时停止并保持未完成结果未知", async () => {
+test("和 TA 贴贴收到 429 时停止并保持未完成结果未知", async () => {
   const { finished, lastMessage, lastState, session } = createSessionHarness({
     cache: createFriendCache(null),
     friends: [{ userIdentifier: "friend", originalIndex: 0 }],

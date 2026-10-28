@@ -58,4 +58,30 @@ function currentVisitorIdentifier(pageDocument, pageWindow) {
   return null;
 }
 
-export { userIdentifierFor, userIdentifierFromHref, currentVisitorIdentifier };
+function currentPageOwnerIdentifier(pageDocument, pageWindow) {
+  // 只读主页用户区，不能把全站页头的登录头像当作主页用户。
+  const avatar = pageDocument.querySelector(
+    "#headerProfile .headerAvatar a[href]",
+  );
+  const canonical = userIdentifierFromHref(
+    avatar?.getAttribute("href"),
+    pageWindow?.location?.href,
+  );
+  if (canonical) return canonical;
+  try {
+    const pathname = new URL(pageWindow?.location?.href).pathname;
+    const match = /^\/user\/([^/]+)\/(?:friends|rev_friends)\/?$/.exec(
+      pathname,
+    );
+    return match ? decodeURIComponent(match[1]) || null : null;
+  } catch {
+    return null;
+  }
+}
+
+export {
+  userIdentifierFor,
+  userIdentifierFromHref,
+  currentVisitorIdentifier,
+  currentPageOwnerIdentifier,
+};

@@ -13,7 +13,7 @@ function createStatusController({
   let statusTimer = null;
   let statusKind = REFRESH_STATUS.IDLE;
   let transientStatus = null;
-  let loginStatus = null;
+  let identityStatus = null;
   let completionTimer = null;
   const completionStatuses = [];
   const progressStatuses = new Map();
@@ -68,9 +68,9 @@ function createStatusController({
       completionTimer = null;
     }
 
-    if (loginStatus) {
-      statusKind = REFRESH_STATUS.LOGIN_REQUIRED;
-      present(loginStatus.message);
+    if (identityStatus) {
+      statusKind = REFRESH_STATUS.IDENTITY_REQUIRED;
+      present(identityStatus.message);
       return;
     }
 
@@ -115,7 +115,7 @@ function createStatusController({
     clearStatusTimeout(statusTimer);
     statusTimer = null;
     transientStatus = null;
-    loginStatus = null;
+    identityStatus = null;
     render();
   }
 
@@ -132,14 +132,14 @@ function createStatusController({
       return;
     }
 
-    if (kind !== REFRESH_STATUS.LOGIN_REQUIRED && loginStatus) return;
+    if (kind !== REFRESH_STATUS.IDENTITY_REQUIRED && identityStatus) return;
     clearStatusTimeout(statusTimer);
     statusTimer = null;
-    if (kind === REFRESH_STATUS.LOGIN_REQUIRED) {
+    if (kind === REFRESH_STATUS.IDENTITY_REQUIRED) {
       transientStatus = null;
-      loginStatus = { message };
+      identityStatus = { message };
     } else {
-      loginStatus = null;
+      identityStatus = null;
       transientStatus = { kind, message };
     }
     render();
@@ -147,7 +147,7 @@ function createStatusController({
       statusTimer = setStatusTimeout(() => {
         statusTimer = null;
         transientStatus = null;
-        loginStatus = null;
+        identityStatus = null;
         render();
       }, clearAfterMs);
     }
@@ -174,7 +174,7 @@ function createStatusController({
     clearStatusTimeout(statusTimer);
     statusTimer = null;
     transientStatus = null;
-    loginStatus = null;
+    identityStatus = null;
     set(REFRESH_STATUS.COMPLETED, "请求受限，已停止全部获取", 5_000);
   }
 

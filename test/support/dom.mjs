@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-function friendPageWith(entries) {
+function friendPageWith(entries, { ownerHref = null } = {}) {
   class Element {
     constructor(tagName) {
       this.attributes = new Map();
@@ -92,6 +92,8 @@ function friendPageWith(entries) {
     }
   }
 
+  const ownerAvatar = ownerHref ? new Element("a") : null;
+  ownerAvatar?.setAttribute("href", ownerHref);
   const list = new Element("ul");
   list.children = entries.map(({ href, name }) => {
     const anchor = new Element("a");
@@ -128,6 +130,8 @@ function friendPageWith(entries) {
     },
     head: new Element("head"),
     querySelector(selector) {
+      if (selector === "#headerProfile .headerAvatar a[href]")
+        return ownerAvatar;
       assert.equal(selector, "#memberUserList");
       return list;
     },

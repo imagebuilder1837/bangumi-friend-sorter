@@ -97,7 +97,7 @@ function createTietieContentAccumulator() {
   return { add };
 }
 
-// 和我贴贴任务按分类和页排队，而不是按好友排队。每个成功页面只在
+// 和 TA 贴贴任务按分类和页排队，而不是按好友排队。每个成功页面只在
 // 页面明确提供下一页时追加同一分类的下一页，最多读取前五页；两分类
 // 的页面结果先在批次内按内容链接、动态编号或表情容器标识逐级去重，
 // 无可用标识的动态直接累计。全部必要页面成功后才交给会话发布；
@@ -111,14 +111,14 @@ function createTietieTasks({
   publishResult,
   scheduler,
   status,
-  visitorIdentifier,
+  recipientIdentifier,
 }) {
   const progressReporter = createTaskProgressReporter({
     onProgress,
     status,
     taskType: TIETIE_TASK_TYPE,
     messageFor: ({ completed, total }) =>
-      `正在获取“和我贴贴” ${completed}/${total}`,
+      `正在获取“和 TA 贴贴” ${completed}/${total}`,
   });
   let batch = null;
   let enqueueNextPage = null;
@@ -131,7 +131,7 @@ function createTietieTasks({
     }
   }
 
-  // 不复用 createRefreshLifecycle：贴贴只在整批成功后替换访客结果，
+  // 不复用 createRefreshLifecycle：贴贴只在整批成功后替换接收方结果，
   // 且排序和完成提示时机不同；共用其 onFinished 会改变批次语义。
   const lifecycle = {
     onFetching: progressReporter,
@@ -162,15 +162,15 @@ function createTietieTasks({
           counts: completedBatch.counts,
           fetchedAt: now(),
         };
-        cache.replaceTietie(visitorIdentifier, result);
+        cache.replaceTietie(recipientIdentifier, result);
         publishResult(result);
         applySort();
-        status.set(REFRESH_STATUS.COMPLETED, "“和我贴贴”获取完成", 5_000);
+        status.set(REFRESH_STATUS.COMPLETED, "“和 TA 贴贴”获取完成", 5_000);
         return;
       }
       status.set(
         REFRESH_STATUS.COMPLETED,
-        "“和我贴贴”获取失败，本次结果未更新",
+        "“和 TA 贴贴”获取失败，本次结果未更新",
         5_000,
       );
     },
@@ -178,7 +178,7 @@ function createTietieTasks({
 
   const taskOptions = {
     fetch: (item) =>
-      http.fetchTietiePage(visitorIdentifier, item.category, item.page),
+      http.fetchTietiePage(recipientIdentifier, item.category, item.page),
     isSuccess: (record) =>
       record?.kind === "success" || record?.kind === "empty",
     keyFor: (item) => `${item.category}:${item.page}`,
@@ -191,7 +191,7 @@ function createTietieTasks({
   };
 
   function refresh(mode = "incremental") {
-    if (!visitorIdentifier) return null;
+    if (!recipientIdentifier) return null;
     const existingTask = scheduler.getTask(TIETIE_TASK_TYPE);
     if (existingTask) {
       // Re-selecting the target while its pages are already being fetched
@@ -202,7 +202,7 @@ function createTietieTasks({
       });
       return existingTask;
     }
-    if (mode !== "full" && !cache.tietieNeedsRefresh(visitorIdentifier)) {
+    if (mode !== "full" && !cache.tietieNeedsRefresh(recipientIdentifier)) {
       return null;
     }
 

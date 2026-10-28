@@ -8,7 +8,8 @@ import {
 import { initializeRefreshPage } from "../support/refresh-page.mjs";
 import { waitForCondition } from "../support/timing.mjs";
 import { documentFromFixture } from "../support/html.mjs";
-test("和我贴贴使用当前访问者身份并从吐槽和收藏第一页开始获取", async () => {
+import { tietieDocumentFor } from "../support/tietie.mjs";
+test("和 TA 贴贴读取主页用户而非登录访问者的两类时间胶囊", async () => {
   const requests = [];
   const page = await initializeRefreshPage({
     entries: [{ href: "/user/friend", name: "好友" }],
@@ -26,16 +27,16 @@ test("和我贴贴使用当前访问者身份并从吐槽和收藏第一页开�
     },
   });
 
-  mainSortControl(page, "和我贴贴").click();
+  mainSortControl(page, "和 TA 贴贴").click();
   await waitForCondition(() => requests.length === 2);
 
   assert.deepEqual(requests, [
-    "/user/visitor/timeline?type=say",
-    "/user/visitor/timeline?type=subject",
+    "/user/viewed/timeline?type=say",
+    "/user/viewed/timeline?type=subject",
   ]);
 });
 
-test("未登录时选择和我贴贴只提示登录且不发起请求", async () => {
+test("未登录时选择和 TA 贴贴仍请求主页用户，不提示登录", async () => {
   const requests = [];
   const page = await initializeRefreshPage({
     entries: [{ href: "/user/friend", name: "好友" }],
@@ -50,13 +51,17 @@ test("未登录时选择和我贴贴只提示登录且不发起请求", async ()
     },
   });
 
-  mainSortControl(page, "和我贴贴").click();
+  mainSortControl(page, "和 TA 贴贴").click();
 
-  assert.deepEqual(requests, []);
-  assert.equal(statusFor(page).textContent, "请登录后使用和我贴贴排序");
+  await waitForCondition(() => requests.length === 2);
+  assert.deepEqual(requests, [
+    "/user/viewed/timeline?type=say",
+    "/user/viewed/timeline?type=subject",
+  ]);
+  assert.doesNotMatch(statusFor(page).textContent, /请登录/);
 });
 
-test("和我贴贴完整获取后按内容链接去重并稳定排序可靠零", async () => {
+test("和 TA 贴贴完整获取后按内容链接去重并稳定排序可靠零", async () => {
   const requests = [];
   const page = await initializeRefreshPage({
     entries: [
@@ -67,29 +72,33 @@ test("和我贴贴完整获取后按内容链接去重并稳定排序可靠零",
     ],
     now: 100_000,
     domParser: {
-      parseFromString: () => documentFromFixture("timeline-tietie.html"),
+      parseFromString: (url) =>
+        tietieDocumentFor({
+          category: new URL(url, "https://bgm.tv").searchParams.get("type"),
+        }),
     },
     fetchImpl: async (url) => {
       requests.push(url);
       return {
         ok: true,
         headers: { get: () => null },
-        text: async () => "fixture",
+        url: new URL(url, "https://bgm.tv").href,
+        text: async () => url,
       };
     },
   });
 
-  mainSortControl(page, "和我贴贴").click();
+  mainSortControl(page, "和 TA 贴贴").click();
   await waitForCondition(() => requests.length > 0);
   await waitForCondition(() =>
     /获取完成|获取失败/.test(statusFor(page).textContent),
   );
-  assert.equal(statusFor(page).textContent, "“和我贴贴”获取完成");
+  assert.equal(statusFor(page).textContent, "“和 TA 贴贴”获取完成");
   assert.deepEqual(requests, [
-    "/user/visitor/timeline?type=say",
-    "/user/visitor/timeline?type=subject",
-    "/user/visitor/timeline?type=say&page=2",
-    "/user/visitor/timeline?type=subject&page=2",
+    "/user/viewed/timeline?type=say",
+    "/user/viewed/timeline?type=subject",
+    "/user/viewed/timeline?type=say&page=2",
+    "/user/viewed/timeline?type=subject&page=2",
   ]);
 
   assert.deepEqual(

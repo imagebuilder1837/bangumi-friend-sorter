@@ -8,7 +8,7 @@ import {
   openPersistentCache,
 } from "../support/cache.mjs";
 import { waitForCondition, fakeTimers } from "../support/timing.mjs";
-test("和我贴贴有效缓存两击后强制刷新，待命五秒后重新开始", async () => {
+test("和 TA 贴贴有效缓存两击后强制刷新，待命五秒后重新开始", async () => {
   const clock = fakeTimers();
   const requests = [];
   const storage = persistentFriendCacheStorage(
@@ -16,7 +16,7 @@ test("和我贴贴有效缓存两击后强制刷新，待命五秒后重新开�
       version: 3,
       records: {},
       tietie: {
-        visitor: {
+        viewed: {
           counts: { friend: 1 },
           fetchedAt: 0,
         },
@@ -55,7 +55,7 @@ test("和我贴贴有效缓存两击后强制刷新，待命五秒后重新开�
     },
   });
 
-  const button = mainSortControl(page, "和我贴贴");
+  const button = mainSortControl(page, "和 TA 贴贴");
   const status = statusFor(page);
 
   button.click();
@@ -63,39 +63,39 @@ test("和我贴贴有效缓存两击后强制刷新，待命五秒后重新开�
   assert.deepEqual(requests, []);
 
   button.click();
-  assert.equal(status.textContent, "5 秒内再次点击“和我贴贴”以全量刷新");
+  assert.equal(status.textContent, "5 秒内再次点击“和 TA 贴贴”以全量刷新");
   await clock.advance(5_000);
   assert.equal(status.textContent, "");
 
   button.click();
-  assert.equal(status.textContent, "5 秒内再次点击“和我贴贴”以全量刷新");
+  assert.equal(status.textContent, "5 秒内再次点击“和 TA 贴贴”以全量刷新");
   clock.setNow(6_000);
   button.click();
   await waitForCondition(() => status.textContent.includes("获取完成"));
 
   assert.deepEqual(requests, ["say", "subject"]);
-  assert.equal(status.textContent, "“和我贴贴”获取完成");
+  assert.equal(status.textContent, "“和 TA 贴贴”获取完成");
   button.click();
-  assert.equal(status.textContent, "“和我贴贴”获取完成");
+  assert.equal(status.textContent, "“和 TA 贴贴”获取完成");
   await clock.advance(5_000);
   assert.equal(status.textContent, "");
   button.click();
-  assert.equal(status.textContent, "5 秒内再次点击“和我贴贴”以全量刷新");
+  assert.equal(status.textContent, "5 秒内再次点击“和 TA 贴贴”以全量刷新");
   const reloaded = await openPersistentCache(storage, { now: clock.now });
-  assert.deepEqual(reloaded.tietieFor("visitor"), {
+  assert.deepEqual(reloaded.tietieFor("viewed"), {
     counts: new Map([["friend", 2]]),
     fetchedAt: 6_000,
   });
 });
 
-test("和我贴贴主动刷新失败时保留旧结果和获取时间", async () => {
+test("和 TA 贴贴主动刷新失败时保留旧结果和获取时间", async () => {
   const now = 100_000;
   const storage = persistentFriendCacheStorage(
     JSON.stringify({
       version: 3,
       records: {},
       tietie: {
-        visitor: {
+        viewed: {
           counts: { friend: 4 },
           fetchedAt: now,
         },
@@ -136,7 +136,7 @@ test("和我贴贴主动刷新失败时保留旧结果和获取时间", async ()
     },
   });
 
-  const button = mainSortControl(page, "和我贴贴");
+  const button = mainSortControl(page, "和 TA 贴贴");
   const status = statusFor(page);
   button.click();
   button.click();
@@ -144,9 +144,9 @@ test("和我贴贴主动刷新失败时保留旧结果和获取时间", async ()
   await waitForCondition(() => status.textContent.includes("获取失败"));
 
   assert.deepEqual(requests, ["say", "subject"]);
-  assert.equal(status.textContent, "“和我贴贴”获取失败，本次结果未更新");
+  assert.equal(status.textContent, "“和 TA 贴贴”获取失败，本次结果未更新");
   const reloaded = await openPersistentCache(storage, { now: () => now });
-  assert.deepEqual(reloaded.tietieFor("visitor"), {
+  assert.deepEqual(reloaded.tietieFor("viewed"), {
     counts: new Map([["friend", 4]]),
     fetchedAt: now,
   });

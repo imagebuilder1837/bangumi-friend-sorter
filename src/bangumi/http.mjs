@@ -1,5 +1,5 @@
 // src/bangumi/http.mjs — Bangumi page request adapter.
-import { userIdentifierFor } from "./identity.mjs";
+import { userIdentifierFor, userIdentifierFromHref } from "./identity.mjs";
 import { parseProfileFieldOutcomes } from "./profile-parser.mjs";
 import { parseTimelineDocument } from "./timeline-parser.mjs";
 import { parseTietieTimelineDocument } from "./tietie-parser.mjs";
@@ -97,7 +97,7 @@ async function fetchActivity(friend, fetchImpl, domParser, now) {
 }
 
 async function fetchTietiePage(
-  visitorIdentifier,
+  recipientIdentifier,
   category,
   page,
   fetchImpl,
@@ -106,16 +106,57 @@ async function fetchTietiePage(
   timers,
 ) {
   const pageQuery = page === 1 ? "" : `&page=${page}`;
+  const path = `/user/${encodeURIComponent(recipientIdentifier)}/timeline`;
   return fetchDocumentPage(
-    `/user/${encodeURIComponent(visitorIdentifier)}/timeline?type=${category}${pageQuery}`,
+    `${path}?type=${category}${pageQuery}`,
     fetchImpl,
     domParser,
-    (document) =>
-      parseTietieTimelineDocument(document, {
-        baseUrl,
-        category,
-        page,
-      }),
+    (document, response) => {
+      const expected = new URL(path, baseUrl);
+      let actual;
+      try {
+        actual = new URL(response.url);
+      } catch {
+        return { kind: "invalid" };
+      }
+      // 最终 URL 与正文分类导航都必须确认目标，不能接受丢失分类的重定向。
+      if (
+        actual.origin !== expected.origin ||
+        actual.pathname !== expected.pathname ||
+        actual.searchParams.get("type") !== category ||
+        Number(actual.searchParams.get("page") || 1) !== page
+      ) {
+        return { kind: "invalid" };
+      }
+      const activeCategory = [
+        ...document.querySelectorAll("#timelineTabs a.focus[href]"),
+      ].some((anchor) => {
+        const href = anchor.getAttribute("href");
+        let url;
+        try {
+          url = new URL(href, actual);
+        } catch {
+          return false;
+        }
+        return (
+          url.origin === expected.origin &&
+          url.pathname === path &&
+          url.searchParams.get("type") === category
+        );
+      });
+      const owner = document.querySelector(
+        "#headerProfile .headerAvatar a[href]",
+      );
+      if (
+        !activeCategory ||
+        (owner &&
+          userIdentifierFromHref(owner.getAttribute("href"), actual) !==
+            recipientIdentifier)
+      ) {
+        return { kind: "invalid" };
+      }
+      return parseTietieTimelineDocument(document, { baseUrl, category, page });
+    },
     { timers },
   );
 }
@@ -134,9 +175,9 @@ function createBangumiHttpAdapter({
   return {
     fetchActivity: (friend) => fetchActivity(friend, fetchImpl, domParser, now),
     fetchProfile: (friend) => fetchProfile(friend, fetchImpl, domParser, now),
-    fetchTietiePage: (visitorIdentifier, category, page) =>
+    fetchTietiePage: (recipientIdentifier, category, page) =>
       fetchTietiePage(
-        visitorIdentifier,
+        recipientIdentifier,
         category,
         page,
         fetchImpl,

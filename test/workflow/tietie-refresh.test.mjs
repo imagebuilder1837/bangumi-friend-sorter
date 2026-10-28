@@ -8,7 +8,7 @@ import {
 } from "../support/cache.mjs";
 import { createSessionHarness } from "../support/session.mjs";
 import { documentFromFixture } from "../support/html.mjs";
-test("和我贴贴遇到未知空页时保留旧结果", async () => {
+test("和 TA 贴贴遇到未知空页时保留旧结果", async () => {
   const now = 100_000;
   const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
   const cache = createFriendCache(null, { now: () => now });
@@ -46,14 +46,14 @@ test("和我贴贴遇到未知空页时保留旧结果", async () => {
   session.choose("tietie");
   await finished;
 
-  assert.equal(lastMessage(), "“和我贴贴”获取失败，本次结果未更新");
+  assert.equal(lastMessage(), "“和 TA 贴贴”获取失败，本次结果未更新");
   assert.deepEqual(cache.tietieFor("visitor"), {
     counts: new Map([["friend-a", 4]]),
     fetchedAt: staleFetchedAt,
   });
 });
 
-test("和我贴贴有效缓存直接排序并跨好友列表复用而不发起任务", async () => {
+test("和 TA 贴贴有效缓存直接排序并跨好友列表复用而不发起任务", async () => {
   const now = 100_000;
   const storage = persistentFriendCacheStorage();
   const cache = await openPersistentCache(storage, { now: () => now });
@@ -120,7 +120,7 @@ test("和我贴贴有效缓存直接排序并跨好友列表复用而不发起�
   assert.deepEqual(requests, []);
 });
 
-test("和我贴贴过期时先排旧结果，成功后整体替换并继承刷新前平局顺序", async () => {
+test("和 TA 贴贴过期时先排旧结果，成功后整体替换并继承刷新前平局顺序", async () => {
   const now = 100_000;
   const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
   const storage = persistentFriendCacheStorage();
@@ -190,7 +190,7 @@ test("和我贴贴过期时先排旧结果，成功后整体替换并继承刷�
   });
 });
 
-test("和我贴贴刷新部分失败时保留旧结果且不续期", async () => {
+test("和 TA 贴贴刷新部分失败时保留旧结果且不续期", async () => {
   const now = 100_000;
   const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
   const storage = persistentFriendCacheStorage();
@@ -231,7 +231,7 @@ test("和我贴贴刷新部分失败时保留旧结果且不续期", async () =>
   session.choose("tietie");
   await finished;
 
-  assert.equal(lastMessage(), "“和我贴贴”获取失败，本次结果未更新");
+  assert.equal(lastMessage(), "“和 TA 贴贴”获取失败，本次结果未更新");
   assert.deepEqual(
     lastState().orderedFriends.map(({ userIdentifier }) => userIdentifier),
     ["friend-b", "friend-a"],
@@ -244,7 +244,7 @@ test("和我贴贴刷新部分失败时保留旧结果且不续期", async () =>
   assert.equal(reloaded.tietieNeedsRefresh("visitor"), true);
 });
 
-test("和我贴贴任务中止时保留旧结果且不续期", async () => {
+test("和 TA 贴贴任务中止时保留旧结果且不续期", async () => {
   const now = 100_000;
   const staleFetchedAt = now - 72 * 60 * 60 * 1_000 - 1;
   const storage = persistentFriendCacheStorage();
@@ -286,7 +286,7 @@ test("和我贴贴任务中止时保留旧结果且不续期", async () => {
   assert.equal(reloaded.tietieNeedsRefresh("visitor"), true);
 });
 
-test("和我贴贴没有旧结果且刷新失败时保持未知而非可靠零", async () => {
+test("和 TA 贴贴没有旧结果且刷新失败时保持未知而非可靠零", async () => {
   const now = 100_000;
   const cache = createFriendCache(null, { now: () => now });
   const { finished, lastState, session } = createSessionHarness({
@@ -313,7 +313,7 @@ test("和我贴贴没有旧结果且刷新失败时保持未知而非可靠零",
   assert.equal(cache.tietieFor("visitor"), undefined);
 });
 
-test("和我贴贴获取中切换方向和重复选择不重启任务", async () => {
+test("和 TA 贴贴获取中切换方向和重复选择不重启任务", async () => {
   const requests = [];
   const pending = [];
   const { finished, lastState, session } = createSessionHarness({
@@ -351,7 +351,7 @@ test("和我贴贴获取中切换方向和重复选择不重启任务", async ()
   assert.equal(lastState().direction, "asc");
 });
 
-test("和我贴贴后台完成时不改变已切换的当前排序", async () => {
+test("和 TA 贴贴后台完成时不改变已切换的当前排序", async () => {
   const pending = [];
   const { finished, lastState, session } = createSessionHarness({
     cache: createFriendCache(null),

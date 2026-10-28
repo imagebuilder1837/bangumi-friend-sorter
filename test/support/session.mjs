@@ -8,6 +8,7 @@ function createSessionHarness({
   friends,
   runtime,
   visitorIdentifier = "visitor",
+  pageOwnerIdentifier = "visitor",
 }) {
   let lastState = null;
   let resolveFinished;
@@ -33,6 +34,7 @@ function createSessionHarness({
       },
     },
     visitorIdentifier,
+    pageOwnerIdentifier,
   });
   session.start();
   return {

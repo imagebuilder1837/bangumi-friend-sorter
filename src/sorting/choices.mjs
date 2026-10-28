@@ -26,13 +26,13 @@ const REFRESH_STATUS = Object.freeze({
   IDLE: "idle",
   // 两阶段全量刷新的待命状态：提示再次点击以全量刷新，5 秒后自动清除。
   AWAITING_FULL_REFRESH: "armed",
-  LOGIN_REQUIRED: "login",
+  IDENTITY_REQUIRED: "identity",
 });
 const SORT_CHOICES = [
   { value: SORT.ADDED, label: "加好友时间" },
   { value: SORT.NAME, label: "名称" },
   { value: SORT.ACTIVITY, label: "上次活跃" },
-  { value: SORT.TIETIE, label: "和我贴贴" },
+  { value: SORT.TIETIE, label: "和 TA 贴贴" },
 ];
 const COMPLETION_CHOICES = [
   { value: COMPLETION_SCOPE.ALL, label: "全部" },

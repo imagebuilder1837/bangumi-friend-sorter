@@ -41,7 +41,7 @@ import { createTietieTasks } from "./tietie-tasks.mjs";
 // 修改任何状态。不变量：展示顺序只在排序输入（目标、方向、子选项）
 // 或条件重排后变化，状态提示等纯呈现更新复用上一次排序结果；任务
 // 结束后只有目标仍是当前目标时才重排，迟到结果不覆盖已切换的选择。
-// 错误模式：远程目标缺少登录访客标识时不抛错，转入登录前置提示；
+// 错误模式：远程目标缺少必要的访问者或主页身份时不抛错，转入身份提示；
 // 调度器已停止或无待请求好友的刷新静默忽略，返回 null。
 function choiceLabelFor(choices, value) {
   return choices.find((choice) => choice.value === value)?.label || value;
@@ -56,6 +56,7 @@ function createFriendSortSession({
   pageWindow,
   runtime,
   sortBar,
+  pageOwnerIdentifier,
   visitorIdentifier,
   reportError = (_stage, error) => {
     throw error;
@@ -138,7 +139,7 @@ function createFriendSortSession({
     },
     scheduler,
     status,
-    visitorIdentifier,
+    recipientIdentifier: pageOwnerIdentifier,
   });
 
   function startActivity(target, mode) {
@@ -229,31 +230,29 @@ function createFriendSortSession({
     render();
   }
 
-  function showLoginRequiredStatus(label) {
-    if (status.getKind() === REFRESH_STATUS.LOGIN_REQUIRED) return;
-    status.set(
-      REFRESH_STATUS.LOGIN_REQUIRED,
-      `请登录后使用${label}排序`,
-      5_000,
-    );
+  function showIdentityRequiredStatus(message) {
+    if (
+      status.getKind() === REFRESH_STATUS.IDENTITY_REQUIRED &&
+      statusMessage === message
+    )
+      return;
+    status.set(REFRESH_STATUS.IDENTITY_REQUIRED, message, 5_000);
   }
 
   function cachedTietieResult() {
-    const cached = cache.tietieFor(visitorIdentifier);
+    const cached = cache.tietieFor(pageOwnerIdentifier);
     return cached ? { complete: true, ...cached } : null;
   }
 
   const remoteTargetConfigurations = {
     [SORT.ACTIVITY]: {
       armMessageFor: () => "上次活跃",
-      requiresVisitor: false,
       startRefresh: (target, mode) => startActivity(target, mode),
     },
     [SORT.RELATION]: {
       armMessageFor: (selection) => choiceLabelFor(RELATION_CHOICES, selection),
       defaultSelection: RELATION_CHOICES[0].value,
-      loginLabel: "喜好契合",
-      requiresVisitor: true,
+      identityMessage: visitorIdentifier ? null : "请登录后使用喜好契合排序",
       selections: RELATION_CHOICES.map(({ value }) => value),
       setSelection: (selection) => {
         relationMetric = selection;
@@ -261,16 +260,14 @@ function createFriendSortSession({
       startRefresh: (target, mode) => profileFields.refresh(target, mode),
     },
     [SORT.TIETIE]: {
-      armMessageFor: () => "和我贴贴",
-      loginLabel: "和我贴贴",
-      requiresVisitor: true,
+      armMessageFor: () => "和 TA 贴贴",
+      identityMessage: pageOwnerIdentifier ? null : "无法识别主页用户",
       startRefresh: (_target, mode) => tietieTasks.refresh(mode),
     },
     [SORT.COMPLETION]: {
       armMessageFor: (selection) =>
         choiceLabelFor(COMPLETION_CHOICES, selection),
       defaultSelection: COMPLETION_SCOPE.ALL,
-      requiresVisitor: false,
       selections: COMPLETION_CHOICES.map(({ value }) => value),
       setSelection: (selection) => {
         completionScope = selection;
@@ -293,13 +290,10 @@ function createFriendSortSession({
     );
     const requestedTarget = remoteTargetFor(criterion, selection);
     if (
-      configuration.requiresVisitor &&
-      sameRemoteTarget(currentTarget, requestedTarget) &&
-      !visitorIdentifier
+      configuration.identityMessage &&
+      sameRemoteTarget(currentTarget, requestedTarget)
     ) {
-      showLoginRequiredStatus(
-        configuration.loginLabel ?? configuration.armMessageFor(selection),
-      );
+      showIdentityRequiredStatus(configuration.identityMessage);
       return;
     }
 
@@ -322,15 +316,13 @@ function createFriendSortSession({
     configuration.setSelection?.(selection);
     currentCriterion = criterion;
     if (criterion === SORT.TIETIE) {
-      tietieResult = visitorIdentifier ? cachedTietieResult() : null;
+      tietieResult = pageOwnerIdentifier ? cachedTietieResult() : null;
     }
     applyCurrentSort();
 
     if (!action.refreshMode) return;
-    if (configuration.requiresVisitor && !visitorIdentifier) {
-      showLoginRequiredStatus(
-        configuration.loginLabel ?? configuration.armMessageFor(selection),
-      );
+    if (configuration.identityMessage) {
+      showIdentityRequiredStatus(configuration.identityMessage);
       return;
     }
     configuration.startRefresh(requestedTarget, action.refreshMode);
