@@ -224,7 +224,7 @@ test("初始化最多等两秒，超时保留 v3，迟到连接不迁移或回�
   assert.deepEqual(reopened.activityFor("friend"), activity);
 });
 
-test("贴贴按访问者保存完整统计，较旧完整结果不覆盖较新结果", async (t) => {
+test("贴贴按接收方保存完整统计，较旧完整结果不覆盖较新结果", async (t) => {
   const indexedDB = new IDBFactory();
   const first = await openCache(t, indexedDB);
   const second = await openCache(t, indexedDB);

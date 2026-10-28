@@ -38,7 +38,7 @@ test("和 TA 贴贴完整结果跨缓存重建保存全部反应者并遵守七�
   assert.equal(expired.tietieNeedsRefresh("visitor"), true);
 });
 
-test("旧贴贴接口的用户键按接收方隔离，损坏记录不影响已有主页字段", () => {
+test("v3 贴贴按原接收方标识导入，损坏记录不影响已有主页字段", () => {
   const now = 100_000;
   const storage = {
     getItem(key) {

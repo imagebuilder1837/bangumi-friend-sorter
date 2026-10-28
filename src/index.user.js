@@ -330,6 +330,7 @@
   // share one validity window, so the TTL is named after the source.
   const PROFILE_CACHE_TTL_MS = 72 * 60 * 60 * 1_000;
   const TIETIE_CACHE_TTL_MS = 72 * 60 * 60 * 1_000;
+  const TIETIE_CACHE_FIELD = "tietieByRecipient";
   // v3 is an import-only localStorage format, independent of the database schema.
   const FRIEND_CACHE_STORAGE_KEY = "bangumi-friend-sorter:activity-cache:v3";
   const COMPLETION_CACHE_FIELD_PREFIX = "completion_";
@@ -534,7 +535,7 @@
           const record = normalizedTietieRecord(value);
           if (recipient.trim() && record)
             entries.push({
-              key: ["tietie", recipient],
+              key: [TIETIE_CACHE_FIELD, recipient],
               record: serializedTietieRecord(record),
             });
         }
@@ -546,7 +547,7 @@
       if (!Array.isArray(key) || !key.every((part) => typeof part === "string"))
         return;
       const [field, identifier, visitor, metric] = key;
-      if (field === "tietie" && key.length === 2) {
+      if (field === TIETIE_CACHE_FIELD && key.length === 2) {
         const value = normalizedTietieRecord(record);
         if (identifier.trim() && value) tietieRecords.set(identifier, value);
       } else if (field === "relation" && key.length === 4) {
@@ -639,9 +640,6 @@
       remember(["relation", userIdentifier, visitorIdentifier, metric], value);
     }
 
-    // 兼容旧贴贴接口与持久化键 ["tietie", identifier]，不迁移格式。
-    // identifier 现指贴贴接收方；旧实现中登录访问者恰好也是接收方，
-    // 因此旧结果仍可复用，但不能按当前登录身份选表或自动合并别名。
     function tietieFor(recipientIdentifier) {
       const record = tietieRecords.get(recipientIdentifier);
       return record
@@ -680,7 +678,7 @@
         if (!record) return false;
         tietieRecords.set(recipientIdentifier, record);
         remember(
-          ["tietie", recipientIdentifier],
+          [TIETIE_CACHE_FIELD, recipientIdentifier],
           serializedTietieRecord(record),
         );
         persist();
